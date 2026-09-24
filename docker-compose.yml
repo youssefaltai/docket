@@ -1,0 +1,8 @@
+services:
+  docket:
+    build: .
+    ports:
+      - "127.0.0.1:7100:7100"
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
