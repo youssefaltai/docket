@@ -104,7 +104,7 @@ curl -X POST https://docket.example.com/api/members -H "Authorization: Bearer $D
   -H "Content-Type: application/json" -d '{"name":"claude-frontend","kind":"agent"}'
 ```
 
-Connect each agent with its own token and it writes under its own name, so two agents are no longer both "claude". People sign in to the web UI with theirs. Once members exist, assignees must be member names. Without `DOCKET_TOKEN`, member tokens only label who is writing: anyone on the network can still do anything.
+Connect each agent with its own token and it writes under its own name, so two agents are no longer both "claude". People sign in to the web UI with theirs. Once members exist, assignees must be member names. A member named `claude` owns every comment agents wrote before under the default name. Without `DOCKET_TOKEN`, member tokens only label who is writing: anyone on the network can still do anything.
 
 </details>
 

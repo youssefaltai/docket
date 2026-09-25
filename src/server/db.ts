@@ -8,6 +8,7 @@ import {
   MEMBER_KINDS,
   MEMBER_ROLES,
   PRIORITIES,
+  nameKey,
   STATUSES,
   type Comment,
   type Document,
@@ -167,7 +168,8 @@ const MIGRATIONS = [
   `
   CREATE TABLE members (
     id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    name TEXT NOT NULL,
+    name_key TEXT NOT NULL UNIQUE, -- nameKey(name): SQLite's NOCASE only folds ASCII
     kind TEXT NOT NULL,
     role TEXT NOT NULL,
     token_hash TEXT UNIQUE,
@@ -244,7 +246,7 @@ function checkAssignee(value: unknown): string | null {
   if (!name) return null;
   const active = activeMemberNames();
   if (!active.length) return name;
-  const member = active.find((m) => m.toLowerCase() === name.toLowerCase());
+  const member = active.find((m) => nameKey(m) === nameKey(name));
   if (!member) throw new AppError(`Unknown assignee "${name}". Members: ${active.join(", ")}`);
   return member;
 }
@@ -322,7 +324,7 @@ function ownComment(owner: CommentOwner, ownerId: number, commentId: unknown, au
     ? db.query<{ author: string }, [number, number]>(`SELECT author FROM ${table} WHERE id = ? AND ${column} = ?`).get(id, ownerId)
     : null;
   if (!row) throw new AppError(`Comment ${commentId} not found`, 404);
-  if (row.author.toLowerCase() !== requireText(author, "author").toLowerCase()) {
+  if (nameKey(row.author) !== nameKey(requireText(author, "author"))) {
     throw new AppError(`Only ${row.author} can change this comment`, 403);
   }
   return id;
@@ -344,6 +346,7 @@ function deleteComment(owner: CommentOwner, ownerId: number, commentId: unknown,
 interface MemberRow {
   id: number;
   name: string;
+  name_key: string;
   kind: MemberKind;
   role: MemberRole;
   token_hash: string | null;
@@ -378,13 +381,15 @@ const RESERVED_NAMES = ["anonymous", "me"];
 function checkMemberName(value: unknown): string {
   const name = requireText(value, "name");
   if (name.length > 40 || /[\r\n]/.test(name)) throw new AppError("name must be one line of at most 40 characters");
-  if (RESERVED_NAMES.includes(name.toLowerCase())) throw new AppError(`"${name}" is reserved`);
+  if (RESERVED_NAMES.includes(nameKey(name))) throw new AppError(`"${name}" is reserved`);
   return name;
 }
 
 function memberRow(name: unknown): MemberRow {
   const row =
-    typeof name === "string" ? db.query<MemberRow, [string]>("SELECT * FROM members WHERE name = ?").get(name.trim()) : null;
+    typeof name === "string"
+      ? db.query<MemberRow, [string]>("SELECT * FROM members WHERE name_key = ?").get(nameKey(name.trim()))
+      : null;
   if (!row) throw new AppError(`Member ${name} not found`, 404);
   return row;
 }
@@ -411,20 +416,36 @@ export function memberById(id: number): Credential | null {
   return toCredential(db.query<MemberRow, [number]>("SELECT * FROM members WHERE id = ?").get(id));
 }
 
+let signedOut: (name: string) => void = () => {};
+
+/** Called when a member's old token stops working (rotate, revoke), so the server can close their sockets. */
+export function onSignOut(fn: (name: string) => void) {
+  signedOut = fn;
+}
+
 /** Sets a fresh token (which also reinstates a revoked member) and returns it; it's never readable again. */
 function issueToken(row: MemberRow): MemberToken {
   const token = randomBytes(32).toString("hex");
   db.query("UPDATE members SET token_hash = ?, revoked_at = NULL WHERE id = ?").run(hashToken(token), row.id);
+  signedOut(row.name);
   changed("member", row.name);
   return { member: toMember(memberRow(row.name)), token };
 }
 
 export function createMember(input: MemberInput): MemberToken {
   const name = checkMemberName(input.name);
-  if (db.query("SELECT 1 FROM members WHERE name = ?").get(name)) throw new AppError(`Member "${name}" already exists`, 409);
+  if (db.query("SELECT 1 FROM members WHERE name_key = ?").get(nameKey(name))) {
+    throw new AppError(`Member "${name}" already exists`, 409);
+  }
   const kind = checkOneOf(input.kind, MEMBER_KINDS, "kind");
   const role = input.role === undefined ? "member" : checkOneOf(input.role, MEMBER_ROLES, "role");
-  db.query("INSERT INTO members (name, kind, role, created_at) VALUES (?, ?, ?, ?)").run(name, kind, role, now());
+  db.query("INSERT INTO members (name, name_key, kind, role, created_at) VALUES (?, ?, ?, ?, ?)").run(
+    name,
+    nameKey(name),
+    kind,
+    role,
+    now(),
+  );
   return issueToken(memberRow(name));
 }
 
@@ -442,6 +463,7 @@ export const rotateMemberToken = (name: string): MemberToken => issueToken(membe
 export function revokeMember(name: string): Member {
   const row = memberRow(name);
   db.query("UPDATE members SET token_hash = NULL, revoked_at = COALESCE(revoked_at, ?) WHERE id = ?").run(now(), row.id);
+  signedOut(row.name);
   changed("member", row.name);
   return toMember(memberRow(row.name));
 }

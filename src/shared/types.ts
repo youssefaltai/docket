@@ -197,6 +197,12 @@ export interface MemberInput {
   role?: MemberRole; // default "member"
 }
 
+/**
+ * How names compare wherever identity matters (member uniqueness, comment ownership, assignees):
+ * Unicode-aware, so "Émile" and "émile" are the same person.
+ */
+export const nameKey = (name: string) => name.normalize("NFKC").toLowerCase();
+
 /** A member plus their new token, shown once (on create and rotate). */
 export interface MemberToken {
   member: Member;

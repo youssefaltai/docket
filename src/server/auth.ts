@@ -45,27 +45,35 @@ function sameOrigin(req: Request): boolean {
 }
 
 /**
- * The request's viewer, or null when DOCKET_TOKEN is set and it carries no valid token. Member tokens are
- * found by their SHA-256, which leaks nothing useful about a 256-bit token even if the lookup isn't constant time.
+ * Whether a token that doesn't verify is refused rather than ignored: always with DOCKET_TOKEN; in open mode
+ * once any member exists, so a revoked or mistyped member token can't quietly become root. With no members,
+ * open mode ignores stray credentials as it always did.
  */
-function identify(req: Request): Viewer | null {
+const strict = () => !!TOKEN || db.hasMembers();
+
+/**
+ * The request's viewer, or null (401). `staleCookie` marks a login cookie that no longer verifies, so the
+ * 401 can clear it. Member tokens are found by their SHA-256, which leaks nothing useful about a 256-bit
+ * token even if the lookup isn't constant time.
+ */
+function identify(req: Request): { viewer: Viewer | null; staleCookie?: boolean } {
   const bearer = req.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1];
   if (bearer) {
-    if (TOKEN && same(bearer, TOKEN)) return ROOT;
+    if (TOKEN && same(bearer, TOKEN)) return { viewer: ROOT };
     const credential = db.memberByToken(bearer);
-    if (credential) return { member: credential.member };
-    // In open mode a revoked or mistyped member token must not quietly become root. With no members yet,
-    // stray bearers are ignored as they always were.
-    if (!TOKEN && db.hasMembers()) return null;
+    if (credential) return { viewer: { member: credential.member } };
+    if (!TOKEN && strict()) return { viewer: null };
   }
   const cookie = req.headers.get("cookie")?.match(new RegExp(`(?:^|;\\s*)${COOKIE}=([^;]+)`))?.[1];
   const upgrade = req.headers.get("upgrade")?.toLowerCase() === "websocket";
   if (cookie && (!upgrade || sameOrigin(req))) {
-    if (TOKEN && same(cookie, ROOT_SESSION)) return ROOT;
+    if (TOKEN && same(cookie, ROOT_SESSION)) return { viewer: ROOT };
     const credential = db.memberById(Number(cookie.split(".")[0]));
-    if (credential && same(cookie, memberSession(credential))) return { member: credential.member };
+    if (credential && same(cookie, memberSession(credential))) return { viewer: { member: credential.member } };
+    // Open mode never sets a root cookie, so only a member-shaped one counts there.
+    if (strict() && (TOKEN || cookie.includes("."))) return { viewer: null, staleCookie: true };
   }
-  return TOKEN ? null : ROOT;
+  return { viewer: TOKEN ? null : ROOT };
 }
 
 const viewers = new WeakMap<Request, Viewer>();
@@ -85,7 +93,7 @@ export function requireAdmin(req: Request) {
 export const isJson = (req: Request) =>
   req.headers.get("content-type")?.split(";")[0]!.trim().toLowerCase() === "application/json";
 
-const unauthorized = () => Response.json({ error: "Unauthorized" }, { status: 401 });
+const unauthorized = (headers?: HeadersInit) => Response.json({ error: "Unauthorized" }, { status: 401, headers });
 
 // DNS rebinding defence: a browser tricked into resolving evil.example to us still sends Host: evil.example.
 const HOSTS = new Set([
@@ -107,8 +115,8 @@ const forbiddenHost = () => Response.json({ error: "Host not allowed (see DOCKET
 export function guard<T>(route: T): T {
   const wrap = (fn: (req: Request, ...rest: unknown[]) => unknown) => (req: Request, ...rest: unknown[]) => {
     if (!hostAllowed(req)) return forbiddenHost();
-    const viewer = identify(req);
-    if (!viewer) return unauthorized();
+    const { viewer, staleCookie } = identify(req);
+    if (!viewer) return staleCookie ? unauthorized({ "Set-Cookie": cookieHeader(req, "", 0) }) : unauthorized();
     viewers.set(req, viewer);
     return fn(req, ...rest);
   };
@@ -131,9 +139,9 @@ function recordFailure(ip: string) {
 
 /**
  * POST /api/login `{ token }` (DOCKET_TOKEN or a member's token): sets an HttpOnly cookie for the web UI.
- * In open mode a non-member token still answers ok, without a cookie: there's nothing to sign in to.
+ * In open mode with no members, any other token answers ok without a cookie: there's nothing to sign in to.
  */
-export async function login(req: Request, server: Bun.Server<undefined>): Promise<Response> {
+export async function login(req: Request, server: Pick<Bun.Server<unknown>, "requestIP">): Promise<Response> {
   if (!hostAllowed(req)) return forbiddenHost();
   if (!isJson(req)) return Response.json({ error: "Expected Content-Type: application/json" }, { status: 415 });
   const ip = server.requestIP(req)?.address ?? "";
@@ -147,21 +155,21 @@ export async function login(req: Request, server: Bun.Server<undefined>): Promis
   const credential = !root && candidate ? db.memberByToken(candidate) : null;
   const value = root ? ROOT_SESSION : credential ? memberSession(credential) : null;
   if (!value) {
-    if (!TOKEN) return Response.json({ ok: true });
+    if (!strict()) return Response.json({ ok: true });
     recordFailure(ip);
     return unauthorized();
   }
-  return Response.json({ ok: true }, { headers: { "Set-Cookie": cookie(req, value, 31536000) } });
+  return Response.json({ ok: true }, { headers: { "Set-Cookie": cookieHeader(req, value, 31536000) } });
 }
 
 /** POST /api/logout: clears the login cookie, which the page can't since it's HttpOnly. */
 export function logout(req: Request): Response {
   if (!hostAllowed(req)) return forbiddenHost();
   if (!isJson(req)) return Response.json({ error: "Expected Content-Type: application/json" }, { status: 415 });
-  return Response.json({ ok: true }, { headers: { "Set-Cookie": cookie(req, "", 0) } });
+  return Response.json({ ok: true }, { headers: { "Set-Cookie": cookieHeader(req, "", 0) } });
 }
 
-function cookie(req: Request, value: string, maxAge: number): string {
+function cookieHeader(req: Request, value: string, maxAge: number): string {
   const https = new URL(req.url).protocol === "https:" || req.headers.get("x-forwarded-proto") === "https";
   return `${COOKIE}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${https ? "; Secure" : ""}`;
 }

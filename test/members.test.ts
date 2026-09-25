@@ -152,6 +152,44 @@ describe("with DOCKET_TOKEN", () => {
     expect((await as(s, back.body.token, "GET", "/api/me")).body.member.name).toBe("Ben Ali");
   });
 
+  test("names compare Unicode-aware, the same way everywhere", async () => {
+    const { token } = (await s.api("POST", "/api/members", { name: "Émile", kind: "human" })).body;
+    expect((await s.api("POST", "/api/members", { name: "émile", kind: "human" })).status).toBe(409);
+    expect((await s.api("POST", "/api/members", { name: "ÉMILE", kind: "agent" })).status).toBe(409);
+    expect((await s.api("PATCH", `/api/members/${encodeURIComponent("émile")}`, { role: "member" })).body.name).toBe("Émile");
+    expect((await s.api("PATCH", "/api/issues/IDN-1", { assignee: "émile" })).body.assignee).toBe("Émile");
+
+    const posted = await as(s, token, "POST", "/api/issues/IDN-1/comments", { body: "Bonjour" });
+    const id = posted.body.comments.at(-1).id;
+    // Root naming itself "émile" matches Émile's comments, just like the uniqueness rule.
+    expect((await s.api("PATCH", `/api/issues/IDN-1/comments/${id}`, { body: "Salut", author: "émile" })).status).toBe(200);
+  });
+
+  test("revoking or rotating closes that member's live sockets, not others", async () => {
+    const { token } = (await s.api("POST", "/api/members", { name: "socket-bot", kind: "agent" })).body;
+    const open = (headers: Record<string, string>) =>
+      new Promise<WebSocket>((resolve, reject) => {
+        const ws = new WebSocket(s.url.replace(/^http/, "ws") + "ws", { headers } as any);
+        ws.onopen = () => resolve(ws);
+        ws.onerror = reject;
+      });
+    const closed = (ws: WebSocket) => new Promise<number>((resolve) => (ws.onclose = (e) => resolve(e.code)));
+
+    const bots = await Promise.all([open({ Authorization: `Bearer ${token}` }), open({ Authorization: `Bearer ${token}` })]);
+    const root = await open({ Authorization: "Bearer root-token" });
+    const codes = Promise.all(bots.map(closed));
+    await s.api("DELETE", "/api/members/socket-bot");
+    expect(await codes).toEqual([4401, 4401]);
+    expect(root.readyState).toBe(WebSocket.OPEN);
+
+    const fresh = (await s.api("POST", "/api/members/socket-bot/token")).body.token;
+    const again = await open({ Authorization: `Bearer ${fresh}` });
+    const code = closed(again);
+    await s.api("POST", "/api/members/socket-bot/token");
+    expect(await code).toBe(4401);
+    root.close();
+  });
+
   test("MCP: an agent acts as its member and can't mint credentials", async () => {
     const agent = await mcpAs(s, bot);
     const tools = (await agent.client.listTools()).tools.map((t) => t.name);
@@ -193,9 +231,28 @@ describe("open mode (no DOCKET_TOKEN)", () => {
     const back = (await as(s, null, "POST", "/api/members/claude-b/token")).body.token;
 
     const login = await as(s, null, "POST", "/api/login", { token: back });
-    expect(login.res.headers.get("set-cookie")).toContain("docket_token=");
-    const other = await as(s, null, "POST", "/api/login", { token: "anything" });
-    expect(other.status).toBe(200);
-    expect(other.res.headers.get("set-cookie")).toBeNull();
+    const cookie = login.res.headers.get("set-cookie")!.split(";")[0]!;
+    expect((await as(s, null, "GET", "/api/me", undefined, { Cookie: cookie })).body.member.name).toBe("claude-b");
+    // Logins that aren't a member token are refused now too, revoked ones included.
+    expect((await as(s, null, "POST", "/api/login", { token: "anything" })).status).toBe(401);
+    await as(s, null, "DELETE", "/api/members/claude-b");
+    expect((await as(s, null, "POST", "/api/login", { token: back })).status).toBe(401);
+    // The revoked member's cookie is refused and cleared, rather than quietly becoming root.
+    const stale = await as(s, null, "GET", "/api/me", undefined, { Cookie: cookie });
+    expect(stale.status).toBe(401);
+    expect(stale.res.headers.get("set-cookie")).toMatch(/^docket_token=; .*Max-Age=0/);
+    // A leftover root-style cookie (open mode never sets one) is still ignored.
+    expect((await as(s, null, "GET", "/api/me", undefined, { Cookie: "docket_token=abc123" })).status).toBe(200);
+  });
+
+  test("with no members, stray logins still answer ok without a cookie", async () => {
+    const fresh = await startServer();
+    try {
+      const res = await as(fresh, null, "POST", "/api/login", { token: "anything" });
+      expect(res.status).toBe(200);
+      expect(res.res.headers.get("set-cookie")).toBeNull();
+    } finally {
+      await fresh.stop();
+    }
   });
 });
