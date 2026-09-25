@@ -13,7 +13,7 @@ bun run dev        # http://localhost:7100, hot reload
 
 Env: `PORT` (default `7100`), `DATABASE_PATH` (default `$XDG_DATA_HOME/docket/docket.db`, falling back to `./data/docket.db` if that already exists). `NODE_ENV=production bun run start` runs it like production: UI bundled once at startup, no hot reload.
 
-Config file (optional, real env vars win): `$XDG_CONFIG_HOME/docket/config` or `$XDG_CONFIG_DIRS/docket/config`, `KEY=VALUE` lines:
+Config file (optional, real env vars win): `$XDG_CONFIG_HOME/docket/config` or `$XDG_CONFIG_DIRS/docket/config`, `KEY=VALUE` lines (keep it `chmod 600` if it holds the token):
 
 ```
 PORT=7100
