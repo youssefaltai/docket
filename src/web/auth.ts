@@ -12,7 +12,7 @@ import type {
   UserRef,
   WorkspaceMember,
 } from "../shared/types";
-import { enc, request } from "./api";
+import { enc, request, setSignedInAs } from "./api";
 
 let me: Me | null = null;
 
@@ -21,7 +21,12 @@ export function getMe(): Me {
   if (!me) throw new Error("getMe() before loadMe()");
   return me;
 }
-export const loadMe = () => request<Me>("GET", "/api/me").then((m) => (me = m));
+const setMe = (m: Me) => {
+  me = m;
+  setSignedInAs(m.user.username);
+  return m;
+};
+export const loadMe = () => request<Me>("GET", "/api/me").then(setMe);
 
 const ws = (key: string) => `/api/workspaces/${enc(key)}`;
 
@@ -35,7 +40,7 @@ export const auth = {
 
   /** Saves your profile, and what getMe() returns with it. */
   updateMe: (patch: { name?: string; username?: string; email?: string }) =>
-    request<Me>("PATCH", "/api/me", patch).then((m) => (me = m)),
+    request<Me>("PATCH", "/api/me", patch).then(setMe),
   sessions: () => request<Session[]>("GET", "/api/sessions"),
   revokeSession: (id: number) => request<unknown>("DELETE", `/api/sessions/${id}`),
   revokeOtherSessions: () => request<unknown>("DELETE", "/api/sessions"),

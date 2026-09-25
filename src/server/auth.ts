@@ -48,10 +48,11 @@ const signedOut = (req: Request) => ({ "Set-Cookie": cookieHeader(req, "", 0) })
 const bearerOf = (req: Request) => req.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1];
 const cookieOf = (req: Request) => req.headers.get("cookie")?.match(new RegExp(`(?:^|;\\s*)${COOKIE}=([^;]+)`))?.[1];
 
-/** The signed-in user of a same-origin request with a live session cookie, if any (an invite joins them). */
-const signedInId = (req: Request) => {
+/** The signed-in user and session of a same-origin request with a live session cookie, if any. */
+const signedInOf = (req: Request): access.SignedIn => {
   const cookie = cookieOf(req);
-  return cookie && sameOrigin(req) ? (access.sessionActor(cookie)?.id ?? null) : null;
+  const actor = cookie && sameOrigin(req) ? access.sessionActor(cookie) : null;
+  return actor ? { userId: actor.id, sessionId: actor.sessionId! } : null;
 };
 
 /**
@@ -91,6 +92,10 @@ export function guard<T>(route: T, { mcp = false } = {}): T {
     if (crossSite) return json({ error: "Cross-origin request refused" }, 403);
     if (!actor) return unauthorized(stale ? signedOut(req) : undefined);
     if (!mcp && actor.scope === "read" && req.method !== "GET") return json({ error: "This API key is read-only" }, 403);
+    // The web app says who it thinks is signed in. Tabs share one cookie, so after signing in as someone
+    // else in another tab, a stale tab would silently act as the new account: refuse, and it reloads.
+    const expected = req.headers.get("x-docket-user");
+    if (expected && expected !== actor.username) return json({ error: "Signed in as someone else", switched: true }, 401);
     actors.set(req, actor);
     const result = fn(req, ...rest);
     if (!actor.renewCookie) return result;
@@ -154,11 +159,11 @@ export const authRoutes = {
   },
   // An invite redeemed with a session joins that user; the Origin check keeps another site from doing it for them.
   "/api/auth/peek": {
-    POST: open((body, req) => json(access.peekCode(body.code, signedInId(req)))),
+    POST: open((body, req) => json(access.peekCode(body.code, signedInOf(req)))),
   },
   "/api/auth/redeem": {
     POST: open((body, req, client) => {
-      const { user, token } = access.redeemCode(body.code, body, client, signedInId(req));
+      const { user, token } = access.redeemCode(body.code, body, client, signedInOf(req));
       return json({ user }, 200, signedIn(req, token));
     }),
   },

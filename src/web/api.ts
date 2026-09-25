@@ -51,14 +51,22 @@ export const store = {
   },
 };
 
+/**
+ * Who this tab believes is signed in, sent with every request. Tabs share one cookie, so if another tab
+ * signs in as someone else, the server refuses this tab's requests and it reloads as the new account
+ * rather than acting as them under the old name.
+ */
+let signedInAs: string | null = null;
+export const setSignedInAs = (username: string) => (signedInAs = username);
+
 export async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const res = await fetch(path, {
-    method,
-    headers: body === undefined ? undefined : { "content-type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  const headers: Record<string, string> = {};
+  if (body !== undefined) headers["content-type"] = "application/json";
+  if (signedInAs) headers["x-docket-user"] = signedInAs;
+  const res = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
   const data: unknown = await res.json().catch(() => null);
-  if (res.status === 401) onUnauthorized();
+  if (res.status === 401 && (data as { switched?: boolean } | null)?.switched) location.reload();
+  else if (res.status === 401) onUnauthorized();
   if (!res.ok) throw new HttpError((data as ApiError | null)?.error || `${res.status} ${res.statusText}`, res.status);
   return data as T;
 }
