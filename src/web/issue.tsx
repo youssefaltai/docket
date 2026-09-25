@@ -94,12 +94,21 @@ export function IssuePage({ id }: { id: string }) {
     );
   if (!issue) return header();
 
+  // Functional updaters so a patch always applies on top of the latest state, not a
+  // stale closure. Each response merges only its own slice (top-level fields for `patch`,
+  // just the one child for `patchChild`) so a patch and a patchChild racing each other
+  // can't clobber one another's optimistic update; the seq guard only drops a response
+  // that's been superseded by another call of the *same* kind.
   const patch = (p: IssuePatch) => {
     const n = ++seq.current;
-    setIssue({ ...issue, ...p, updatedAt: new Date().toISOString() });
+    const now = new Date().toISOString();
+    setIssue((cur) => (cur ? { ...cur, ...p, updatedAt: now } : cur));
     api
       .updateIssue(issue.id, p)
-      .then((fresh) => n === seq.current && setIssue(fresh))
+      .then((fresh) => {
+        if (n !== seq.current) return;
+        setIssue((cur) => (cur ? { ...fresh, children: cur.children } : cur));
+      })
       .catch((e) => {
         errorToast(e);
         reload();
@@ -107,12 +116,29 @@ export function IssuePage({ id }: { id: string }) {
   };
 
   const patchChild = (childId: string, p: IssuePatch) => {
-    ++seq.current;
-    setIssue({ ...issue, children: issue.children.map((c) => (c.id === childId ? { ...c, ...p } : c)) });
-    api.updateIssue(childId, p).catch((e) => {
-      errorToast(e);
-      reload();
-    });
+    const n = ++seq.current;
+    setIssue((cur) =>
+      cur ? { ...cur, children: cur.children.map((c) => (c.id === childId ? { ...c, ...p } : c)) } : cur,
+    );
+    api
+      .updateIssue(childId, p)
+      .then((fresh) => {
+        if (n !== seq.current) return;
+        setIssue((cur) =>
+          cur
+            ? {
+                ...cur,
+                children: cur.children.map((c) =>
+                  c.id === childId ? { ...c, ...p, updatedAt: fresh.updatedAt, completedAt: fresh.completedAt } : c,
+                ),
+              }
+            : cur,
+        );
+      })
+      .catch((e) => {
+        errorToast(e);
+        reload();
+      });
   };
 
   const comment = async (body: string) => {
