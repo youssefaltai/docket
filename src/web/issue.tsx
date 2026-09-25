@@ -1,7 +1,7 @@
 // Issue page: title, description, sub-issues, comments and the properties panel.
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { PRIORITY_LABELS, STATUS_LABELS, type Issue, type IssuePatch } from "../shared/types";
-import { api } from "./api";
+import { CLOSED_STATUSES, PRIORITY_LABELS, STATUS_LABELS, nameKey, type Issue, type IssuePatch } from "../shared/types";
+import { HttpError, api, getMe } from "./api";
 import { AssigneePicker, BlockedByPicker, LabelsPicker, ParentPicker, PriorityPicker, StatusPicker } from "./pickers";
 import {
   Avatar,
@@ -136,6 +136,44 @@ export function IssuePage({ id }: { id: string }) {
     remove: (cid) => withFresh(() => api.deleteComment(issue.id, cid)),
   };
 
+  // A member can claim an open issue no other active member holds (a revoked member or leftover free text
+  // doesn't hold one), including their own not yet in progress: the same rule as the server, which has the
+  // last word and names the holder if someone got there first.
+  const me = getMe().member;
+  const heldByOther =
+    !!issue.assignee && nameKey(issue.assignee) !== nameKey(me?.name ?? "") && app.members.some((m) => nameKey(m) === nameKey(issue.assignee!));
+  const alreadyMine = !!me && !!issue.assignee && nameKey(issue.assignee) === nameKey(me.name) && issue.status === "in_progress";
+  const claimable = !!me && !CLOSED_STATUSES.includes(issue.status) && !heldByOther && !alreadyMine;
+  const claim = () => withFresh(() => api.claimIssue(issue.id)).catch(errorToast);
+
+  // The description is the one field sent with baseUpdatedAt, since a stale save would overwrite someone's
+  // text. Comments bump updatedAt too, so on a 409 it only counts as a conflict if the description itself
+  // changed; otherwise it saves again on top of the fresh version.
+  const saveDescription = async (description: string, start: Edit) => {
+    const n = invalidate();
+    const conflict = (e: unknown) => e instanceof HttpError && e.status === 409;
+    // Saves on `base`; true if it landed, false on a 409.
+    const save = async (base: string) => {
+      try {
+        const fresh = await api.updateIssue(issue.id, { description, baseUpdatedAt: base });
+        if (isLatest(n)) setIssue(fresh);
+        return true;
+      } catch (e) {
+        if (!conflict(e)) throw e;
+        return false;
+      }
+    };
+    if (await save(start.base)) return;
+    let latest = await api.issue(issue.id);
+    if (latest.description === start.value) {
+      if (await save(latest.updatedAt)) return;
+      latest = await api.issue(issue.id);
+    }
+    // A real conflict: show the latest version, so the banner and its choices work from what's there now.
+    setIssue(latest);
+    throw new HttpError("Issue changed since you read it", 409);
+  };
+
   const remove = async () => {
     if (!confirm(`Delete ${issue.id}? This can’t be undone.`)) return;
     try {
@@ -157,6 +195,11 @@ export function IssuePage({ id }: { id: string }) {
     <>
       {header(
         <>
+          {claimable && (
+            <button className="btn btn-sm" onClick={claim} title="Assign it to you and set it in progress">
+              Claim
+            </button>
+          )}
           <button className="icon-btn" onClick={copyId} aria-label="Copy ID" title="Copy ID">
             <CopyIcon />
           </button>
@@ -178,7 +221,7 @@ export function IssuePage({ id }: { id: string }) {
             <div className="issue-props-inline">
               <Properties issue={issue} patch={patch} />
             </div>
-            <Description key={`d-${issue.id}`} value={issue.description} onSave={(description) => patch({ description })} />
+            <Description key={`d-${issue.id}`} value={issue.description} updatedAt={issue.updatedAt} onSave={saveDescription} />
             <SubIssues issue={issue} onPatch={patchChild} />
             <Docs issue={issue} />
             <Activity issue={issue} actions={comments} />
@@ -192,9 +235,24 @@ export function IssuePage({ id }: { id: string }) {
   );
 }
 
-function Description({ value, onSave }: { value: string; onSave: (v: string) => void }) {
+/** What an edit started from: the description, and the issue's updatedAt to send as baseUpdatedAt. */
+type Edit = { value: string; base: string };
+
+function Description({
+  value,
+  updatedAt,
+  onSave,
+}: {
+  value: string;
+  updatedAt: string;
+  onSave: (v: string, start: Edit) => Promise<void>;
+}) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
+  const [saving, setSaving] = useState(false);
+  const [conflict, setConflict] = useState(false);
+  const inFlight = useRef(false); // guards double ⌘↵ presses before `saving` re-renders
+  const started = useRef<Edit>({ value, base: updatedAt });
   const ref = useRef<HTMLTextAreaElement>(null);
   useAutosize(ref, editing ? draft : "");
 
@@ -207,12 +265,38 @@ function Description({ value, onSave }: { value: string; onSave: (v: string) => 
   }, [editing]);
 
   const start = () => {
+    started.current = { value, base: updatedAt };
     setDraft(value);
+    setConflict(false);
     setEditing(true);
   };
-  const save = () => {
-    if (draft.trim() !== value.trim()) onSave(draft.trim());
+  const close = () => {
+    setConflict(false);
     setEditing(false);
+  };
+  const save = () => {
+    if (saving || conflict || inFlight.current) return;
+    if (draft.trim() === started.current.value.trim()) return close();
+    inFlight.current = true;
+    setSaving(true);
+    onSave(draft.trim(), started.current)
+      .then(close, (e) => {
+        if (e instanceof HttpError && e.status === 409) setConflict(true);
+        else errorToast(e);
+      })
+      .finally(() => {
+        inFlight.current = false;
+        setSaving(false);
+      });
+  };
+  // After a conflict, the props hold their version: keep editing on top of it, or take it.
+  const rebase = () => {
+    started.current = { value, base: updatedAt };
+    setConflict(false);
+  };
+  const takeTheirs = () => {
+    rebase();
+    setDraft(value);
   };
 
   if (editing)
@@ -231,18 +315,35 @@ function Description({ value, onSave }: { value: string; onSave: (v: string) => 
               save();
             } else if (e.key === "Escape") {
               e.preventDefault();
-              setEditing(false);
+              close();
             }
           }}
         />
+        {conflict && (
+          <div className="editor-conflict" role="alert">
+            <div className="editor-conflict-head">
+              <span>Someone changed this description while you were editing. Theirs:</span>
+              <span className="grow" />
+              <button className="btn btn-sm" onClick={takeTheirs}>
+                Use theirs
+              </button>
+              <button className="btn btn-sm" onClick={rebase}>
+                Keep mine
+              </button>
+            </div>
+            <pre className="editor-theirs" dir="auto">
+              {value || "(empty)"}
+            </pre>
+          </div>
+        )}
         <div className="editor-foot">
           <span className="hint">Markdown supported</span>
           <span className="grow" />
-          <button className="btn btn-ghost btn-sm" onClick={() => setEditing(false)}>
+          <button className="btn btn-ghost btn-sm" onClick={close}>
             Cancel
           </button>
-          <button className="btn btn-primary btn-sm" onClick={save}>
-            Save <Kbd>{MOD}↵</Kbd>
+          <button className="btn btn-primary btn-sm" onClick={save} disabled={saving || conflict}>
+            {saving ? "Saving…" : "Save"} <Kbd>{MOD}↵</Kbd>
           </button>
         </div>
       </div>

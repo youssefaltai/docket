@@ -210,6 +210,13 @@ export function Picker({ label, options, selected, onPick, multi, create, onOpen
 
 type Trigger = { className?: string; children?: ReactNode; align?: "start" | "end" };
 const uniq = (xs: string[]) => [...new Set(xs)];
+
+/** A person as a picker option, marking the viewer. */
+export const personOption = (name: string, you: string): Option => ({
+  value: name,
+  label: name === you ? `${name} (you)` : name,
+  icon: <Avatar name={name} />,
+});
 const toggle = (xs: string[], x: string) => (xs.includes(x) ? xs.filter((y) => y !== x) : [...xs, x]);
 
 const STATUS_OPTIONS: Option[] = STATUSES.map((s) => ({ value: s, label: STATUS_LABELS[s], icon: <StatusIcon status={s} /> }));
@@ -258,10 +265,10 @@ export function AssigneePicker({
   children,
   ...rest
 }: Trigger & { value: string | null; onChange: (a: string | null) => void }) {
-  const { people, loadDirectory } = useApp();
+  const { people, name, loadDirectory } = useApp();
   const options: Option[] = [
     { value: "", label: "No assignee", icon: <Avatar name={null} /> },
-    ...uniq([...people, ...(value ? [value] : [])]).map((p) => ({ value: p, label: p, icon: <Avatar name={p} /> })),
+    ...uniq([...people, ...(value ? [value] : [])]).map((p) => personOption(p, name)),
   ];
   return (
     <Picker

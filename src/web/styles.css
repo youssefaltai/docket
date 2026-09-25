@@ -997,6 +997,34 @@ kbd {
   background: none;
   font: 14px/1.6 var(--font);
 }
+.editor-conflict {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 8px 10px 14px;
+  border-top: 1px solid var(--border);
+  background: #fff8eb;
+  color: var(--text-2);
+  font-size: 13px;
+}
+.editor-conflict-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.editor-theirs {
+  max-height: 160px;
+  margin: 0 6px 0 0;
+  padding: 8px 10px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  font: 13px/1.5 var(--font);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .editor-foot {
   display: flex;
   align-items: center;

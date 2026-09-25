@@ -105,6 +105,8 @@ export interface AppState {
   workspaceProjects: Project[] | null;
   labels: string[];
   people: string[];
+  /** Active members' names; empty until the first member exists. */
+  members: string[];
   /** The signed-in member's name, else this browser's display name (sent as `author` on writes). */
   name: string;
   /** Reopens the name screen so the user can change it; absent for members, whose name admins manage. */
