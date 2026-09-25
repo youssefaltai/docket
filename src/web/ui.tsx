@@ -105,10 +105,10 @@ export interface AppState {
   workspaceProjects: Project[] | null;
   labels: string[];
   people: string[];
-  /** This browser's display name (used as `author` on writes). */
+  /** The signed-in member's name, else this browser's display name (sent as `author` on writes). */
   name: string;
-  /** Reopens the name screen so the user can change it. */
-  changeName: () => void;
+  /** Reopens the name screen so the user can change it; absent for members, whose name admins manage. */
+  changeName?: () => void;
   /** Refresh labels + known assignees (called when a picker opens). */
   loadDirectory: () => void;
   /** Refetch projects and workspaces now, without waiting for the live update. */
@@ -330,6 +330,8 @@ export const ParentIcon = icon("M4 2.5v6a2 2 0 0 0 2 2h6.5M10 8l2.5 2.5L10 13");
 export const BlockedIcon = icon("M8 14A6 6 0 1 0 8 2a6 6 0 0 0 0 12zM3.8 3.8l8.4 8.4");
 export const TrashIcon = icon("M2.5 4.5h11M6 4.5V3h4v1.5M4 4.5l.7 8.6a1 1 0 0 0 1 .9h4.6a1 1 0 0 0 1-.9l.7-8.6");
 export const PencilIcon = icon("M10.5 2.5l3 3L6 13H3v-3z");
+const Dots = icon("M3.5 8h.01M8 8h.01M12.5 8h.01");
+export const MoreIcon = (props: IconProps) => <Dots strokeWidth={2.4} {...props} />;
 export const CopyIcon = icon("M5.5 5.5h7v7h-7zM10.5 5.5v-2h-7v7h2");
 export const DocIcon = icon("M3.5 2.5a1 1 0 0 1 1-1h4.5l3.5 3.5v8.5a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1zM9 1.5V5h3.5M6 8.5h4M6 11h2.5");
 export const HistoryIcon = icon("M2 8a6 6 0 1 0 6-6 6.5 6.5 0 0 0-4.5 1.8L2 5.3M2 2v3.3h3.3M8 4.7V8l2.7 1.3");

@@ -40,7 +40,7 @@ function useSubmit(ready: boolean, action: () => Promise<void>) {
   return { busy, submit };
 }
 
-function ModalHead({ onClose, children }: { onClose: () => void; children: ReactNode }) {
+export function ModalHead({ onClose, children }: { onClose: () => void; children: ReactNode }) {
   return (
     <div className="modal-head">
       {children}

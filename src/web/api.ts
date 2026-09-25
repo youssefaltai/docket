@@ -13,6 +13,11 @@ import type {
   IssueInput,
   IssuePatch,
   IssueSummary,
+  Me,
+  Member,
+  MemberInput,
+  MemberRole,
+  MemberToken,
   Project,
   ProjectInput,
   ProjectPatch,
@@ -21,6 +26,7 @@ import type {
   WorkspaceInput,
   WorkspacePatch,
 } from "../shared/types";
+import { nameKey } from "../shared/types";
 
 export class HttpError extends Error {
   status: number;
@@ -50,17 +56,25 @@ export const store = {
   },
 };
 
-/** Per-browser display name, used as the `author` on writes. */
+/** Who this browser is signed in as (GET /api/me), loaded once at boot; signing in or out reloads the page. */
+let me: Me = { member: null, admin: false, open: false };
+export const getMe = () => me;
+export const loadMe = () => request<Me>("GET", "/api/me").then((m) => (me = m));
+
+/** Per-browser display name, used as the `author` on writes when signed in without a member token. */
 export const getName = () => store.get("name");
 export const setName = (name: string) => store.set("name", name);
 
-/** Whether this browser wrote a comment, so it may edit or delete it (the server checks too). */
-export const isMine = (author: string) => author.toLowerCase() === getName()?.toLowerCase();
+/** Whether this viewer wrote a comment, so it may edit or delete it (the server checks too). */
+export const isMine = (author: string) => {
+  const name = me.member?.name ?? getName();
+  return !!name && nameKey(author) === nameKey(name);
+};
 
-/** Stamps a write body with the stored name, unless it already has an author. */
+/** Stamps a write body with the stored name, unless it has an author or a member is signed in (the server names them). */
 function withAuthor<T extends object>(body: T & { author?: string }): T & { author?: string } {
   const author = getName();
-  return author && !body.author ? { ...body, author } : body;
+  return author && !body.author && !me.member ? { ...body, author } : body;
 }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -89,6 +103,13 @@ const enc = encodeURIComponent;
 
 export const api = {
   login: (token: string) => request<{ ok: true }>("POST", "/api/login", { token }),
+  logout: () => request<{ ok: true }>("POST", "/api/logout", {}),
+
+  members: () => request<Member[]>("GET", "/api/members"),
+  createMember: (input: MemberInput) => request<MemberToken>("POST", "/api/members", input),
+  updateMember: (name: string, role: MemberRole) => request<Member>("PATCH", `/api/members/${enc(name)}`, { role }),
+  rotateToken: (name: string) => request<MemberToken>("POST", `/api/members/${enc(name)}/token`),
+  revokeMember: (name: string) => request<Member>("DELETE", `/api/members/${enc(name)}`),
 
   workspaces: () => request<Workspace[]>("GET", "/api/workspaces"),
   createWorkspace: (input: WorkspaceInput) => request<Workspace>("POST", "/api/workspaces", input),
