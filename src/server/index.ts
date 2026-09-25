@@ -55,7 +55,7 @@ const server = Bun.serve({
     ),
     ...authRoutes,
     ...(Object.fromEntries(Object.entries(apiRoutes).map(([path, route]) => [path, guard(route)])) as typeof apiRoutes),
-    "/mcp": guard(handleMcp, { bearerOnly: true, readCheck: false }),
+    "/mcp": guard(handleMcp, { mcp: true }),
     "/ws": guard((req: Request, server: Bun.Server<SocketData>) => {
       const a = actorOf(req);
       const data = { userId: a.id, sessionId: a.sessionId, keyId: a.keyId, workspaces: [...a.workspaces.keys()] };

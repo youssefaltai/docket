@@ -25,7 +25,6 @@ export interface Actor {
   id: number;
   renewCookie?: boolean; // a session in use: re-send its cookie so the browser's copy slides with the idle window
   username: string;
-  name: string;
   kind: UserKind;
   workspaces: Map<string, Role>; // active memberships
   scope: ApiKeyScope; // an API key's scope; sessions can write
@@ -43,12 +42,13 @@ const hash = (secret: string) => createHash("sha256").update(secret).digest("hex
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const CODE_TTL_MS = 15 * 60 * 1000;
 const normalizeCode = (code: string) => code.toUpperCase().replace(/[^A-Z0-9]/g, "");
-const newCode = () => {
-  const raw = Array.from({ length: 10 }, () => CODE_ALPHABET[randomInt(CODE_ALPHABET.length)]).join("");
-  return `${raw.slice(0, 5)}-${raw.slice(5)}`;
+export const formatCode = (code: string) => {
+  const c = normalizeCode(code);
+  return c.length === 10 ? `${c.slice(0, 5)}-${c.slice(5)}` : c;
 };
+const newCode = () => formatCode(Array.from({ length: 10 }, () => CODE_ALPHABET[randomInt(CODE_ALPHABET.length)]).join(""));
 
-const SESSION_IDLE_MS = 30 * 24 * 60 * 60 * 1000;
+export const SESSION_IDLE_MS = 30 * 24 * 60 * 60 * 1000;
 const TOUCH_MS = 60 * 1000; // last_seen_at / last_used_at are written at most once a minute
 
 let revoked: (r: { userId: number; sessionId?: number; keyId?: number }) => void = () => {};
@@ -69,13 +69,14 @@ interface UserRow {
   created_at: string;
 }
 
-export const toRef = (row: { username: string; name: string; kind: UserKind }): UserRef => ({
+const toRef = (row: { username: string; name: string; kind: UserKind }): UserRef => ({
   username: row.username,
   name: row.name,
   kind: row.kind,
 });
 
 const toUser = (row: UserRow): User => ({ ...toRef(row), email: row.email, createdAt: row.created_at });
+const userById = (id: number) => db.query<UserRow, [number]>("SELECT * FROM users WHERE id = ?").get(id)!;
 
 // "me" means the caller wherever a username is taken.
 const RESERVED = ["me"];
@@ -124,6 +125,14 @@ function insertUser(kind: UserKind, input: { username?: unknown; name?: unknown;
     .get(kind, username, name, email, now())!.id;
 }
 
+const PERSON_ROLES = ["admin", "member"] as const;
+
+const addMember = (workspace: string, userId: number, role: Role, time = now()) =>
+  db.query("INSERT INTO workspace_members (workspace, user_id, role, created_at) VALUES (?, ?, ?, ?)").run(workspace, userId, role, time);
+
+const setSuspended = (workspace: string, userId: number, at: string | null) =>
+  db.query("UPDATE workspace_members SET suspended_at = ? WHERE workspace = ? AND user_id = ?").run(at, workspace, userId);
+
 export function me(a: Actor): Me {
   const workspaces = db
     .query<{ key: string; name: string; role: Role }, [number]>(
@@ -131,12 +140,12 @@ export function me(a: Actor): Me {
        WHERE m.user_id = ? AND m.suspended_at IS NULL ORDER BY w.name COLLATE NOCASE`,
     )
     .all(a.id);
-  return { user: toUser(db.query<UserRow, [number]>("SELECT * FROM users WHERE id = ?").get(a.id)!), workspaces };
+  return { user: toUser(userById(a.id)), workspaces };
 }
 
 export function updateMe(a: Actor, patch: { name?: unknown; username?: unknown; email?: unknown }): Me {
   requireSession(a);
-  const row = db.query<UserRow, [number]>("SELECT * FROM users WHERE id = ?").get(a.id)!;
+  const row = userById(a.id);
   const username =
     patch.username === undefined || String(patch.username).trim().toLowerCase() === row.username
       ? row.username
@@ -159,7 +168,6 @@ function actorFor(user: UserRow, credential: { scope: ApiKeyScope; sessionId?: n
   return {
     id: user.id,
     username: user.username,
-    name: user.name,
     kind: user.kind,
     workspaces: new Map(memberships.map((m) => [m.workspace, m.role])),
     scope: credential.scope,
@@ -214,7 +222,7 @@ export function requireMember(a: Actor, workspace: unknown): string {
   return key;
 }
 
-export function requireAdmin(a: Actor, workspace: unknown): string {
+function requireAdmin(a: Actor, workspace: unknown): string {
   const key = requireMember(a, workspace);
   if (a.workspaces.get(key) !== "admin") throw new AppError("Only workspace admins can do that", 403);
   return key;
@@ -230,6 +238,12 @@ function requirePerson(a: Actor) {
  */
 function requireSession(a: Actor) {
   if (a.sessionId === null) throw new AppError("Sign in to the web app to manage access; API keys can't", 403);
+}
+
+/** Managing a workspace's members, invites and agents: an admin, signed in. */
+function requireAdminSession(a: Actor, workspace: unknown): string {
+  requireSession(a);
+  return requireAdmin(a, workspace);
 }
 
 /**
@@ -251,22 +265,11 @@ export function activeMemberId(a: Actor, workspace: string, value: string, kind:
   return row.id;
 }
 
-/** Whether a user is an active member of a workspace (a claim held by someone suspended doesn't count). */
-export const isActiveMember = (userId: number, workspace: string) =>
-  db
-    .query("SELECT 1 FROM workspace_members WHERE user_id = ? AND workspace = ? AND suspended_at IS NULL")
-    .get(userId, workspace) !== null;
-
 // --- Setup (first run) ---
 
 /** The first-run setup code: DOCKET_SETUP_CODE if set, else random; only usable while there are no users. */
 export const setupCode = normalizeCode(process.env.DOCKET_SETUP_CODE || newCode());
 export const needsSetup = () => db.query("SELECT 1 FROM users LIMIT 1").get() === null;
-
-export function formatCode(code: string) {
-  const c = normalizeCode(code);
-  return c.length === 10 ? `${c.slice(0, 5)}-${c.slice(5)}` : c;
-}
 
 /** Creates the first account (admin of a new workspace) and signs it in. */
 export function setup(input: SetupInput, client: Client): { user: User; workspace: Workspace; token: string } {
@@ -279,7 +282,7 @@ export function setup(input: SetupInput, client: Client): { user: User; workspac
     const userId = insertUser("person", input);
     const key = insertWorkspace(input.workspace ?? {}, userId);
     const token = startSession(userId, client);
-    const user = toUser(db.query<UserRow, [number]>("SELECT * FROM users WHERE id = ?").get(userId)!);
+    const user = toUser(userById(userId));
     const workspace = workspaceFor(userId, key);
     return { user, workspace, token };
   }).immediate();
@@ -396,7 +399,7 @@ export function revokeApiKey(a: Actor, id: unknown) {
   revoked({ userId: a.id, keyId: Number(id) });
 }
 
-/** Revokes every session, key and unused sign-in code of a user (suspended from their last workspace, or an agent removed). */
+/** Revokes every session, key and unused sign-in code of a user. */
 function signOutEverywhere(userId: number) {
   db.query("DELETE FROM sessions WHERE user_id = ?").run(userId);
   db.query("DELETE FROM codes WHERE user_id = ? AND used_at IS NULL").run(userId);
@@ -408,7 +411,7 @@ function signOutEverywhere(userId: number) {
 
 interface CodeRow {
   id: number;
-  purpose: "invite" | "sign-in";
+  purpose: CodeInfo["kind"];
   user_id: number | null;
   workspace: string | null;
   role: Role | null;
@@ -416,7 +419,7 @@ interface CodeRow {
   used_at: string | null;
 }
 
-function issueCode(fields: { purpose: "invite" | "sign-in"; userId?: number; workspace?: string; role?: Role; by?: number }) {
+function issueCode(fields: { purpose: CodeInfo["kind"]; userId?: number; workspace?: string; role?: Role; by?: number }) {
   const code = newCode();
   const time = Date.now();
   const expiresAt = new Date(time + CODE_TTL_MS).toISOString();
@@ -480,17 +483,10 @@ export function redeemCode(
         )
         .get(row.workspace!, userId);
       if (member?.suspended_at) throw new AppError("You were suspended from this workspace; ask an admin to reinstate you", 403);
-      if (!member) {
-        db.query("INSERT INTO workspace_members (workspace, user_id, role, created_at) VALUES (?, ?, ?, ?)").run(
-          row.workspace!,
-          userId,
-          row.role!,
-          now(),
-        );
-      }
+      if (!member) addMember(row.workspace!, userId, row.role!);
     }
     db.query("UPDATE codes SET used_at = ? WHERE id = ?").run(now(), row.id);
-    const user = db.query<UserRow, [number]>("SELECT * FROM users WHERE id = ?").get(userId!)!;
+    const user = userById(userId!);
     if (row.workspace) changed("member", row.workspace, user.username);
     return { user: toUser(user), token: startSession(user.id, client) };
   }).immediate();
@@ -507,8 +503,7 @@ export function selfSignInLink(a: Actor) {
  * caller must be an admin of every workspace they're in; otherwise one admin could reach another's.
  */
 export function memberSignInLink(a: Actor, workspace: unknown, username: unknown) {
-  requireSession(a);
-  const key = requireAdmin(a, workspace);
+  const key = requireAdminSession(a, workspace);
   const member = memberRow(key, username);
   if (member.kind !== "person") throw new AppError("Agents sign in with their token, not a link");
   if (member.suspended_at) throw new AppError(`${member.username} is suspended; reinstate them first`, 409);
@@ -529,9 +524,8 @@ export function recoverySignInLink(username: string) {
 
 /** An invite: a one-time code the admin hands to someone, who joins with it (new account or existing). */
 export function invite(a: Actor, workspace: unknown, input: { role?: unknown }) {
-  requireSession(a);
-  const key = requireAdmin(a, workspace);
-  const role = checkOneOf(input.role ?? "member", ["admin", "member"] as const, "role");
+  const key = requireAdminSession(a, workspace);
+  const role = checkOneOf(input.role ?? "member", PERSON_ROLES, "role");
   return issueCode({ purpose: "invite", workspace: key, role, by: a.id });
 }
 
@@ -574,7 +568,7 @@ function insertWorkspace(input: WorkspaceInput, adminId: number): string {
   const key = pickSlug(input.key, name, (k) => exists("workspaces", "key", k), { label: "workspace key", fallback: "workspace" });
   const time = now();
   db.query("INSERT INTO workspaces (key, name, created_at, updated_at) VALUES (?, ?, ?, ?)").run(key, name, time, time);
-  db.query("INSERT INTO workspace_members (workspace, user_id, role, created_at) VALUES (?, ?, 'admin', ?)").run(key, adminId, time);
+  addMember(key, adminId, "admin", time);
   return key;
 }
 
@@ -638,7 +632,7 @@ const activeAdmins = (workspace: string) =>
 
 /** Suspends a membership; if it was the user's last active one, their sessions and keys go too. */
 function suspend(key: string, row: MemberRow) {
-  db.query("UPDATE workspace_members SET suspended_at = ? WHERE workspace = ? AND user_id = ?").run(now(), key, row.id);
+  setSuspended(key, row.id, now());
   const others = db
     .query("SELECT 1 FROM workspace_members WHERE user_id = ? AND suspended_at IS NULL LIMIT 1")
     .get(row.id);
@@ -647,10 +641,9 @@ function suspend(key: string, row: MemberRow) {
 }
 
 export function updateMember(a: Actor, workspace: unknown, username: unknown, patch: { role?: unknown; suspended?: unknown }): WorkspaceMember {
-  requireSession(a);
-  const key = requireAdmin(a, workspace);
+  const key = requireAdminSession(a, workspace);
   const row = memberRow(key, username);
-  const role = patch.role === undefined ? row.role : checkOneOf(patch.role, ["admin", "member"] as const, "role");
+  const role = patch.role === undefined ? row.role : checkOneOf(patch.role, PERSON_ROLES, "role");
   if (row.kind === "agent" && patch.role !== undefined) throw new AppError("Agents have no role to change");
   if (patch.suspended !== undefined && typeof patch.suspended !== "boolean") throw new AppError("suspended must be true or false");
   const suspending = patch.suspended === true && !row.suspended_at;
@@ -660,7 +653,7 @@ export function updateMember(a: Actor, workspace: unknown, username: unknown, pa
     if (losesAdmin && activeAdmins(key) === 1) throw new AppError("Add another admin first", 409);
     if (role !== row.role) db.query("UPDATE workspace_members SET role = ? WHERE workspace = ? AND user_id = ?").run(role, key, row.id);
     if (suspending) suspend(key, row);
-    if (reinstating) db.query("UPDATE workspace_members SET suspended_at = NULL WHERE workspace = ? AND user_id = ?").run(key, row.id);
+    if (reinstating) setSuspended(key, row.id, null);
   }).immediate();
   changed("member", key, row.username);
   return toMember(memberRow(key, row.username));
@@ -670,21 +663,19 @@ export function updateMember(a: Actor, workspace: unknown, username: unknown, pa
 
 /** Adds an agent to a workspace: its own account (kind "agent") and a token, shown once. */
 export function createAgent(a: Actor, workspace: unknown, input: { name?: unknown; username?: unknown }) {
-  requireSession(a);
-  const key = requireAdmin(a, workspace);
+  const key = requireAdminSession(a, workspace);
   const { agent, token } = db.transaction(() => {
     const id = insertUser("agent", input);
-    db.query("INSERT INTO workspace_members (workspace, user_id, role, created_at) VALUES (?, ?, 'agent', ?)").run(key, id, now());
+    addMember(key, id, "agent");
     const { token } = insertApiKey(id, "agent token", "write");
-    return { agent: toRef(db.query<UserRow, [number]>("SELECT * FROM users WHERE id = ?").get(id)!), token };
+    return { agent: toRef(userById(id)), token };
   })();
   changed("member", key, agent.username);
   return { agent, token };
 }
 
 function agentRow(a: Actor, workspace: unknown, username: unknown): { key: string; row: MemberRow } {
-  requireSession(a);
-  const key = requireAdmin(a, workspace);
+  const key = requireAdminSession(a, workspace);
   const row = memberRow(key, username);
   if (row.kind !== "agent") throw new AppError(`${row.username} isn't an agent`, 404);
   return { key, row };
@@ -695,7 +686,7 @@ export function rotateAgentToken(a: Actor, workspace: unknown, username: unknown
   const { key, row } = agentRow(a, workspace, username);
   const token = db.transaction(() => {
     signOutEverywhere(row.id);
-    db.query("UPDATE workspace_members SET suspended_at = NULL WHERE workspace = ? AND user_id = ?").run(key, row.id);
+    setSuspended(key, row.id, null);
     return insertApiKey(row.id, "agent token", "write").token;
   })();
   changed("member", key, row.username);
@@ -706,7 +697,7 @@ export function rotateAgentToken(a: Actor, workspace: unknown, username: unknown
 export function removeAgent(a: Actor, workspace: unknown, username: unknown) {
   const { key, row } = agentRow(a, workspace, username);
   db.transaction(() => {
-    db.query("UPDATE workspace_members SET suspended_at = COALESCE(suspended_at, ?) WHERE workspace = ? AND user_id = ?").run(now(), key, row.id);
+    setSuspended(key, row.id, row.suspended_at ?? now());
     signOutEverywhere(row.id);
   })();
   changed("member", key, row.username);
