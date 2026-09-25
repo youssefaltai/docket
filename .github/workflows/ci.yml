@@ -22,3 +22,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - run: docker build -t docket .
+      # Run the image itself, so a file missing from it (like the recovery CLI) fails here.
+      - name: Smoke-test the image
+        run: |
+          docker run -d --name docket -p 7100:7100 -e DOCKET_SETUP_CODE=CHECK-SETUP docket
+          for i in $(seq 30); do curl -fs -o /dev/null localhost:7100/api/setup && break; sleep 1; done
+          curl -fsS -H 'Content-Type: application/json' localhost:7100/api/setup \
+            -d '{"code":"CHECK-SETUP","name":"CI","username":"ci","workspace":{"name":"CI"}}'
+          link=$(docker exec docket bun run sign-in-link ci | grep -o '/login#[A-Z0-9-]*')
+          curl -fsS -H 'Content-Type: application/json' localhost:7100/api/auth/redeem -d "{\"code\":\"${link#/login#}\"}"
+          if docker exec docket bun run sign-in-link nobody; then exit 1; fi
+      - if: failure()
+        run: docker logs docket
