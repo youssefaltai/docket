@@ -109,6 +109,7 @@ Serve it over HTTPS anywhere but localhost. Give each Docket its own hostname: b
 | `DOCKET_SETUP_CODE` | random, printed at startup while there are no users; set it to fix the code (tests, automation) |
 | `DOCKET_URL` | `http://localhost:$PORT`; the public address `sign-in-link` puts in links |
 | `DOCKET_HOSTS` | unset — extra hostnames (comma-separated) allowed in the `Host` header, besides `localhost`, e.g. `docket.example.com,vps.tailnet.ts.net`. Needed when serving over Tailscale or another hostname. |
+| `CHAT_URL` | unset — the docket-chat assistant's address, e.g. `http://127.0.0.1:7120`. Set, the web app shows the assistant and proxies `/api/chat/*` to it; unset, both are off. |
 
 In Docker, set these in a `.env` file next to `docker-compose.yml` (see `.env.example`). `PORT` there only changes the host-side port mapping; the container always listens on `7100` internally.
 

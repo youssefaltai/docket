@@ -1,0 +1,184 @@
+// The chat proxy (/api/chat/* → CHAT_URL) and the short-lived, per-session read keys it hands the chat service.
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { startServer, type TestServer } from "./server.ts";
+
+// A stand-in chat service: /echo says what it received; /stream sends one event, waits to be released, sends another.
+let release = () => {};
+const upstream = Bun.serve({
+  port: 0,
+  routes: {
+    "/chat/echo": async (req) =>
+      Response.json({
+        method: req.method,
+        path: new URL(req.url).pathname,
+        search: new URL(req.url).search,
+        headers: Object.fromEntries(req.headers),
+        body: await req.text(),
+      }),
+    "/chat": () => Response.json({ root: true }),
+    "/chat/stream": () => {
+      const held = new Promise<void>((resolve) => (release = resolve));
+      const body = new ReadableStream({
+        async start(c) {
+          c.enqueue(new TextEncoder().encode("data: first\n\n"));
+          await held;
+          c.enqueue(new TextEncoder().encode("data: second\n\n"));
+          c.close();
+        },
+      });
+      return new Response(body, { headers: { "Content-Type": "text/event-stream", "Content-Encoding": "identity", "Set-Cookie": "x=1" } });
+    },
+  },
+});
+afterAll(() => upstream.stop(true));
+
+/** The chat key the service would receive for this caller's session. */
+const chatToken = async (s: TestServer, username = "admin") =>
+  ((await s.as(username).api("POST", "/api/chat/echo", {})).body.headers.authorization as string).replace("Bearer ", "");
+
+describe("with CHAT_URL", () => {
+  let s: TestServer;
+  beforeAll(async () => {
+    s = await startServer({ env: { CHAT_URL: `${upstream.url.origin}/` } });
+    await s.api("POST", "/api/teams", { key: "CHT", workspace: s.workspace, name: "Chat" });
+  });
+  afterAll(() => s.stop());
+
+  test("/api/me says the assistant is there", async () => {
+    expect((await s.api("GET", "/api/me")).body.chat).toBeTrue();
+  });
+
+  test("passes method, path, query and body; the service sees a chat key, never the person's credentials", async () => {
+    const res = await s.api("POST", "/api/chat/echo?thread=7", { q: "what's new?" });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ method: "POST", path: "/chat/echo", search: "?thread=7", body: JSON.stringify({ q: "what's new?" }) });
+    expect((await s.api("POST", "/api/chat", { message: "hi" })).body).toEqual({ root: true });
+    const seen = res.body.headers as Record<string, string>;
+    expect(seen.cookie).toBeUndefined();
+    expect(seen["x-docket-user"]).toBeUndefined();
+    expect(seen.origin).toBeUndefined();
+    expect(seen.authorization).toMatch(/^Bearer dk_[0-9a-f]{64}$/);
+    expect(seen.authorization).not.toContain(s.admin.token!);
+    expect(JSON.stringify(seen)).not.toContain(s.admin.cookie!.split("=")[1]!);
+  });
+
+  test("the chat key reads as the person, can't write or manage access, and isn't in their key list", async () => {
+    const key = s.with({ token: await chatToken(s) });
+    expect((await key.api("GET", "/api/me")).body).toMatchObject({ user: { username: "admin" }, credential: "chat" });
+    expect((await s.api("GET", "/api/me")).body.credential).toBe("session");
+    expect((await s.as("admin", "bearer").api("GET", "/api/me")).body.credential).toBe("key");
+    expect((await key.api("GET", "/api/issues")).status).toBe(200);
+    expect(await key.tool("list_teams")).toContain("CHT");
+    expect((await key.api("POST", "/api/issues", { team: "CHT", title: "no" })).status).toBe(403);
+    await expect(key.tool("create_issue", { team: "CHT", title: "no" })).rejects.toThrow();
+    expect((await key.api("GET", "/api/api-keys")).status).toBe(403);
+    // The assistant can't chain itself: its own key can't open the proxy.
+    expect((await key.api("POST", "/api/chat/echo", {})).status).toBe(403);
+    const listed = (await s.api("GET", "/api/api-keys")).body as { name: string }[];
+    expect(listed.map((k) => k.name)).not.toContain("Chat (automatic)");
+  });
+
+  test("the same session reuses its key; another session gets its own", async () => {
+    const first = await chatToken(s);
+    expect(await chatToken(s)).toBe(first);
+    await s.user("ana");
+    expect(await chatToken(s, "ana")).not.toBe(first);
+  });
+
+  test("streams server-sent events as they come, without buffering", async () => {
+    // Raw fetch: reading the body chunk by chunk is the point.
+    const res = await fetch(new URL("/api/chat/stream", s.url), { headers: { Cookie: s.admin.cookie!, Accept: "text/event-stream" } });
+    expect(res.headers.get("content-type")).toBe("text/event-stream");
+    expect(res.headers.get("set-cookie")).toBeNull();
+    expect(res.headers.get("content-encoding")).toBeNull();
+    expect(res.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let text = "";
+    while (!text.includes("first")) text += decoder.decode((await reader.read()).value);
+    expect(text).not.toContain("second"); // the upstream is still holding it back
+    release();
+    for (let r = await reader.read(); !r.done; r = await reader.read()) text += decoder.decode(r.value);
+    expect(text).toBe("data: first\n\ndata: second\n\n");
+  });
+
+  test("only a signed-in browser gets through", async () => {
+    expect((await s.anon.api("POST", "/api/chat/echo", {})).status).toBe(401);
+    expect((await s.as("admin", "bearer").api("POST", "/api/chat/echo", {})).status).toBe(403);
+    await s.agent("helper");
+    expect((await s.as("helper").api("POST", "/api/chat/echo", {})).status).toBe(403);
+    // Cross-site writes are refused before anything reaches the service.
+    const cross = await fetch(new URL("/api/chat/echo", s.url), {
+      method: "POST",
+      headers: { Cookie: s.admin.cookie!, Origin: "https://evil.example", "Content-Type": "application/json" },
+      body: "{}",
+    });
+    expect(cross.status).toBe(403);
+  });
+
+  test("the key dies with its session: sign-out, revoke, suspension", async () => {
+    await s.user("lo");
+    const loggedOut = await chatToken(s, "lo");
+    await s.as("lo").api("POST", "/api/logout");
+    expect((await s.with({ token: loggedOut }).api("GET", "/api/me")).status).toBe(401);
+
+    await s.user("rv");
+    const oldSession = s.as("rv");
+    const revoked = await chatToken(s, "rv");
+    const fresh = await s.signIn("rv");
+    const old = (await oldSession.api("GET", "/api/sessions")).body.find((x: any) => x.current).id;
+    expect((await fresh.api("DELETE", `/api/sessions/${old}`)).status).toBeLessThan(300);
+    expect((await s.with({ token: revoked }).api("GET", "/api/me")).status).toBe(401);
+
+    await s.user("sus");
+    const suspended = await chatToken(s, "sus");
+    await s.api("PATCH", `/api/workspaces/${s.workspace}/members/sus`, { suspended: true });
+    expect((await s.with({ token: suspended }).api("GET", "/api/me")).status).toBe(401);
+  });
+
+  test("a chat request can't reach past the service's /chat path", async () => {
+    for (const path of ["/api/chat/%2e%2e/echo", "/api/chat/../echo", "/api/chat/..%2fecho"]) {
+      const res = await s.api("POST", path, {});
+      expect([path, String(res.body?.path ?? "/chat")]).toEqual([path, expect.stringMatching(/^\/chat/)]);
+    }
+  });
+
+  test("bodies over 16 KB are refused before reaching the service", async () => {
+    expect((await s.api("POST", "/api/chat/echo", { message: "x".repeat(17_000) })).status).toBe(413);
+  });
+});
+
+describe("rotation and expiry", () => {
+  let s: TestServer;
+  const TTL = 4000;
+  beforeAll(async () => {
+    s = await startServer({ env: { CHAT_URL: upstream.url.origin, DOCKET_CHAT_KEY_TTL_MS: String(TTL) } });
+  });
+  afterAll(() => s.stop());
+
+  test("a key is replaced once a third of its life is gone, and 401s everywhere once expired", async () => {
+    const first = await chatToken(s);
+    await Bun.sleep(TTL / 3 + 300);
+    const second = await chatToken(s);
+    expect(second).not.toBe(first);
+    // The old one still works until it expires, so an answer in flight isn't cut off.
+    expect((await s.with({ token: first }).api("GET", "/api/me")).status).toBe(200);
+    await Bun.sleep(TTL);
+    expect((await s.with({ token: first }).api("GET", "/api/me")).status).toBe(401);
+    await expect(s.with({ token: first }).tool("list_teams")).rejects.toThrow();
+  }, 20_000);
+});
+
+describe("without CHAT_URL", () => {
+  let s: TestServer;
+  beforeAll(async () => {
+    s = await startServer();
+  });
+  afterAll(() => s.stop());
+
+  test("the assistant is off: hidden in /api/me, and the proxy is a 404", async () => {
+    expect((await s.api("GET", "/api/me")).body.chat).toBeFalse();
+    expect((await s.api("POST", "/api/chat/echo", {})).status).toBe(404);
+    expect((await s.anon.api("POST", "/api/chat/echo", {})).status).toBe(401);
+  });
+});

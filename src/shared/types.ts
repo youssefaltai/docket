@@ -72,6 +72,8 @@ export interface WorkspaceMember {
 export interface Me {
   user: User & { id: number }; // id: stable across renames, for services that key data by person (docket-chat); ids stay internal everywhere else
   workspaces: { key: string; name: string; role: Role }[];
+  credential: "session" | "key" | "chat"; // what this request came with; "chat": a key the chat proxy minted
+  chat: boolean; // the assistant is set up (CHAT_URL): show its panel
 }
 
 export interface Session {

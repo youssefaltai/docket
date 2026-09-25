@@ -30,6 +30,7 @@ export interface Actor {
   scope: ApiKeyScope; // an API key's scope; sessions can write
   sessionId: number | null;
   keyId: number | null;
+  chat?: boolean; // a chat key: the chat proxy's, for one browser session
 }
 
 // --- Secrets ---
@@ -145,7 +146,8 @@ export function me(a: Actor): Me {
        WHERE m.user_id = ? AND m.suspended_at IS NULL ORDER BY w.name COLLATE NOCASE`,
     )
     .all(a.id);
-  return { user: { ...toUser(userById(a.id)), id: a.id }, workspaces };
+  const credential = a.sessionId !== null ? "session" : a.chat ? "chat" : "key";
+  return { user: { ...toUser(userById(a.id)), id: a.id }, workspaces, credential, chat: !!process.env.CHAT_URL };
 }
 
 export function updateMe(a: Actor, patch: { name?: unknown; username?: unknown; email?: unknown }): Me {
@@ -203,19 +205,19 @@ export function sessionActor(token: string): Actor | null {
   return actor;
 }
 
-/** The actor behind an API key (`dk_…`), or null if it's unknown or revoked. */
+/** The actor behind an API key (`dk_…`), or null if it's unknown, revoked or expired. */
 export function keyActor(token: string): Actor | null {
   const row = db
-    .query<UserRow & { key_id: number; scope: ApiKeyScope; last_used_at: string | null }, [string]>(
-      `SELECT u.*, k.id AS key_id, k.scope, k.last_used_at FROM api_keys k JOIN users u ON u.id = k.user_id
-       WHERE k.token_hash = ? AND k.revoked_at IS NULL`,
+    .query<UserRow & { key_id: number; scope: ApiKeyScope; last_used_at: string | null; session_id: number | null }, [string, string]>(
+      `SELECT u.*, k.id AS key_id, k.scope, k.last_used_at, k.session_id FROM api_keys k JOIN users u ON u.id = k.user_id
+       WHERE k.token_hash = ? AND k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at > ?)`,
     )
-    .get(hash(token));
+    .get(hash(token), now());
   if (!row) return null;
   if (!row.last_used_at || Date.now() - Date.parse(row.last_used_at) > TOUCH_MS) {
     db.query("UPDATE api_keys SET last_used_at = ? WHERE id = ?").run(now(), row.key_id);
   }
-  return actorFor(row, { scope: row.scope, keyId: row.key_id });
+  return { ...actorFor(row, { scope: row.scope, keyId: row.key_id }), chat: row.session_id !== null };
 }
 
 // --- Access checks (used by every data module) ---
@@ -385,7 +387,7 @@ export function listApiKeys(a: Actor): ApiKey[] {
   requireSession(a);
   return db
     .query<ApiKeyRow, [number]>(
-      "SELECT id, name, scope, created_at, last_used_at FROM api_keys WHERE user_id = ? AND revoked_at IS NULL ORDER BY id",
+      "SELECT id, name, scope, created_at, last_used_at FROM api_keys WHERE user_id = ? AND revoked_at IS NULL AND session_id IS NULL ORDER BY id",
     )
     .all(a.id)
     .map(toApiKey);
@@ -401,10 +403,47 @@ export function createApiKey(a: Actor, input: { name?: unknown; scope?: unknown 
 export function revokeApiKey(a: Actor, id: unknown) {
   requireSession(a);
   const row = db
-    .query("UPDATE api_keys SET revoked_at = ? WHERE id = ? AND user_id = ? AND revoked_at IS NULL RETURNING id")
+    .query("UPDATE api_keys SET revoked_at = ? WHERE id = ? AND user_id = ? AND revoked_at IS NULL AND session_id IS NULL RETURNING id")
     .get(now(), Number(id), a.id);
   if (!row) throw new AppError(`API key ${id} not found`, 404);
   revoked({ userId: a.id, keyId: Number(id) });
+}
+
+// --- Chat keys: what the chat proxy hands the chat service to read Docket as this person ---
+
+const CHAT_KEY_TTL_MS = Number(process.env.DOCKET_CHAT_KEY_TTL_MS) || 30 * 60 * 1000;
+// Tokens are stored only hashed, so the one in use lives here, by session; a restart just mints another.
+const chatKeys = new Map<number, { token: string; expiresAt: number }>();
+
+/** Deletes keys past their expiry (and forgets chat keys for sessions that are gone). */
+export function purgeExpiredKeys() {
+  db.query("DELETE FROM api_keys WHERE expires_at <= ?").run(now());
+  for (const [sessionId, held] of chatKeys) if (held.expiresAt <= Date.now()) chatKeys.delete(sessionId);
+}
+purgeExpiredKeys();
+
+/**
+ * A read key for the chat service, bound to this browser session: reused while it has most of its life left
+ * (so a long answer never outlives it), then replaced. It dies with the session: sign-out, revoke, suspension.
+ */
+export function chatKey(a: Actor): string {
+  if (a.sessionId === null) throw new AppError("The assistant works from the web app, not with an API key", 403);
+  const held = chatKeys.get(a.sessionId);
+  if (held && held.expiresAt - Date.now() > (CHAT_KEY_TTL_MS * 2) / 3) {
+    // Still ours? Session ids can be reused after a delete, and the key goes with its session.
+    const live = db
+      .query("SELECT 1 FROM api_keys WHERE token_hash = ? AND session_id = ? AND user_id = ? AND expires_at > ?")
+      .get(hash(held.token), a.sessionId, a.id, now());
+    if (live) return held.token;
+  }
+  purgeExpiredKeys();
+  const token = `dk_${randomBytes(32).toString("hex")}`;
+  const expiresAt = Date.now() + CHAT_KEY_TTL_MS;
+  db.query(
+    "INSERT INTO api_keys (user_id, name, scope, token_hash, created_at, expires_at, session_id) VALUES (?, 'Chat (automatic)', 'read', ?, ?, ?, ?)",
+  ).run(a.id, hash(token), now(), new Date(expiresAt).toISOString(), a.sessionId);
+  chatKeys.set(a.sessionId, { token, expiresAt });
+  return token;
 }
 
 /** Revokes every session, key and unused sign-in code of a user. */

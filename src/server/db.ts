@@ -180,6 +180,14 @@ const MIGRATIONS = [
     AND id NOT IN (SELECT MIN(id) FROM users WHERE email IS NOT NULL GROUP BY lower(email));
   CREATE UNIQUE INDEX users_email ON users(lower(email)) WHERE email IS NOT NULL;
   `,
+  // Short-lived keys: past expires_at a key is dead, then purged. A chat key belongs to one browser session
+  // and goes with it (sign-out, revoke, suspension), so the chat service never outlives the person's access.
+  `
+  ALTER TABLE api_keys ADD COLUMN expires_at TEXT;
+  ALTER TABLE api_keys ADD COLUMN session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE;
+  CREATE INDEX api_keys_expires ON api_keys(expires_at) WHERE expires_at IS NOT NULL;
+  CREATE INDEX api_keys_session ON api_keys(session_id) WHERE session_id IS NOT NULL;
+  `,
 ];
 
 const { user_version } = db.query("PRAGMA user_version").get() as { user_version: number };
