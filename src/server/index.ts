@@ -1,4 +1,5 @@
 import "./config.ts";
+import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import index from "../web/index.html";
 import { apiRoutes } from "./api.ts";
@@ -27,14 +28,18 @@ const server = Bun.serve({
       new Response(Bun.file(join(publicDir, "sw.js")), {
         headers: { "Content-Type": "text/javascript", "Cache-Control": "no-cache" },
       }),
-    "/icons/*": (req) => {
-      const path = new URL(req.url).pathname.slice("/icons/".length);
-      const filePath = join(iconsDir, path);
-      if (!filePath.startsWith(iconsDir)) return new Response("Not found", { status: 404 });
-      return new Response(Bun.file(filePath), {
-        headers: { "Cache-Control": "public, max-age=31536000, immutable" },
-      });
-    },
+    // One static route per file found at startup, so anything else under /icons is a plain 404.
+    ...Object.fromEntries(
+      readdirSync(iconsDir, { withFileTypes: true })
+        .filter((entry) => entry.isFile())
+        .map(({ name }) => [
+          `/icons/${name}`,
+          () =>
+            new Response(Bun.file(join(iconsDir, name)), {
+              headers: { "Cache-Control": "public, max-age=31536000, immutable" },
+            }),
+        ]),
+    ),
     "/api/login": { POST: login },
     ...(Object.fromEntries(Object.entries(apiRoutes).map(([path, route]) => [path, guard(route)])) as typeof apiRoutes),
     "/mcp": guard(handleMcp),
