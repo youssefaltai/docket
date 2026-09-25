@@ -325,7 +325,7 @@ function AccountMenu() {
     value === "signout" ? auth.logout().then(() => location.replace("/login"), errorToast) : navigate(value);
   return (
     <Picker label="Account" options={options} selected={[]} onPick={pick} className="whoami">
-      <Avatar name={user.name} />
+      <Avatar user={user} />
       <span className="nav-label" dir="auto">
         {user.name}
       </span>

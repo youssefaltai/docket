@@ -1,5 +1,5 @@
 // Settings: your account (profile, devices, API keys) and, for admins, the workspace (members, invites, agents).
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import type { ApiKeyScope, CodeLink, Session, WorkspaceMember } from "../shared/types";
 import { auth, getMe, loadMe, mcpCommand } from "./auth";
 import { Picker } from "./pickers";
@@ -8,6 +8,9 @@ import { Avatar, CopyIcon, EmptyState, Link, MenuButton, MoreIcon, PlusIcon, Sec
 type Tab = "account" | "workspace";
 
 export function SettingsPage({ section, workspace }: { section: Tab; workspace: string | null }) {
+  useEffect(() => {
+    document.title = "Settings · Docket";
+  }, []);
   const tab = (t: Tab, label: string) => (
     <Link to={`/settings/${t}`} className={cls("tab", section === t && "on")} aria-current={section === t ? "page" : undefined}>
       {label}
@@ -412,7 +415,7 @@ function Members({ workspace, members, reload, readOnly }: { workspace: string; 
           <Row
             key={m.user.username}
             dim={!!m.suspendedAt}
-            icon={<Avatar name={m.user.name} />}
+            icon={<Avatar user={m.user} />}
             title={
               <>
                 <span dir="auto">{m.user.name}</span> <span className="muted">@{m.user.username}</span>
@@ -516,7 +519,7 @@ function Agents({ workspace, agents, reload }: { workspace: string; agents: Work
             <Row
               key={m.user.username}
               dim={!!m.suspendedAt}
-              icon={<Avatar name={m.user.name} />}
+              icon={<Avatar user={m.user} />}
               title={
                 <>
                   <span dir="auto">{m.user.name}</span> <span className="muted">@{m.user.username}</span>
