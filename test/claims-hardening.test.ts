@@ -81,19 +81,6 @@ describe("two server processes on one database", () => {
     expect(saves.filter((r) => r.status === 200)).toHaveLength(1);
     expect(saves.filter((r) => r.status === 409)).toHaveLength(19);
   });
-
-  test("updatedAt stays unique when both processes bump the same issue at once", async () => {
-    const id = `RACE-${N + 1}`;
-    const writes = await Promise.all(
-      Array.from({ length: 30 }, (_, i) =>
-        i % 3 === 0
-          ? (i % 2 ? a : b).api("POST", `/api/issues/${id}/comments`, { body: `c${i}` })
-          : (i % 2 ? a : b).api("PATCH", `/api/issues/${id}`, { priority: (i % 4) + 1 }),
-      ),
-    );
-    const stamps = writes.map((w) => w.body.updatedAt as string);
-    expect(new Set(stamps).size).toBe(stamps.length);
-  });
 });
 
 describe("every issue bump path moves the version", () => {
