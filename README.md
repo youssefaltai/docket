@@ -70,6 +70,19 @@ Back up with `./backup.sh`. Run it from a nightly cron: it writes a consistent s
 </details>
 
 <details>
+<summary><b>Upgrade</b></summary>
+
+```sh
+./backup.sh
+git pull
+docker compose up -d --build
+```
+
+Schema changes apply by themselves on startup and never drop data. Keep the backup until you know the new version works: it is your way back.
+
+</details>
+
+<details>
 <summary><b>Access token</b></summary>
 
 Docket has one shared access token, off by default.
@@ -117,7 +130,8 @@ Contributions are welcome, from typo fixes to new features. Docket is small on p
 
 ```sh
 bun install
-bun run dev   # http://localhost:7100, hot reload
+bun run dev   # http://localhost:7100, hot reload, data in ./dev.db
+bun test
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for how the code is laid out and what makes a PR easy to merge. Not sure where to start? [Open an issue](https://github.com/youssefaltai/docket/issues/new) and say hi.
