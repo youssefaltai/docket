@@ -18,17 +18,21 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { Marked } from "marked";
-import { HttpError, api, isMine } from "./api";
+import { HttpError, api } from "./api";
+import { getMe } from "./auth";
 import {
   OPEN_STATUSES,
   STATUSES,
   type Comment,
   type IssueInput,
+  type IssuePatch,
   type IssueSummary,
   type Priority,
-  type Project,
+  type Team,
   type Status,
+  type UserRef,
   type Workspace,
+  type WorkspaceMember,
 } from "../shared/types";
 
 export const cls = (...xs: (string | false | null | undefined)[]) => xs.filter(Boolean).join(" ");
@@ -37,8 +41,8 @@ export const MOD = /Mac|iPhone|iPad/.test(navigator.userAgent) ? "⌘" : "Ctrl";
 // ---------- Routing ----------
 
 export type Route =
-  | { view: "issues"; project: string | null }
-  | { view: "docs"; project: string | null }
+  | { view: "issues"; team: string | null }
+  | { view: "docs"; team: string | null }
   | { view: "issue"; id: string }
   | { view: "doc"; slug: string };
 
@@ -47,9 +51,9 @@ export function parseRoute(path: string): Route {
   if (issue) return { view: "issue", id: decodeURIComponent(issue[1]!).toUpperCase() };
   const doc = /^\/doc\/([^/]+)/.exec(path);
   if (doc) return { view: "doc", slug: decodeURIComponent(doc[1]!) };
-  const project = /^\/p\/([^/]+)(\/docs)?/.exec(path);
-  const key = project ? decodeURIComponent(project[1]!).toUpperCase() : null;
-  return { view: project?.[2] || /^\/docs\/?$/.test(path) ? "docs" : "issues", project: key };
+  const team = /^\/t\/([^/]+)(\/docs)?/.exec(path);
+  const key = team ? decodeURIComponent(team[1]!).toUpperCase() : null;
+  return { view: team?.[2] || /^\/docs\/?$/.test(path) ? "docs" : "issues", team: key };
 }
 
 const routeListeners = new Set<() => void>();
@@ -99,29 +103,24 @@ export interface AppState {
   workspaces: Workspace[] | null;
   /** The current workspace: remembered, following deep links, else the first. */
   workspace: Workspace | null;
-  /** Every project, in any workspace (identifier chips, issue and doc pages). */
-  projects: Project[] | null;
-  /** Projects in the current workspace (sidebar, pickers, new issue/doc defaults). */
-  workspaceProjects: Project[] | null;
+  /** Every team, in any workspace (identifier chips, issue and doc pages). */
+  teams: Team[] | null;
+  /** Teams in the current workspace (sidebar, pickers, new issue/doc defaults). */
+  workspaceTeams: Team[] | null;
   labels: string[];
-  people: string[];
-  /** Active members' names; empty until the first member exists. */
-  members: string[];
-  /** The signed-in member's name, else this browser's display name (sent as `author` on writes). */
-  name: string;
-  /** Reopens the name screen so the user can change it; absent for members, whose name admins manage. */
-  changeName?: () => void;
-  /** Refresh labels + known assignees (called when a picker opens). */
+  /** The current workspace's members (assignee and delegate pickers). */
+  members: WorkspaceMember[];
+  /** Refresh labels and members (called when a picker opens). */
   loadDirectory: () => void;
-  /** Refetch projects and workspaces now, without waiting for the live update. */
-  reloadProjects: () => void;
+  /** Refetch teams and workspaces now, without waiting for the live update. */
+  reloadTeams: () => void;
   newIssue: (defaults?: Partial<IssueInput>) => void;
-  newDoc: (project?: string) => void;
-  newProject: () => void;
+  newDoc: (team?: string) => void;
+  newTeam: () => void;
   newWorkspace: () => void;
-  projectSettings: (key: string) => void;
-  /** The doc page reports its project so the sidebar and "new" defaults follow it. */
-  setDocProject: (key: string | null) => void;
+  teamSettings: (key: string) => void;
+  /** The doc page reports its team so the sidebar and "new" defaults follow it. */
+  setDocTeam: (key: string | null) => void;
   openNav: () => void;
 }
 
@@ -203,7 +202,17 @@ export function useAutosize(ref: RefObject<HTMLTextAreaElement | null>, value: s
 export const isEditable = (t: EventTarget | null) =>
   t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
 
-export const openCount = (p: Project) => OPEN_STATUSES.reduce((n, s) => n + p.counts[s], 0);
+export const openCount = (p: Team) => OPEN_STATUSES.reduce((n, s) => n + p.counts[s], 0);
+
+/** An issue edit as the UI shows it (users as refs), so it can be applied optimistically. */
+export type IssueChange = Omit<IssuePatch, "assignee" | "delegate"> & { assignee?: UserRef | null; delegate?: UserRef | null };
+
+/** The same edit as the API takes it (users by username). */
+export function toPatch({ assignee, delegate, ...patch }: IssueChange): IssuePatch {
+  if (assignee !== undefined) (patch as IssuePatch).assignee = assignee?.username ?? null;
+  if (delegate !== undefined) (patch as IssuePatch).delegate = delegate?.username ?? null;
+  return patch;
+}
 
 const statusRank = (s: Status) => STATUSES.indexOf(s);
 const priorityRank = (p: Priority) => (p === 0 ? 5 : p);
@@ -417,8 +426,11 @@ export function PriorityIcon({ priority }: { priority: Priority }) {
 
 // ---------- Small components ----------
 
-export function Avatar({ name }: { name: string | null }) {
-  if (!name)
+/** Whether the signed-in user is `user`, e.g. a comment's author (the server checks too). */
+export const isMe = (user: UserRef | null) => user?.username === getMe().user.username;
+
+export function Avatar({ user }: { user: UserRef | null }) {
+  if (!user)
     return (
       <span className="avatar avatar-none" aria-hidden="true">
         <svg width="18" height="18" viewBox="0 0 18 18">
@@ -427,8 +439,8 @@ export function Avatar({ name }: { name: string | null }) {
       </span>
     );
   return (
-    <span className="avatar" style={hueStyle(name)} aria-hidden="true">
-      {[...name.trim()][0]?.toUpperCase()}
+    <span className={cls("avatar", user.kind === "agent" && "avatar-agent")} style={hueStyle(user.username)} aria-hidden="true">
+      {[...user.name.trim()][0]?.toUpperCase()}
     </span>
   );
 }
@@ -444,30 +456,30 @@ export function LabelChip({ name }: { name: string }) {
   );
 }
 
-export function ProjectMark({ id }: { id: string }) {
+export function TeamMark({ id }: { id: string }) {
   return (
-    <span className="project-mark" style={hueStyle(id)} aria-hidden="true">
+    <span className="team-mark" style={hueStyle(id)} aria-hidden="true">
       {id[0]}
     </span>
   );
 }
 
-/** Project header: mark, inline-editable name and a settings button. */
-export function ProjectTitle({ project }: { project: Project }) {
-  const { reloadProjects, projectSettings } = useApp();
+/** Team header: mark, inline-editable name and a settings button. */
+export function TeamTitle({ team }: { team: Team }) {
+  const { reloadTeams, teamSettings } = useApp();
   return (
     <>
-      <ProjectMark id={project.key} />
+      <TeamMark id={team.key} />
       <InlineInput
-        label="Project name"
-        value={project.name}
-        onSave={(name) => api.updateProject(project.key, { name }).then(reloadProjects, errorToast)}
+        label="Team name"
+        value={team.name}
+        onSave={(name) => api.updateTeam(team.key, { name }).then(reloadTeams, errorToast)}
       />
       <button
         className="icon-btn sm"
-        onClick={() => projectSettings(project.key)}
-        aria-label="Project settings"
-        title="Project settings"
+        onClick={() => teamSettings(team.key)}
+        aria-label="Team settings"
+        title="Team settings"
       >
         <SettingsIcon />
       </button>
@@ -475,16 +487,16 @@ export function ProjectTitle({ project }: { project: Project }) {
   );
 }
 
-export function ProjectTabs({ project, view }: { project: string; view: "issues" | "docs" }) {
+export function TeamTabs({ team, view }: { team: string; view: "issues" | "docs" }) {
   const tab = (v: typeof view, to: string, label: string) => (
     <Link to={to} className={cls("tab", view === v && "on")} aria-current={view === v ? "page" : undefined}>
       {label}
     </Link>
   );
   return (
-    <nav className="tabs" aria-label="Project views">
-      {tab("issues", `/p/${project}`, "Issues")}
-      {tab("docs", `/p/${project}/docs`, "Docs")}
+    <nav className="tabs" aria-label="Team views">
+      {tab("issues", `/t/${team}`, "Issues")}
+      {tab("docs", `/t/${team}/docs`, "Docs")}
     </nav>
   );
 }
@@ -596,9 +608,9 @@ export function TitleEditor({
   );
 }
 
-/** Header of the issues and docs lists: title, project tabs, search, then `children` (filters, buttons). */
+/** Header of the issues and docs lists: title, team tabs, search, then `children` (filters, buttons). */
 export function ListHeader({
-  project,
+  team,
   title,
   count,
   view,
@@ -608,7 +620,7 @@ export function ListHeader({
   placeholder = "Search",
   children,
 }: {
-  project: Project | undefined;
+  team: Team | undefined;
   title: string;
   count: number;
   view: "issues" | "docs";
@@ -622,10 +634,10 @@ export function ListHeader({
     <header className="header">
       <MenuButton />
       <div className="header-title">
-        {project ? <ProjectTitle project={project} /> : <span>{title}</span>}
+        {team ? <TeamTitle team={team} /> : <span>{title}</span>}
         {count > 0 && <span className="header-count">{count}</span>}
       </div>
-      {project && <ProjectTabs project={project.key} view={view} />}
+      {team && <TeamTabs team={team.key} view={view} />}
       <button className="icon-btn mobile-only" onClick={onNew} aria-label={view === "docs" ? "New doc" : "New issue"}>
         <PlusIcon />
       </button>
@@ -659,10 +671,10 @@ export function ListHeader({
   );
 }
 
-export function ProjectNotFound({ projectKey, back, backLabel }: { projectKey: string; back: string; backLabel: string }) {
+export function TeamNotFound({ teamKey, back, backLabel }: { teamKey: string; back: string; backLabel: string }) {
   return (
-    <EmptyState title="Project not found" action={<Link className="btn" to={back}>{backLabel}</Link>}>
-      There’s no project with the key {projectKey}.
+    <EmptyState title="Team not found" action={<Link className="btn" to={back}>{backLabel}</Link>}>
+      There’s no team with the key {teamKey}.
     </EmptyState>
   );
 }
@@ -730,7 +742,7 @@ function safeUrl(href: string): string | null {
 /** App paths and in-page anchors stay in the tab (and route client-side); everything else opens a new one. */
 const isInternal = (url: string) => /^(\/(?!\/)|#)/.test(url);
 
-// Set right before each parse: which identifiers resolve to real issues of known projects.
+// Set right before each parse: which identifiers resolve to real issues of known teams.
 let chipKeys = new Set<string>();
 let chipIndex: Map<string, IssueSummary> | null = null;
 const chipFor = (id: string) => (chipKeys.has(id.slice(0, id.indexOf("-"))) ? chipIndex?.get(id) : undefined);
@@ -801,13 +813,13 @@ const marked = new Marked({
 });
 
 export function Markdown({ text, className }: { text: string; className?: string }) {
-  const { projects } = useApp();
+  const { teams } = useApp();
   const index = useIssueIndex();
   const html = useMemo(() => {
-    chipKeys = new Set(projects?.map((p) => p.key));
+    chipKeys = new Set(teams?.map((p) => p.key));
     chipIndex = index;
     return (marked.parse(text) as string).replace(/<(p|h[1-6]|ul|ol|blockquote|table|td|th)(?=[\s>])/g, '<$1 dir="auto"');
-  }, [text, projects, index]);
+  }, [text, teams, index]);
   return (
     <div
       className={cls("md", className)}
@@ -934,9 +946,9 @@ function CommentItem({ comment: c, actions }: { comment: Comment; actions: Comme
   return (
     <li className="comment">
       <div className="comment-head">
-        <Avatar name={c.author} />
-        <span className="comment-author" dir="auto">
-          {c.author}
+        <Avatar user={c.author} />
+        <span className="comment-author" dir="auto" title={`@${c.author.username}`}>
+          {c.author.name}
         </span>
         <time title={fullDate(c.createdAt)}>{ago(c.createdAt)}</time>
         {c.editedAt && (
@@ -944,7 +956,7 @@ function CommentItem({ comment: c, actions }: { comment: Comment; actions: Comme
             edited
           </span>
         )}
-        {isMine(c.author) && !editing && (
+        {isMe(c.author) && !editing && (
           <span className="comment-actions">
             <button className="icon-btn xs" onClick={() => setEditing(true)} aria-label="Edit comment" title="Edit">
               <PencilIcon />

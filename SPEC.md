@@ -1,217 +1,207 @@
 # Docket
 
-A nano issue tracker: workspaces, projects, issues, comments. Web UI for humans, MCP for agents. Bun + SQLite + TypeScript. Self-hosted anywhere. Optional access token (`DOCKET_TOKEN`), plus optional per-member tokens for people and agents; unset means open, for private networks.
+An issue tracker for people and agents, modeled on Linear: workspaces, teams, issues, docs, comments. Web UI for people, MCP for agents. Bun + SQLite + TypeScript, self-hosted anywhere. Everyone signs in; agents are apps with their own tokens.
 
-Rules: minimal, simple, clean, smooth. Few dependencies (react, react-dom, marked, zod, @modelcontextprotocol/sdk). No frameworks beyond that.
+Rules: Docket copies Linear's features; "nano" is about the implementation. Minimal, simple, clean code, few files. Few dependencies (react, react-dom, marked, zod, @modelcontextprotocol/sdk). No frameworks beyond that.
 
 ## Layout
 
 ```
 src/shared/types.ts   the contract (do not change without updating both sides)
-src/server/index.ts   Bun.serve: routes, /api, /mcp, /ws, serves the web app
+src/server/index.ts   Bun.serve: routes, /api, /mcp, /ws, serves the web app, prints the setup code
 src/server/config.ts  loads an optional XDG config file into process.env (imported first)
 src/server/paths.ts   XDG Base Directory resolution
-src/server/db.ts      bun:sqlite schema, migrations, queries
+src/server/db.ts      bun:sqlite connection, schema, change events, shared validation
+src/server/access.ts  accounts, sessions, API keys, one-time codes, workspaces and members; the Actor
+src/server/tracker.ts teams, issues, comments, labels, documents (every call acts for an Actor)
+src/server/auth.ts    credentials → Actor, guards, rate limit, public setup/sign-in routes
 src/server/api.ts     REST handlers
 src/server/mcp.ts     MCP server + tools
+scripts/              seed (dev data), sign-in-link (recovery)
 src/web/index.html    HTML entry (Bun HTML import, bundled by Bun)
 src/web/*.tsx, *.css  React UI
 ```
 
-Env vars and the optional XDG config file: see README's Configuration section. Dev: `bun run dev` (uses `./dev.db` unless `DATABASE_PATH` is set). Tests: `bun test`, black-box over HTTP against a temp database. Prod: `bun run start` (sets `NODE_ENV=production`, so Bun serves bundled assets and never shows its dev error page).
+Env vars and the optional XDG config file: see README's Configuration section. Dev: `bun run dev` (uses `./dev.db` unless `DATABASE_PATH` is set, and setup code `DEVEL-SETUP` unless `DOCKET_SETUP_CODE` is set). Tests: `bun test`, black-box over HTTP against a temp database. Prod: `bun run start` (sets `NODE_ENV=production`, so Bun serves bundled assets and never shows its dev error page).
+
+## Access
+
+Linear's model: sign-in is always required, accounts are global, each workspace has its own members and roles, agents are app users with their own token, removing someone is suspending them. Enterprise-only Linear features (SAML/SCIM, audit log, an Owner role) are out of scope.
+
+**Accounts** (`users`): people (`kind: "person"`) and agents (`kind: "agent"`). The username is the identity; a person's email is optional contact info, never verified (there's no mail) and never used to find an account, so claiming someone's email gains nothing. Everyone has a unique `username` (lowercase `a-z 0-9 . _ -`, 2–32 characters, starting with a letter or digit; `me` is reserved) and a display `name`. The API names people and agents by username; responses carry `UserRef = { username, name, kind }`. No passwords.
+
+**Workspaces** (`workspace_members`): each membership has a role, `admin`, `member` or `agent` (agents work in teams but manage nothing), and may be suspended. You see only workspaces where you're an active member; anything in another workspace answers 404, as if it didn't exist. Any person can create a workspace and becomes its admin. Admins rename the workspace, create invite links, change roles, suspend and reinstate members, send a member a sign-in link, and add, re-token and remove agents. The last active admin can't be suspended or demoted (409 "Add another admin first").
+
+**Suspend** (`PATCH …/members/:username { suspended: true }`) ends the membership's access at once. If it was the user's last active membership, all their sessions are deleted and API keys revoked. They stay listed, greyed, so history keeps their name. Reinstating (`suspended: false`) restores access (they may need a new sign-in link). Removing an agent is suspending it and revoking its token; a new token reinstates it.
+
+**Credentials.** Secrets are random and stored only as SHA-256 hashes.
+- **Session**: the web UI's cookie `docket_session` (32 random bytes as hex; HttpOnly, SameSite=Lax, Secure over HTTPS, 30 days, re-sent while in use). Idle for 30 days (by `last_seen_at`, touched at most once a minute) and it's gone. Account settings list sessions (device, IP, last seen), revoke one, or sign out everywhere else.
+- **API key**: `Authorization: Bearer dk_<64 hex>`, for scripts, MCP clients and agents; it acts as its owner. People make their own (named, scope `read` or `write`) and revoke them. A read key gets 403 on anything but GET (REST) and on tools that change something (MCP). An agent's token is an API key it owns.
+- **Managing access needs a session**: making API keys, sign-in links and invites, revoking sessions, changing your profile, changing members and adding or re-tokening agents answer 403 to an API key, so a leaked key can't mint credentials that outlive it. Revoking a key with a key is fine.
+- **One-time codes**: 10 symbols of `A–Z 2–9` without `I O 0 1` (50 bits), shown as `XXXXX-XXXXX`, single-use, 15 minutes. A link is `<origin>/login#<code>`: the fragment never reaches the server or its logs, and the page removes it from the address bar at once.
+  - **Invites** (a workspace and role) are handed over by the admin, not tied to anyone: redeemed while signed in, one adds you to the workspace; signed out, it creates a new account (name, username, optional email).
+  - **Sign-in links** open one person's account: from yourself (to sign in on another device), from an admin who administers every workspace that person is in (else 403), or from the server's shell (`bun run sign-in-link <username>`, for when nobody can sign in). Suspension from your last workspace deletes your unused codes.
+- **Setup code**: while there are no users, the server prints one at startup (`DOCKET_SETUP_CODE` fixes it, e.g. for tests and dev). `POST /api/setup` with it creates the first person, signed in, as admin of a new workspace. A wrong code is 403; once any user exists, 409.
+
+**Rules for every request** (`auth.ts`): `/api/*` accepts a session cookie or an API key; `/mcp` only an API key; `/ws` either. Cookies ride along on same-site requests (a sibling subdomain, another localhost port), so a cookie-authed WebSocket or non-GET request needs our own `Origin` (403 otherwise), and an invite only joins the signed-in user when it does. No or bad credentials: 401 (a 401 caused by a stale cookie also clears it). Signed in but not allowed (not an admin, read-only key, someone else's comment): 403. Outside your workspaces: 404. Request bodies must be `Content-Type: application/json`, compared exactly on the media type before any `;` (so `text/plain;charset=application/json` is refused), else 415: browsers can't send that cross-origin without a CORS preflight, which Docket never allows, so this is the CSRF defence. Host check (DNS rebinding): `/api/*`, `/mcp` and `/ws` answer 403 unless the `Host` header's hostname (port ignored, case-insensitive) is `localhost`, `127.0.0.1`, `[::1]` or listed in `DOCKET_HOSTS`. Setup and code attempts are rate-limited per client IP: after 10 failures (401/403) in a minute, 429 until the minute ends (behind a proxy, all clients share the proxy's IP). The app shell, manifest, service worker and icons stay public; they hold no data.
+
+**Authors** are never sent by clients: every write is attributed to the signed-in user or agent. Only a comment's author can edit or delete it (403 otherwise, with no admin override).
+
+**Public routes** (Host and JSON checks, rate-limited, no credentials):
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | /api/setup | | `{ needed }` |
+| POST | /api/setup | `SetupInput` `{ code, name, username, email?, workspace: { name, key? } }` | 201 `{ user, workspace }` + session cookie |
+| POST | /api/auth/peek | `{ code }` | `CodeInfo` `{ kind, workspace, username, needsProfile }` (doesn't use the code) |
+| POST | /api/auth/redeem | `{ code, name?, username?, email? }` | `{ user }` + session cookie; an invite adds the membership (signed out, it needs name and username for the new account) |
+| POST | /api/logout | `{}` | ends this cookie's session and clears it |
+
+**Account and workspace routes** (signed in):
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET / PATCH | /api/me | `{ name?, username?, email? }` | `Me` `{ user, workspaces: [{ key, name, role }] }` |
+| GET | /api/sessions | | `Session[]` (`current` marks this one) |
+| DELETE | /api/sessions, /api/sessions/:id | | all but this one, or one |
+| POST | /api/sign-in-links | | 201 `CodeLink` `{ code, url, expiresAt }` for yourself |
+| GET / POST | /api/api-keys | `{ name, scope? }` | `ApiKey[]`; 201 `{ apiKey, token }` (token shown once) |
+| DELETE | /api/api-keys/:id | | revokes |
+| GET / POST | /api/workspaces | `WorkspaceInput` | yours, with your `role`; 201, you're its admin |
+| PATCH | /api/workspaces/:key | `{ name }` | (admin) |
+| GET | /api/workspaces/:key/members | | `WorkspaceMember[]` (people, then agents) |
+| PATCH | /api/workspaces/:key/members/:username | `{ role?, suspended? }` | (admin) |
+| POST | /api/workspaces/:key/members/:username/sign-in-links | | (admin of all their workspaces; people) 201 `CodeLink` |
+| POST | /api/workspaces/:key/invites | `{ role? }` | (admin) 201 `CodeLink` |
+| POST | /api/workspaces/:key/agents | `{ name, username }` | (admin) 201 `{ agent, token }` |
+| POST | /api/workspaces/:key/agents/:username/token | | (admin) `{ token }`: the old one dies; reinstates a removed agent |
+| DELETE | /api/workspaces/:key/agents/:username | | (admin) removes it |
 
 ## Data
 
-- **workspaces**: key (PK, URL-safe lowercase slug, e.g. `acme`), name, created_at, updated_at.
-- **projects**: key (PK, 2–5 uppercase letters, unique across all workspaces), workspace (→ workspaces.key; required by the app), name, description, next_number (the next issue number), created_at, updated_at.
-- **issues**: id (PK), project_key, number (per-project sequence from `projects.next_number`; never reused after a delete), title, description, status, priority, labels (JSON array), assignee, parent_id, created_at, updated_at, completed_at. Unique (project_key, number).
-- **issue_blocks**: blocker_id, blocked_id. No cycles: setting `blockedBy` fails (400) if the issue itself or any issue it already blocks, directly or through a chain, is among the blockers.
-- **comments**: id, issue_id, author, body, created_at, edited_at (set on each edit, else null).
+One migration creates the schema (`db.ts`; the runner stays for future changes). WAL mode on.
 
-Identifier = `${project_key}-${number}`, parsed case-insensitively. Issues can't move between projects. Any change to an issue or its comments bumps `updated_at`, strictly forward (at least 1 ms past its previous value, even within one millisecond), since it doubles as the version token for `baseUpdatedAt`; `db.ts` keeps that rule in one place per layer (`bumpedAt` in JS, `BUMPED_AT` in SQL), shared with documents. Creating an issue with a parent or blockers bumps and publishes them. Deleting an issue also bumps `updated_at` on, and publishes `issue` events for, its sub-issues (parent cleared), its parent, and the issues it blocked or was blocked by; docs that mentioned it get a `document` event. Changing an issue's parent or blockers likewise bumps and publishes the old and new parent and each blocker added or removed. `completed_at` is set when status enters done/canceled, cleared when it leaves. List order: status order, then priority (1→4, then 0 last), then `updated_at` desc. WAL mode on.
+- **users**, **workspaces**, **workspace_members**, **sessions**, **api_keys**, **codes**: see Access.
+- **teams**: key (PK, 2–5 uppercase letters, unique across all workspaces), workspace, name, description, next_number, created_at, updated_at.
+- **issues**: id, team_key, number (per-team sequence from `teams.next_number`; never reused after a delete), title, description, status, priority, labels (JSON array), assignee_id (a person), delegate_id (an agent), creator_id, parent_id, created_at, updated_at, completed_at. Unique (team_key, number).
+- **issue_blocks**: blocker_id, blocked_id. No cycles: setting `blockedBy` fails (400) if the issue itself or any issue it already blocks, directly or through a chain, is among the blockers.
+- **comments** / **document_comments**: id, issue_id / document_id, author_id, body, created_at, edited_at.
+- **documents**, **document_versions**, **document_refs**: see Documents.
+
+Identifier = `${team_key}-${number}`, parsed case-insensitively. Issues can't move between teams. Parents, blockers and doc refs never cross workspaces. Any change to an issue or its comments bumps `updated_at`, strictly forward (at least 1 ms past its previous value, even within one millisecond), since it doubles as the version token for `baseUpdatedAt`; `db.ts` keeps that rule in one place per layer (`bumpedAt` in JS, `BUMPED_AT` in SQL), shared with documents. Creating an issue with a parent or blockers bumps and publishes them. Deleting an issue also bumps and publishes its sub-issues (parent cleared), its parent, and the issues it blocked or was blocked by; docs that mentioned it get a `document` event. Changing an issue's parent or blockers likewise bumps and publishes the old and new parent and each blocker added or removed. `completed_at` is set when status enters done/canceled, cleared when it leaves. List order: status order, then priority (1→4, then 0 last), then `updated_at` desc.
+
+**Assignee and delegate** (Linear's model): the assignee is a person who owns the issue; the delegate is an agent working on it for them. Each must be an active member of the issue's workspace of the right kind (400 otherwise, e.g. "claude-a is an agent; set it as the delegate"). `me` means the caller, in values and filters.
+
+**Claim** (`POST /api/issues/:id/claim`, MCP `claim_issue`): a person takes the assignee slot, an agent the delegate slot, and the issue moves to `in_progress`. One IMMEDIATE transaction reads and writes, so of two claims racing for a free issue exactly one wins. A done or canceled issue is 409 `"<ID> is done"`; one whose slot another active member holds is 409 `"<ID> is claimed by <username>"` (a suspended holder doesn't count). Claiming your own again changes nothing. To hand it back, clear the slot and set status todo.
+
+**Issue versions**: `IssuePatch.baseUpdatedAt`: if present and different from the current `updatedAt`, the PATCH (or `update_issue`) answers 409 `{ "error": "Issue changed since you read it" }` and changes nothing; the check and the write share one IMMEDIATE transaction. Comments bump `updatedAt` too, so send it where lost updates happen (description, and the whole-list `labels` and `blockedBy`), not for single-field changes like status or priority.
 
 ## REST (JSON; errors are `{ "error": string }` with 4xx)
 
-Request bodies (including `POST /api/login`) must be `Content-Type: application/json`, compared exactly on the media type before any `;` (so `text/plain;charset=application/json` is refused), else 415. Browsers can't send that cross-origin without a CORS preflight, which Docket never allows: this is the CSRF defence.
+Plus the Access routes above. Lists only ever include your workspaces.
 
 | Method | Path | Body / query | Returns |
 |---|---|---|---|
-| GET | /api/workspaces | | `Workspace[]` (by name) |
-| POST | /api/workspaces | `WorkspaceInput` | `Workspace` |
-| PATCH | /api/workspaces/:key | `{ name }` | `Workspace` |
-| GET | /api/projects | `?workspace` | `Project[]` |
-| POST | /api/projects | `ProjectInput` (workspace required) | `Project` |
-| PATCH | /api/projects/:key | `{ name?, description?, workspace? }` (workspace moves it) | `Project` |
-| GET | /api/issues | `?workspace&project&status=a,b&label&assignee&parent&q` (`assignee=me`: the caller) | `IssueSummary[]` |
-| POST | /api/issues | `IssueInput` | `Issue` |
-| GET | /api/issues/:id | | `Issue` |
-| PATCH | /api/issues/:id | `IssuePatch` (with optional `baseUpdatedAt`) | `Issue` |
-| POST | /api/issues/:id/claim | `{ assignee? }` (root only; a member claims for themselves) | `Issue` |
-| DELETE | /api/issues/:id | | `{ ok: true }` |
-| POST | /api/issues/:id/comments | `{ body, author? }` (author default "anonymous") | `Issue` |
-| PATCH | /api/issues/:id/comments/:cid | `{ body, author? }` | `Issue` |
-| DELETE | /api/issues/:id/comments/:cid | `{ author? }` | `Issue` |
+| GET | /api/teams | `?workspace` | `Team[]` |
+| POST | /api/teams | `TeamInput` (workspace required) | 201 `Team` |
+| PATCH | /api/teams/:key | `{ name?, description? }` (teams never change workspace: 400) | `Team` |
+| GET | /api/issues | `?workspace&team&status=a,b&label&assignee&delegate&parent&q` | `IssueSummary[]` |
+| POST | /api/issues | `IssueInput` | 201 `Issue` |
+| GET / PATCH / DELETE | /api/issues/:id | `IssuePatch` | `Issue` / `{ ok: true }` |
+| POST | /api/issues/:id/claim | | `Issue` |
+| POST | /api/issues/:id/comments | `{ body }` | 201 `Issue` |
+| PATCH / DELETE | /api/issues/:id/comments/:cid | `{ body }` | `Issue` (own comments only; a `:cid` not on that issue is 404) |
 | GET | /api/labels | `?workspace` | `string[]` (distinct, sorted) |
-| GET | /api/me | | `Me` |
-| GET | /api/members | | `Member[]` (by name, revoked included) |
-| POST | /api/members | `MemberInput` (admin) | `MemberToken` |
-| PATCH | /api/members/:name | `{ role }` (admin) | `Member` |
-| POST | /api/members/:name/token | (admin) new token, reinstating a revoked member | `MemberToken` |
-| DELETE | /api/members/:name | (admin) revoke | `Member` |
 
-Only a comment's author (case-insensitive) may edit or delete it, else 403. A member's author is always their own name (see Members), so for them this is enforced; root's author is self-declared, so for root it guards against mistakes, not abuse. A `:cid` not on that issue or doc is 404. Editing sets `editedAt`; deleting is permanent. Both bump the issue's `updated_at` like adding a comment; doc comments never bump the doc (so an open editor gets no conflict).
+Editing a comment sets `editedAt`; deleting is permanent. Both bump the issue like adding one; doc comments never bump the doc (so an open editor gets no conflict).
 
 ## Realtime
 
-`GET /ws` upgrades to a WebSocket. After every mutation (REST or MCP) the server publishes a `ServerEvent` to all clients. The UI refetches what it's showing.
+`GET /ws` upgrades to a WebSocket that subscribes to the caller's workspaces. After every mutation (REST or MCP) the server publishes a `ServerEvent` `{ type: "changed", entity, workspace, id }` to that workspace's sockets only. The UI refetches what it's showing. Signing out, revoking a session or key, suspension and agent token changes close the affected sockets (code 4401); clients reconnect with what's current.
 
 ## MCP
 
-Streamable HTTP at `/mcp`, stateless (`WebStandardStreamableHTTPServerTransport` from `@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js`, new server+transport per request, JSON responses). Server name `docket`.
+Streamable HTTP at `/mcp`, stateless (`WebStandardStreamableHTTPServerTransport` from `@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js`, new server+transport per request, JSON responses). Server name `docket`. Needs an API key; tools act as its owner.
 
-Tools return short markdown text (one line per issue: `BRD-3 · todo · high · Title · @assignee · #label`) plus `structuredContent` with the JSON.
+Tools return short markdown text (one line per issue: `BRD-3 · todo · high · Title · @assignee · →@delegate · #label`; comments as `**@author** · #id · time`) plus `structuredContent` with the JSON.
 
 | Tool | Input | Notes |
 |---|---|---|
-| list_workspaces | | with project counts |
-| create_workspace | key?, name | key defaults to the slugified name |
-| update_workspace | key, name | rename; the key never changes |
-| list_projects | workspace? | with workspace and open-issue counts |
-| create_project | key, name, workspace?, description? | workspace required when more than one exists, else the only one |
-| update_project | key, name?, description?, workspace? | workspace moves it; the key never changes |
-| list_issues | workspace?, project?, status?[], label?, assignee?, parent?, query?, limit? (default 50) | excludes done/canceled unless `status` given |
-| get_issue | id | full issue with description, sub-issues, blockers, comments |
-| create_issue | project, title, description?, status?, priority?, labels?, assignee?, parent?, blockedBy? | |
-| update_issue | id + any of title, description, status, priority, labels, assignee, parent, blockedBy, baseUpdatedAt | pass `baseUpdatedAt` when replacing description, labels or blockedBy |
-| claim_issue | id, assignee? | see Claims |
-| comment_issue | id, body, author? (default "claude") | use for progress notes |
+| list_workspaces | | yours, with your role and team counts |
+| create_workspace | key?, name | people only |
+| update_workspace | key, name | admins |
+| list_members | workspace? | `@username · name · role`, marking you; assignees are people, delegates agents |
+| list_teams | workspace? | with workspace and open-issue counts |
+| create_team | key, name, workspace?, description? | workspace required when you're in more than one |
+| update_team | key, name?, description? | |
 | list_labels | workspace? | `label · N open`, so agents reuse existing labels |
-| list_members | | active members, `name · kind · role`, marking the caller. No tool creates members or tokens: agents never mint credentials |
+| list_issues | workspace?, team?, status?[], label?, assignee?, delegate?, parent?, query?, limit? (default 50) | excludes done/canceled unless `status` given |
+| get_issue | id | full issue with description, creator, sub-issues, blockers, docs, comments |
+| create_issue | team, title, description?, status?, priority?, labels?, assignee?, delegate?, parent?, blockedBy? | |
+| update_issue | id + any of title, description, status, priority, labels, assignee, delegate, parent, blockedBy, baseUpdatedAt | |
+| claim_issue | id | see Data |
+| comment_issue | id, body | |
+| list_documents / get_document / create_document / update_document / comment_document / delete_document | see Documents | |
+| update_comment / delete_comment | issue? or document?, comment, body | exactly one of issue/document; own comments only |
 
-Tool descriptions must explain the conventions (workspace → project → issue/doc, statuses, priority numbers, identifiers) so an agent can use them without reading docs. No issue delete tool: agents cancel instead.
+Tool descriptions must explain the conventions (workspace → team → issue/doc, statuses, priority numbers, identifiers, assignee vs delegate) so an agent can use them without reading docs. No issue delete tool: agents cancel instead. No tool touches credentials or membership (invites, keys, agents, suspension): agents never mint access.
 
 ## UI
 
 Light theme only, neutral and modern, in the spirit of Linear, Vercel, Resend. Geist + Geist Mono (Google Fonts). White canvas, `#fafafa` sidebar, 1px `#ebebeb` borders, `#171717` text, `#737373` muted, black primary buttons, 6px radii, shadows only on popovers/modals. Small SVG status icons (Linear-like: dashed circle backlog, circle todo, half-filled in progress, three-quarter in review, check done, x canceled) and priority bars. Tight 13–14px type, generous whitespace, fast 120ms transitions. `dir="auto"` on all user text (content may be Arabic).
 
-- **Sidebar**: workspace switcher (current workspace name; popover lists workspaces plus "New workspace"), "New issue" (shortcut `C`), "All issues", projects with open counts. Everything in it is scoped to the current workspace. Footer: who you are, with a menu of "Change name" (root only), "Members" (admins) and "Sign out" (members, and root when `DOCKET_TOKEN` is set).
-- **List view** (default): issues grouped by status with sticky headers and counts; Done and Canceled collapsed by default. Row: priority, identifier (mono, muted), status icon, title, labels, assignee initial, relative updated time.
+- **Boot**: `/setup` and `/login` render without a session. Everything else loads `GET /api/me` first; any 401, then or later, goes to `/login`.
+- **Setup** (`/setup`): setup code, name, username (suggested from the name), optional email, workspace name.
+- **Sign in** (`/login`): paste a sign-in link or code, or open a link (`/login#CODE`, which signs in straight away). An invite opened while signed out asks for name and username first ("Join <workspace>"); opened while signed in, it just adds you. If Docket isn't set up yet, it goes to `/setup`.
+- **Sidebar**: workspace switcher (your workspaces plus "New workspace"), "New issue" (shortcut `C`), "All issues", "All docs", teams with open counts. Everything in it is scoped to the current workspace. Footer: you, with a menu of Settings, Workspace settings (admins) and Sign out.
+- **Settings** (`/settings/account`, `/settings/workspace`): account: profile, "Sign in on another device" (a sign-in link), sessions, API keys (token and MCP command shown once). Workspace (admins; others see the member list): members (role, suspend or reinstate, sign-in link), invite links by role (shown once), agents (add: token and `claude mcp add … --header "Authorization: Bearer <token>"` shown once; new token; remove).
+- **List view** (default): issues grouped by status with sticky headers and counts; Done and Canceled collapsed by default. Row: priority, identifier (mono, muted), status icon, title, labels, assignee and delegate, relative updated time.
 - **Board view**: columns by status (no Canceled), cards, drag between columns or use the card's status picker (touch, keyboard) to change status.
-- **Toolbar**: search (`/` to focus), a "Mine" chip (assignee filter set to you; hidden for root once members exist, since root's display name isn't an identity), label and assignee filters, List/Board toggle. People in pickers and filters list you first, marked "(you)".
-- **Issue page** (`/issue/BRD-12`): a "Claim" button in the header for a signed-in member on an open issue no other active member holds, including their own not yet in progress (the server's rule; a 409 shows as a toast naming the holder); inline-editable title; markdown description with edit toggle, saved with `baseUpdatedAt`: on a 409 it refetches, and if only something else changed (e.g. a comment) it saves again on top; if the description itself changed (or that retry 409s too), it shows the latest issue and a banner "Someone changed this description while you were editing." with their current text, read-only, and "Use theirs" or "Keep mine" (then Save overwrites what was shown). Save and `⌘↵` do nothing while a save is in flight or the banner is up. Property pickers don't send `baseUpdatedAt`; properties panel (status, priority, assignee, labels, project, parent, blocked by) editable via small popovers; sub-issues; comments thread with composer (`⌘↵` to send).
-- **New issue modal**: project, title, description, status, priority, labels, assignee, parent. `⌘↵` creates, `Esc` closes.
-- **Workspaces**: the current workspace is remembered in localStorage (`docket.workspace`), falling back to the first. `/` and `/docs` show only its content; the new issue/doc project pickers list only its projects, and assignee/label pickers and filters only its people and labels; a new project is created in it. Opening `/p/:key`, `/issue/:id` or `/doc/:slug` of another workspace's project switches to that workspace. "New workspace" is a name-only modal. Project keys stay globally unique, so identifiers and routes don't change. Label pickers and filters load `GET /api/labels?workspace=<current>`.
-- **Project settings**: a button next to the project title opens a dialog to edit the description, move the project to another workspace, and rename the workspace it's in (`PATCH /api/projects/:key`, `PATCH /api/workspaces/:key`). After a move the app follows the project to its new workspace.
-- Client routing with `history.pushState`: `/`, `/p/:key`, `/issue/:id`, `/docs`, `/p/:key/docs`, `/doc/:slug`. The server returns index.html for these paths.
+- **Toolbar**: search (`/` to focus), a "Mine" chip, label, assignee and delegate filters, List/Board toggle. People in pickers list you first, marked "(you)".
+- **Issue page** (`/issue/BRD-12`): "Claim" in the header on an open issue whose slot (assignee for people) no other active member holds; inline-editable title; markdown description saved with `baseUpdatedAt`: on a 409 it refetches, and if only something else changed (e.g. a comment) it saves again on top; if the description itself changed, a banner shows their current text with "Use theirs" or "Keep mine". Properties panel (status, priority, assignee, delegate, labels, team, parent, blocked by) editable via small popovers; sub-issues; comments thread with composer (`⌘↵` to send). Your own comments show Edit and Delete.
+- **New issue modal**: team, title, description, status, priority, labels, assignee, delegate, parent. `⌘↵` creates, `Esc` closes.
+- **Workspaces**: the current workspace is remembered in localStorage (`docket.workspace`), falling back to the first. `/` and `/docs` show only its content; pickers and filters list only its teams, members and labels. Opening `/t/:key`, `/issue/:id` or `/doc/:slug` of another of your workspaces switches to it.
+- **Team settings**: a button next to the team title opens a dialog to edit the description (and, for admins, rename the workspace).
+- Client routing with `history.pushState`: `/`, `/t/:key`, `/issue/:id`, `/docs`, `/t/:key/docs`, `/doc/:slug`, `/settings/*`, `/login`, `/setup`. The server returns index.html for these paths.
+- Service worker: never caches non-OK responses; clears cached `/api/*` on a 401 and after a successful setup, redeem or logout, with a generation counter so a GET in flight across the switch can't re-cache the old session's data.
 - Works on a phone: the sidebar collapses below 768px.
 
 ## Documents
 
-Linear-style docs inside projects. Markdown is the source of truth (agents write via MCP). Types in `src/shared/types.ts`.
+Linear-style docs inside teams. Markdown is the source of truth (agents write via MCP).
 
-**Data**:
-- **documents**: id, slug (unique), project_key, title, content, position, created_at, updated_at, updated_by.
-- **document_versions**: id, document_id, title, content, author, created_at. A version is written on every title/content change. Autosave-friendly: if the latest version has the same author and was first saved < 10 min ago, overwrite its title and content instead of inserting. Its `created_at` stays the first save's time, so a long session still gets a new version every 10 minutes. The first version (creation) and checkpoints (restores) are never merged into.
-- **document_refs**: document_id, issue_id, ord. Recomputed on every content change from `\b[A-Z]{2,5}-\d+\b` matches that resolve to real issues (first-mention order).
-- Document comments: same `Comment` shape as issues, stored in a separate `document_comments` table.
-- Slugs are stable: renaming a doc never changes its slug. Deleting a project isn't a thing; deleting a doc deletes its versions, refs and comments.
+- **documents**: id, slug (unique), team_key, title, content, position, created_at, updated_at, updated_by_id.
+- **document_versions**: id, document_id, title, content, author_id, created_at. A version is written on every title/content change. Autosave-friendly: if the latest version has the same author and was first saved < 10 min ago, overwrite its title and content instead of inserting. Its `created_at` stays the first save's time, so a long session still gets a new version every 10 minutes. The first version (creation) and checkpoints (restores) are never merged into.
+- **document_refs**: document_id, issue_id, ord. Recomputed on every content change from `\b[A-Z]{2,5}-\d+\b` matches that resolve to real issues in the doc's workspace (first-mention order).
+- Slugs are stable: renaming a doc never changes its slug. A doc can move to another team of the same workspace. Deleting a doc deletes its versions, refs and comments.
 - Search (`q`) matches title and content. Like issue search, it's a literal substring match: `%`, `_` and `\` in the query are escaped, not wildcards.
-
-**REST**
 
 | Method | Path | Body / query | Returns |
 |---|---|---|---|
-| GET | /api/documents | `?workspace&project&q` | `DocumentSummary[]` (project key, then position) |
-| POST | /api/documents | `DocumentInput` | `Document` |
-| GET | /api/documents/:slug | | `Document` |
+| GET | /api/documents | `?workspace&team&q` | `DocumentSummary[]` (team key, then position) |
+| POST | /api/documents | `DocumentInput` | 201 `Document` |
+| GET / PATCH / DELETE | /api/documents/:slug | `DocumentPatch` | `Document` / `{ ok: true }` |
 | GET | /api/documents/:slug/raw | | `text/markdown; charset=utf-8` (the content) |
-| PATCH | /api/documents/:slug | `DocumentPatch` | `Document` |
-| DELETE | /api/documents/:slug | | `{ ok: true }` |
-| POST | /api/documents/:slug/comments | `{ body, author? }` | `Document` |
-| PATCH | /api/documents/:slug/comments/:cid | `{ body, author? }` | `Document` |
-| DELETE | /api/documents/:slug/comments/:cid | `{ author? }` | `Document` |
+| POST | /api/documents/:slug/comments | `{ body }` | 201 `Document` |
+| PATCH / DELETE | /api/documents/:slug/comments/:cid | `{ body }` | `Document` |
 | GET | /api/documents/:slug/versions | | `DocumentVersionSummary[]` (newest first) |
 | GET | /api/documents/:slug/versions/:id | | `DocumentVersion` |
 
-`DocumentPatch.baseUpdatedAt` (optional) is the document's `updatedAt` the client started editing from: if present and different from the current `updatedAt`, the PATCH answers 409 `{ "error": "Document changed since you started editing" }` and changes nothing. Every save moves `updatedAt` strictly forward (at least 1 ms past the previous one), so it works as a version token even for saves in the same millisecond. The web editor sends it with every save; MCP `update_document` accepts it too. `edits` errors (400) name the failing edit and whether `oldText` matched 0 or many times (overlapping occurrences count: `aa` matches `aaa` twice); nothing is applied unless every edit applies. `GET /api/issues/:id` now includes `docs` (documents mentioning it). `Project` includes `docCount`. Mutations publish `{ type: "changed", entity: "document", id: slug }`.
+`DocumentPatch.baseUpdatedAt` (optional) is the document's `updatedAt` the client started editing from: if present and different from the current one, the PATCH answers 409 `{ "error": "Document changed since you started editing" }` and changes nothing. Every save moves `updatedAt` strictly forward, so it works as a version token even for saves in the same millisecond. The web editor sends it with every save; MCP `update_document` accepts it too. `edits` errors (400) name the failing edit and whether `oldText` matched 0 or many times (overlapping occurrences count: `aa` matches `aaa` twice); nothing is applied unless every edit applies. `GET /api/issues/:id` includes `docs` (documents mentioning it). `Team` includes `docCount`.
 
-**MCP tools** (added to the 13 above)
+MCP: `list_documents` (workspace?, team?, query?; one line per doc: `slug · Title · TEAM · updated 2h ago by @alice`), `get_document` (slug), `create_document` (team, title, content, slug?, position?), `update_document` (slug, title?, content?, edits?, team?, position?, baseUpdatedAt?; prefer `edits` for small changes to long docs), `comment_document` (slug, body), `delete_document` (slug; permanent, `destructiveHint`). Tool descriptions must say: docs are markdown; mention issues by identifier (e.g. BRD-2) and they auto-link; link other docs with `[Title](/doc/slug)`; use `edits` for targeted changes.
 
-| Tool | Input | Notes |
-|---|---|---|
-| list_documents | workspace?, project?, query? | one line per doc: `slug · Title · PROJECT · updated 2h ago by claude` |
-| get_document | slug | full markdown plus metadata and mentioned issues |
-| create_document | project, title, content, slug?, position?, author? | |
-| update_document | slug, title?, content?, edits?, project?, position?, baseUpdatedAt?, author? | prefer `edits` for small changes to long docs; `content` replaces everything; `baseUpdatedAt` rejects the update if the doc changed since it was read |
-| comment_document | slug, body, author? | |
-| delete_document | slug | permanent (versions and comments too); `destructiveHint` |
-| update_comment | issue? or document?, comment, body, author? | exactly one of issue/document; own comments only |
-| delete_comment | issue? or document?, comment, author? | same; `destructiveHint` |
-
-`get_issue` and `get_document` show each comment as `**author** · #id · time` (plus ` · edited`), so agents can address it.
-
-Tool descriptions must say: docs are markdown; mention issues by identifier (e.g. BRD-2) and they auto-link; link other docs with `[Title](/doc/slug)`; use `edits` for targeted changes.
-
-**UI**
-- Sidebar: "All issues", "All docs". A project's page gets two tabs: Issues, Docs (`/p/:key` and `/p/:key/docs`).
-- Docs list (`/docs`, `/p/:key/docs`): grouped by project, ordered by position. Row: doc icon, title, "updated 2h ago by claude". "New doc" button.
-- Doc page (`/doc/:slug`): a centered reading column (~720px), large inline-editable title, a quiet metadata line (project · updated by · time · versions). Typography built for long specs: clear heading scale, comfortable line height, tables that scroll horizontally on narrow screens, code blocks, blockquotes, task lists. `dir="auto"` on every block (Arabic). A sticky outline of h2/h3 on the right on wide screens (hidden on narrow), with the current section highlighted.
-- Editing: `E` or the Edit button switches to a full-height markdown textarea (monospace, same column). Autosave ~1s after typing stops with a quiet "Saving… / Saved" indicator, `⌘S` saves now, `Esc` returns to reading. If the doc changes remotely while editing, don't clobber: show a small banner "Updated by claude · Reload".
+UI:
+- A team's page has two tabs: Issues, Docs (`/t/:key` and `/t/:key/docs`).
+- Docs list (`/docs`, `/t/:key/docs`): grouped by team, ordered by position. Row: doc icon, title, "updated 2h ago by Alice". "New doc" button.
+- Doc page (`/doc/:slug`): a centered reading column (~720px), large inline-editable title, a quiet metadata line (team · updated by · time · versions). Typography built for long specs: clear heading scale, comfortable line height, tables that scroll horizontally on narrow screens, code blocks, blockquotes, task lists. `dir="auto"` on every block (Arabic). A sticky outline of h2/h3 on the right on wide screens (hidden on narrow), with the current section highlighted.
+- Editing: `E` or the Edit button switches to a full-height markdown textarea (monospace, same column). Autosave ~1s after typing stops with a quiet "Saving… / Saved" indicator, `⌘S` saves now, `Esc` returns to reading. If the doc changes remotely while editing, don't clobber: show a small banner "Updated by Alice · Reload".
 - History: a side panel of versions (author, time); click to preview, "Restore" writes that content as a new version.
 - Below the content: "Issues in this doc" (status icon, identifier, title) and a comment thread (same component as issues).
-- Everywhere markdown renders (issue descriptions, comments, docs): bare identifiers of existing projects (e.g. `MVP-12`) become inline chips with the status icon linking to the issue; links to `/doc/:slug` and `/issue/:id` route client-side.
+- Everywhere markdown renders (issue descriptions, comments, docs): bare identifiers of existing issues (e.g. `MVP-12`) become inline chips with the status icon linking to the issue; links to `/doc/:slug` and `/issue/:id` route client-side.
 - Issue page: a "Docs" section listing documents that mention the issue.
-- New doc: modal with project and title, then opens straight into edit mode.
-- Routes served as index.html: add `/docs`, `/doc/*` (and `/p/*` already covers `/p/:key/docs`).
-
-## Workspaces
-
-Migration 3 (additive): creates `workspaces`, inserts `default` / "Default", adds the nullable `projects.workspace` column (SQLite can't add a NOT NULL column with a foreign key) and assigns every existing project to `default`. `Workspace` includes `projectCount`. Mutations publish `{ type: "changed", entity: "workspace", id: key }`.
-
-## Issue numbering
-
-Migration 4 (additive): adds `projects.next_number INTEGER NOT NULL DEFAULT 1`, backfilled to `MAX(number) + 1` per project. `createIssue` takes the number from it (increment inside the insert transaction), so deleting an issue never frees its number. Numbers deleted before the migration (above the current max) can be reused once.
-
-## Comment edits
-
-Migration 5 (additive): adds nullable `edited_at` to `comments` and `document_comments`. `Comment` includes `editedAt: string | null`.
-
-UI (issues and docs alike): comments whose author matches the signed-in member's name, else this browser's name (compared with `nameKey`), show Edit and Delete on hover (always on touch screens). Edit swaps the body for the composer (`⌘↵` saves, `Esc` cancels); Delete asks first. An edited comment shows "edited" next to its time. A 403 appears as a toast.
-
-## Members
-
-People and agents with their own token, so each writes under a name the server vouches for. Opt-in: until the first member exists, nothing changes.
-
-Migration 6 (additive): **members**: id, name (one line, ≤ 40 chars; `me` and `anonymous` reserved), name_key (unique: `nameKey(name)` = NFKC-normalized, lowercased, from `src/shared/types.ts`; SQLite's NOCASE only folds ASCII), kind (`human` | `agent`), role (`admin` | `member`), token_hash (SHA-256 of the token, unique, null once revoked), created_at, revoked_at. A token is 32 random bytes as hex, returned once by create and rotate and never stored. Revoking keeps the row, so the name stays reserved and old comments keep pointing at the right person; rotating issues a new token and reinstates.
-
-**Viewer**: each guarded request acts as a member (their token as bearer or cookie) or as **root**: an admin with no name, which is the `DOCKET_TOKEN` holder, or anyone in open mode. `GET /api/me` answers `{ member, admin, open }` (`open`: no `DOCKET_TOKEN`). Only admins (root or `role: "admin"`) manage members (else 403).
-
-**Authors**: a member always writes as themselves: the `author` they send (REST or MCP) is ignored. Root keeps the old behaviour: it names itself, default "anonymous" over REST and "claude" over MCP. Wherever names are compared for identity (uniqueness, comment ownership, assignees) they go through `nameKey`, so "Émile" and "émile" are one person. Naming a member `claude` makes it the owner of every comment MCP clients wrote under the old default.
-
-**Assignees**: free text while there are no active members. Once there are, a new assignee must be an active member's name (normalized to its casing), else 400 listing them. Existing values stay until changed.
-
-**Backward compatibility**: with no members, a `DOCKET_TOKEN` setup and an open setup behave exactly as before: same bearer, same cookie value, same login. Adding members doesn't change root.
-
-**Open mode caveat**: without `DOCKET_TOKEN`, anyone can reach the API as root, including creating members and tokens, and a request with no member token is root. Once any member exists (revoked ones count), credentials that don't verify are refused, not ignored, so a revoked agent can't quietly fall back to root: a bad bearer or a member-shaped cookie (`<id>.<hmac>`) is 401, and `POST /api/login` with anything but a member token is 401. With no members, stray bearers, cookies and logins are ignored as before. Member tokens then only name who is writing (useful for telling agents apart), and restrict nothing. Set `DOCKET_TOKEN` for real access control.
-
-## Claims
-
-No migration: claims use `assignee` and `status`.
-
-**Claim** (`POST /api/issues/:id/claim`, MCP `claim_issue`): takes an open issue for the claimer: sets `assignee` to them and `status` to `in_progress`. The claimer is the member; root must pass `assignee` (else 400), which goes through the usual assignee check. One IMMEDIATE transaction reads and writes, so of two claims racing for a free issue exactly one wins. A done or canceled issue is 409 `"<ID> is done"`; one held by someone else (compared with `nameKey`) is 409 `"<ID> is claimed by <name>"`. Once members exist, only an active member holds an issue: one assigned to a revoked member or to leftover free text counts as unclaimed, so no claim is held forever. Claiming your own again changes nothing. To hand an issue back: `update_issue` with assignee null and status todo.
-
-**"me"**: as an assignee (create, update, claim) or the `assignee` filter, `me` means the caller's member name; root gets 400 `"me" needs a member token`. The assignee filter matches a member's name by `nameKey`, and older free-text assignees case-insensitively.
-
-**Issue versions**: `IssuePatch.baseUpdatedAt` works like the document one: if present and different from the current `updatedAt`, the PATCH (or `update_issue`) answers 409 `{ "error": "Issue changed since you read it" }` and changes nothing; the check and the write share one IMMEDIATE transaction. Comments bump `updatedAt` too, so send it where lost updates happen (description, and the whole-list `labels` and `blockedBy`), not for single-field changes like status or priority.
+- New doc: modal with team and title, then opens straight into edit mode.
 
 ## Deploy
 
-`Dockerfile` (oven/bun image) + `docker-compose.yml`: volume `./data:/app/data`, port `127.0.0.1:7100:7100`, `restart: unless-stopped`, `DOCKET_TOKEN` passed through from the environment or `.env`. HTTPS and exposure are the operator's choice (reverse proxy, tunnel, VPN). Anything reached by a hostname other than localhost needs that hostname in `DOCKET_HOSTS` (see Auth), or data routes answer 403.
-
-## Auth
-
-`src/server/auth.ts`. With `DOCKET_TOKEN` set, `/api/*`, `/mcp` and `/ws` return 401 unless the request carries `Authorization: Bearer <token>` or the `docket_token` cookie, where the token is `DOCKET_TOKEN` (compared in constant time) or an active member's (looked up by its SHA-256). `POST /api/login {token}` takes either and sets that cookie (HttpOnly, SameSite=Lax, 1 year, Secure over HTTPS). The cookie never holds a token, so it only works as a cookie, not as a bearer. Root's value is hex HMAC-SHA256 of `"docket session"` keyed by `DOCKET_TOKEN`; changing it logs every browser out. A member's is `<id>.<hex HMAC-SHA256 of "docket member session <token_hash>" keyed by DOCKET_TOKEN>`, compared in constant time, so the database alone can't forge one, and rotating or revoking that member's token (or changing `DOCKET_TOKEN`) logs them out. In open mode a member token still sets a member cookie; any other token answers ok with no cookie. `POST /api/logout` (same Host and JSON checks, no token needed) clears the cookie with `Max-Age=0`; so does any 401 caused by a cookie that no longer verifies. Rotating or revoking a member's token also closes their open `/ws` sockets (code 4401). Login is rate-limited per client IP: after 10 failures in a minute it answers 429 until the minute ends (behind a proxy, all clients share the proxy's IP). The app shell, manifest, service worker and icons stay public; they hold no data.
-
-**Host check** (DNS rebinding), token or not: `/api/*` (including login), `/mcp` and `/ws` answer 403 unless the `Host` header's hostname (port ignored, case-insensitive) is `localhost`, `127.0.0.1`, `[::1]` or listed in `DOCKET_HOSTS`. Behind a reverse proxy or tunnel, list the public hostname the proxy forwards in `Host`. The web client loads `GET /api/me` at boot and shows a login screen on any 401; it takes `DOCKET_TOKEN` or a member's token. A member goes straight in under their name and sends no `author`. Root keeps a per-browser display name (`localStorage["docket.name"]`, asked on first run, changed from the sidebar footer) and sends it as `author` on comments and doc writes. A login link, `<origin>/#login=<token>`, signs in once: the page strips the fragment (which never reaches the server) before anything else runs, posts it to `/api/login` and reloads, or shows "This sign-in link is invalid or was revoked." "Sign out" posts `/api/logout` and reloads. The service worker never caches non-OK responses, and clears its cached `/api/*` responses on a 401 and after a successful `/api/login` or `/api/logout`, so a shared browser can't serve one session's data to the next. A generation counter, bumped on each sign-in and sign-out, stops a GET that was in flight across the switch from re-caching the old session's response.
-
-**Members modal** (admins, from the sidebar footer): members with kind, role and revoked state; a row menu to make admin or member, issue a new token (after a confirm; reinstates a revoked member) or revoke (after a confirm). "Add member" takes a name, Person or Agent, and Member or Admin. A new token is shown once: a person gets a copyable login link (with the note "Works like a password: anyone with this link can sign in as <name>. Rotate the token if it leaks.", since it carries the long-lived token and browser history keeps it), an agent a copyable `claude mcp add … --header "Authorization: Bearer <token>"` command, and either can copy the bare token. Once members exist, the assignee picker and filter list active members only.
+`Dockerfile` (oven/bun image) + `docker-compose.yml`: volume `./data:/app/data`, port `127.0.0.1:7100:7100`, `restart: unless-stopped`. HTTPS and exposure are the operator's choice (reverse proxy, tunnel, VPN). Anything reached by a hostname other than localhost needs that hostname in `DOCKET_HOSTS`, or data routes answer 403. On first start, the setup code is in the container's log (`docker compose logs docket`). Locked out: `docker compose exec docket bun run sign-in-link <username>` prints a one-time link (set `DOCKET_URL` so it points at the public origin).

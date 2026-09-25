@@ -462,7 +462,7 @@ kbd {
   color: var(--muted);
 }
 
-.project-mark {
+.team-mark {
   display: inline-grid;
   place-items: center;
   width: 16px;
@@ -789,6 +789,9 @@ kbd {
 .avatar-none > svg {
   width: var(--av, 18px);
   height: var(--av, 18px);
+}
+.avatar-agent {
+  border-radius: 30%;
 }
 
 /* ---------- Board ---------- */
@@ -1923,72 +1926,6 @@ kbd {
   align-self: flex-start;
   margin-left: 0;
 }
-
-/* ---------- Members ---------- */
-
-.members {
-  display: flex;
-  flex-direction: column;
-  max-height: 50vh;
-  padding: 8px 8px 12px;
-  overflow-y: auto;
-}
-.members-empty {
-  padding: 4px 8px;
-  color: var(--muted);
-  line-height: 1.5;
-}
-.member {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-height: 36px;
-  padding: 0 4px 0 8px;
-  border-radius: var(--radius);
-}
-.member:hover {
-  background: var(--wash);
-}
-.member-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  font-weight: 500;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.member-meta {
-  color: var(--muted);
-  font-size: 12.5px;
-}
-.member.revoked .member-name,
-.member.revoked .avatar {
-  opacity: 0.45;
-}
-.token-lead {
-  color: var(--text-2);
-  line-height: 1.5;
-}
-.token-box {
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg-subtle);
-  font-size: 12px;
-  line-height: 1.5;
-  overflow-wrap: anywhere;
-  user-select: all;
-}
-.token-warning {
-  font-size: 12px;
-  color: var(--muted);
-  line-height: 1.5;
-}
-.token-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
 .input {
   height: 34px;
   padding: 0 10px;
@@ -2315,4 +2252,152 @@ textarea.input {
     padding-top: calc(10px + env(safe-area-inset-top));
     padding-bottom: calc(10px + env(safe-area-inset-bottom));
   }
+}
+
+/* ---------- Settings ---------- */
+
+.settings {
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 0 var(--pad) 80px;
+}
+.settings > .section:first-child,
+.settings > .settings-note:first-child {
+  margin-top: 28px;
+}
+.settings .section > * + * {
+  margin-top: 10px;
+}
+.settings .section-head + * {
+  margin-top: 0;
+}
+.settings-hint,
+.settings-note {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+.settings-note {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-subtle);
+  color: var(--text-2);
+}
+.settings-error {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--danger);
+}
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 420px;
+}
+.settings-card {
+  max-width: none;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.settings-buttons,
+.settings-inline {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.settings-buttons {
+  justify-content: flex-end;
+}
+.settings-inline .input {
+  min-width: 200px;
+}
+.settings-list {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 6px 8px 6px 12px;
+}
+.settings-row + .settings-row {
+  border-top: 1px solid var(--line);
+}
+.settings-row-main {
+  flex: 1;
+  min-width: 0;
+}
+.settings-row-title,
+.settings-row-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-row-title {
+  font-weight: 500;
+}
+.settings-row-title .muted {
+  font-weight: 400;
+}
+.settings-row-meta {
+  margin-top: 2px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.settings-row.dim .settings-row-title,
+.settings-row.dim .avatar {
+  opacity: 0.45;
+}
+.secret {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.secret-lead {
+  margin: 0;
+  color: var(--text-2);
+  line-height: 1.5;
+}
+.secret-box {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-subtle);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+.secret-foot {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.secret-note {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ---------- Sign in ---------- */
+
+.auth .field {
+  width: min(300px, 100%);
+  text-align: left;
+}
+.auth .field .input {
+  width: 100%;
+}
+.auth p strong {
+  color: var(--text);
+  font-weight: 500;
 }

@@ -13,20 +13,15 @@ import type {
   IssueInput,
   IssuePatch,
   IssueSummary,
-  Me,
-  Member,
-  MemberInput,
-  MemberRole,
-  MemberToken,
-  Project,
-  ProjectInput,
-  ProjectPatch,
+  Team,
+  TeamInput,
+  TeamPatch,
   ServerEvent,
   Workspace,
   WorkspaceInput,
+  WorkspaceMember,
   WorkspacePatch,
 } from "../shared/types";
-import { nameKey } from "../shared/types";
 
 export class HttpError extends Error {
   status: number;
@@ -56,28 +51,7 @@ export const store = {
   },
 };
 
-/** Who this browser is signed in as (GET /api/me), loaded once at boot; signing in or out reloads the page. */
-let me: Me = { member: null, admin: false, open: false };
-export const getMe = () => me;
-export const loadMe = () => request<Me>("GET", "/api/me").then((m) => (me = m));
-
-/** Per-browser display name, used as the `author` on writes when signed in without a member token. */
-export const getName = () => store.get("name");
-export const setName = (name: string) => store.set("name", name);
-
-/** Whether this viewer wrote a comment, so it may edit or delete it (the server checks too). */
-export const isMine = (author: string) => {
-  const name = me.member?.name ?? getName();
-  return !!name && nameKey(author) === nameKey(name);
-};
-
-/** Stamps a write body with the stored name, unless it has an author or a member is signed in (the server names them). */
-function withAuthor<T extends object>(body: T & { author?: string }): T & { author?: string } {
-  const author = getName();
-  return author && !body.author && !me.member ? { ...body, author } : body;
-}
-
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+export async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
     method,
     headers: body === undefined ? undefined : { "content-type": "application/json" },
@@ -102,24 +76,16 @@ function query(filter: IssueFilter | DocumentFilter): string {
 const enc = encodeURIComponent;
 
 export const api = {
-  login: (token: string) => request<{ ok: true }>("POST", "/api/login", { token }),
-  logout: () => request<{ ok: true }>("POST", "/api/logout", {}),
-
-  members: () => request<Member[]>("GET", "/api/members"),
-  createMember: (input: MemberInput) => request<MemberToken>("POST", "/api/members", input),
-  updateMember: (name: string, role: MemberRole) => request<Member>("PATCH", `/api/members/${enc(name)}`, { role }),
-  rotateToken: (name: string) => request<MemberToken>("POST", `/api/members/${enc(name)}/token`),
-  revokeMember: (name: string) => request<Member>("DELETE", `/api/members/${enc(name)}`),
-
   workspaces: () => request<Workspace[]>("GET", "/api/workspaces"),
   createWorkspace: (input: WorkspaceInput) => request<Workspace>("POST", "/api/workspaces", input),
   updateWorkspace: (key: string, patch: WorkspacePatch) =>
     request<Workspace>("PATCH", `/api/workspaces/${enc(key)}`, patch),
+  members: (workspace: string) => request<WorkspaceMember[]>("GET", `/api/workspaces/${enc(workspace)}/members`),
 
-  projects: () => request<Project[]>("GET", "/api/projects"),
-  createProject: (input: ProjectInput) => request<Project>("POST", "/api/projects", input),
-  updateProject: (key: string, patch: ProjectPatch) =>
-    request<Project>("PATCH", `/api/projects/${enc(key)}`, patch),
+  teams: () => request<Team[]>("GET", "/api/teams"),
+  createTeam: (input: TeamInput) => request<Team>("POST", "/api/teams", input),
+  updateTeam: (key: string, patch: TeamPatch) =>
+    request<Team>("PATCH", `/api/teams/${enc(key)}`, patch),
 
   issues: (filter: IssueFilter = {}) => request<IssueSummary[]>("GET", `/api/issues${query(filter)}`),
   issue: (id: string) => request<Issue>("GET", `/api/issues/${enc(id)}`),
@@ -127,27 +93,27 @@ export const api = {
   updateIssue: (id: string, patch: IssuePatch) => request<Issue>("PATCH", `/api/issues/${enc(id)}`, patch),
   claimIssue: (id: string) => request<Issue>("POST", `/api/issues/${enc(id)}/claim`, {}),
   deleteIssue: (id: string) => request<{ ok: true }>("DELETE", `/api/issues/${enc(id)}`),
-  comment: (id: string, body: string) => request<Issue>("POST", `/api/issues/${enc(id)}/comments`, withAuthor({ body })),
+  comment: (id: string, body: string) => request<Issue>("POST", `/api/issues/${enc(id)}/comments`, { body }),
   editComment: (id: string, cid: number, body: string) =>
-    request<Issue>("PATCH", `/api/issues/${enc(id)}/comments/${cid}`, withAuthor({ body })),
+    request<Issue>("PATCH", `/api/issues/${enc(id)}/comments/${cid}`, { body }),
   deleteComment: (id: string, cid: number) =>
-    request<Issue>("DELETE", `/api/issues/${enc(id)}/comments/${cid}`, withAuthor({})),
+    request<Issue>("DELETE", `/api/issues/${enc(id)}/comments/${cid}`),
 
   labels: (workspace?: string) => request<string[]>("GET", `/api/labels${query({ workspace })}`),
 
   documents: (filter: DocumentFilter = {}) =>
     request<DocumentSummary[]>("GET", `/api/documents${query(filter)}`),
   document: (slug: string) => request<Document>("GET", `/api/documents/${enc(slug)}`),
-  createDocument: (input: DocumentInput) => request<Document>("POST", "/api/documents", withAuthor(input)),
+  createDocument: (input: DocumentInput) => request<Document>("POST", "/api/documents", input),
   updateDocument: (slug: string, patch: DocumentPatch) =>
-    request<Document>("PATCH", `/api/documents/${enc(slug)}`, withAuthor(patch)),
+    request<Document>("PATCH", `/api/documents/${enc(slug)}`, patch),
   deleteDocument: (slug: string) => request<{ ok: true }>("DELETE", `/api/documents/${enc(slug)}`),
   commentDocument: (slug: string, body: string) =>
-    request<Document>("POST", `/api/documents/${enc(slug)}/comments`, withAuthor({ body })),
+    request<Document>("POST", `/api/documents/${enc(slug)}/comments`, { body }),
   editDocumentComment: (slug: string, cid: number, body: string) =>
-    request<Document>("PATCH", `/api/documents/${enc(slug)}/comments/${cid}`, withAuthor({ body })),
+    request<Document>("PATCH", `/api/documents/${enc(slug)}/comments/${cid}`, { body }),
   deleteDocumentComment: (slug: string, cid: number) =>
-    request<Document>("DELETE", `/api/documents/${enc(slug)}/comments/${cid}`, withAuthor({})),
+    request<Document>("DELETE", `/api/documents/${enc(slug)}/comments/${cid}`),
   versions: (slug: string) => request<DocumentVersionSummary[]>("GET", `/api/documents/${enc(slug)}/versions`),
   version: (slug: string, id: number) => request<DocumentVersion>("GET", `/api/documents/${enc(slug)}/versions/${id}`),
 };

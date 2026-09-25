@@ -51,6 +51,9 @@ async function staleWhileRevalidate(request) {
   return cached ?? fetchPromise;
 }
 
+// Requests that start or end a session.
+const SESSION_SWITCHES = ["/api/setup", "/api/auth/redeem", "/api/logout"];
+
 /** Passes a sign-in or sign-out through, clearing the API cache once it succeeds (before the page reloads). */
 async function switchSession(request) {
   const response = await fetch(request);
@@ -64,7 +67,7 @@ async function switchSession(request) {
 self.addEventListener("fetch", (event) => {
   const { request } = event;
   const path = new URL(request.url).pathname;
-  if (request.method === "POST" && (path === "/api/login" || path === "/api/logout")) {
+  if (request.method === "POST" && SESSION_SWITCHES.includes(path)) {
     event.respondWith(switchSession(request));
     return;
   }

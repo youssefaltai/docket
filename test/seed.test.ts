@@ -9,17 +9,23 @@ beforeAll(async () => {
 });
 afterAll(() => s.stop());
 
+// Not s.cli: that runs with the server's own env. Seeding is what's under test, so it
+// gets its credentials the way a real caller would, over DOCKET_URL / DOCKET_API_KEY.
 const seed = async () => {
-  const proc = Bun.spawn(["bun", script, s.url], { stdout: "pipe", stderr: "pipe" });
+  const proc = Bun.spawn(["bun", script], {
+    env: { PATH: process.env.PATH!, DOCKET_URL: s.url, DOCKET_API_KEY: s.admin.token! },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
   const [code, err] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
   return { code, err };
 };
 
 test("seeds an empty Docket", async () => {
   expect(await seed()).toEqual({ code: 0, err: "" });
-  const { body: issues } = await s.api("GET", "/api/issues?workspace=demo");
+  const { body: issues } = await s.api("GET", `/api/issues?workspace=${s.workspace}`);
   expect(issues).toHaveLength(9);
-  const { body: docs } = await s.api("GET", "/api/documents?workspace=demo");
+  const { body: docs } = await s.api("GET", `/api/documents?workspace=${s.workspace}`);
   expect(docs).toHaveLength(2);
 });
 

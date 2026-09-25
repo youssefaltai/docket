@@ -1,35 +1,37 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { startServer, type TestServer } from "./server.ts";
+import { startServer, type Caller, type TestServer } from "./server.ts";
 
 let s: TestServer;
+let claude: Caller;
 beforeAll(async () => {
   s = await startServer();
+  // /mcp is bearer-only, so MCP tests run as an agent, the real way it's used.
+  claude = await s.agent("claude");
 });
 afterAll(() => s.stop());
 
 test("an agent can work through an issue", async () => {
-  await s.tool("create_workspace", { name: "Acme", key: "acme" });
-  await s.tool("create_project", { key: "MCP", workspace: "acme", name: "Agents" });
-  expect(await s.tool("list_projects")).toContain("MCP");
+  await claude.tool("create_team", { key: "MCP", workspace: s.workspace, name: "Agents" });
+  expect(await claude.tool("list_teams")).toContain("MCP");
 
-  expect(await s.tool("create_issue", { project: "MCP", title: "Wire it up", priority: 2 })).toContain("MCP-1");
-  await s.tool("update_issue", { id: "MCP-1", status: "in_progress" });
-  await s.tool("comment_issue", { id: "MCP-1", body: "Halfway there" });
+  expect(await claude.tool("create_issue", { team: "MCP", title: "Wire it up", priority: 2 })).toContain("MCP-1");
+  await claude.tool("update_issue", { id: "MCP-1", status: "in_progress" });
+  await claude.tool("comment_issue", { id: "MCP-1", body: "Halfway there" });
 
-  const issue = await s.tool("get_issue", { id: "mcp-1" });
+  const issue = await claude.tool("get_issue", { id: "mcp-1" });
   expect(issue).toContain("in_progress");
-  expect(issue).toContain("**claude**");
+  expect(issue).toContain("**@claude**");
   expect(issue).toContain("Halfway there");
 
-  expect(await s.tool("list_issues", { workspace: "acme" })).toContain("MCP-1 · in_progress · high · Wire it up");
+  expect(await claude.tool("list_issues", { workspace: s.workspace })).toContain("MCP-1 · in_progress · high · Wire it up");
 });
 
 test("an agent can write and edit a doc", async () => {
-  await s.tool("create_document", { project: "MCP", title: "Plan", content: "Do MCP-1 first." });
-  await s.tool("update_document", { slug: "plan", edits: [{ oldText: "first", newText: "now" }] });
-  const doc = await s.tool("get_document", { slug: "plan" });
+  await claude.tool("create_document", { team: "MCP", title: "Plan", content: "Do MCP-1 first." });
+  await claude.tool("update_document", { slug: "plan", edits: [{ oldText: "first", newText: "now" }] });
+  const doc = await claude.tool("get_document", { slug: "plan" });
   expect(doc).toContain("Do MCP-1 now.");
-  expect(await s.tool("list_documents", { project: "MCP" })).toContain("plan");
+  expect(await claude.tool("list_documents", { team: "MCP" })).toContain("plan");
 });
 
 test("MCP writes show up over REST", async () => {
@@ -39,5 +41,5 @@ test("MCP writes show up over REST", async () => {
 });
 
 test("tool errors come back as errors", async () => {
-  await expect(s.tool("get_issue", { id: "MCP-999" })).rejects.toThrow();
+  await expect(claude.tool("get_issue", { id: "MCP-999" })).rejects.toThrow();
 });

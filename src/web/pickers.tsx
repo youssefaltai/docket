@@ -9,6 +9,8 @@ import {
   type IssueSummary,
   type Priority,
   type Status,
+  type UserKind,
+  type UserRef,
 } from "../shared/types";
 import { api } from "./api";
 import {
@@ -18,10 +20,11 @@ import {
   LabelDot,
   PlusIcon,
   PriorityIcon,
-  ProjectMark,
+  TeamMark,
   StatusIcon,
   cls,
   errorToast,
+  isMe,
   useApp,
 } from "./ui";
 
@@ -211,12 +214,20 @@ export function Picker({ label, options, selected, onPick, multi, create, onOpen
 type Trigger = { className?: string; children?: ReactNode; align?: "start" | "end" };
 const uniq = (xs: string[]) => [...new Set(xs)];
 
-/** A person as a picker option, marking the viewer. */
-export const personOption = (name: string, you: string): Option => ({
-  value: name,
-  label: name === you ? `${name} (you)` : name,
-  icon: <Avatar name={name} />,
+/** A user as a picker option (value: username), marking the viewer. */
+export const userOption = (user: UserRef): Option => ({
+  value: user.username,
+  label: isMe(user) ? `${user.name} (you)` : user.name,
+  icon: <Avatar user={user} />,
 });
+
+/** Active members of the current workspace of one kind (people assign, agents are delegates), you first. */
+export function useMembers(kind: UserKind): UserRef[] {
+  const users = useApp()
+    .members.filter((m) => !m.suspendedAt && m.user.kind === kind)
+    .map((m) => m.user);
+  return [...users.filter(isMe), ...users.filter((u) => !isMe(u))];
+}
 const toggle = (xs: string[], x: string) => (xs.includes(x) ? xs.filter((y) => y !== x) : [...xs, x]);
 
 const STATUS_OPTIONS: Option[] = STATUSES.map((s) => ({ value: s, label: STATUS_LABELS[s], icon: <StatusIcon status={s} /> }));
@@ -259,31 +270,34 @@ export function PriorityPicker({
   );
 }
 
-export function AssigneePicker({
-  value,
-  onChange,
-  children,
-  ...rest
-}: Trigger & { value: string | null; onChange: (a: string | null) => void }) {
-  const { people, name, loadDirectory } = useApp();
-  const options: Option[] = [
-    { value: "", label: "No assignee", icon: <Avatar name={null} /> },
-    ...uniq([...people, ...(value ? [value] : [])]).map((p) => personOption(p, name)),
-  ];
+type UserPickerProps = Trigger & { value: UserRef | null; onChange: (user: UserRef | null) => void };
+
+function UserPicker({ kind, label, none, value, onChange, children, ...rest }: UserPickerProps & { kind: UserKind; label: string; none: string }) {
+  const { loadDirectory } = useApp();
+  const members = useMembers(kind);
+  // Keep the current holder listed even if they left the workspace.
+  const users = value && !members.some((u) => u.username === value.username) ? [...members, value] : members;
   return (
     <Picker
-      label="Assign to"
-      create="Assign to"
-      options={options}
-      selected={[value ?? ""]}
-      onPick={(v) => (v || null) !== value && onChange(v || null)}
+      label={label}
+      options={[{ value: "", label: none, icon: <Avatar user={null} /> }, ...users.map(userOption)]}
+      selected={[value?.username ?? ""]}
+      onPick={(v) => v !== (value?.username ?? "") && onChange(users.find((u) => u.username === v) ?? null)}
       onOpen={loadDirectory}
       {...rest}
     >
-      {children ?? <Avatar name={value} />}
+      {children ?? <Avatar user={value} />}
     </Picker>
   );
 }
+
+export const AssigneePicker = (props: UserPickerProps) => (
+  <UserPicker kind="person" label="Assign to" none="No assignee" {...props} />
+);
+
+export const DelegatePicker = (props: UserPickerProps) => (
+  <UserPicker kind="agent" label="Delegate to" none="No delegate" {...props} />
+);
 
 export function LabelsPicker({
   value,
@@ -311,24 +325,24 @@ export function LabelsPicker({
   );
 }
 
-export function ProjectPicker({ value, onChange, children, ...rest }: Trigger & { value: string; onChange: (key: string) => void }) {
-  const { workspaceProjects } = useApp();
-  const options = (workspaceProjects ?? []).map((p) => ({ value: p.key, label: p.name, icon: <ProjectMark id={p.key} /> }));
+export function TeamPicker({ value, onChange, children, ...rest }: Trigger & { value: string; onChange: (key: string) => void }) {
+  const { workspaceTeams } = useApp();
+  const options = (workspaceTeams ?? []).map((p) => ({ value: p.key, label: p.name, icon: <TeamMark id={p.key} /> }));
   return (
-    <Picker label="Project" options={options} selected={[value]} onPick={onChange} {...rest}>
+    <Picker label="Team" options={options} selected={[value]} onPick={onChange} {...rest}>
       {children}
     </Picker>
   );
 }
 
-function useIssueOptions(project: string | undefined, exclude: string[]) {
+function useIssueOptions(team: string | undefined, exclude: string[]) {
   const { workspace } = useApp();
   const [issues, setIssues] = useState<IssueSummary[]>([]);
-  // A project already scopes tightly enough; otherwise (Blocked by, any project) stay
+  // A team already scopes tightly enough; otherwise (Blocked by, any team) stay
   // within the current workspace instead of leaking every workspace's issues.
   const load = () =>
     void api
-      .issues(project ? { project } : workspace ? { workspace: workspace.key } : {})
+      .issues(team ? { team } : workspace ? { workspace: workspace.key } : {})
       .then(setIssues)
       .catch(errorToast);
   const options: Option[] = issues
@@ -340,12 +354,12 @@ function useIssueOptions(project: string | undefined, exclude: string[]) {
 export function ParentPicker({
   value,
   onChange,
-  project,
+  team,
   exclude = [],
   children,
   ...rest
-}: Trigger & { value: string | null; onChange: (id: string | null) => void; project: string; exclude?: string[]; children: ReactNode }) {
-  const { options, load } = useIssueOptions(project, exclude);
+}: Trigger & { value: string | null; onChange: (id: string | null) => void; team: string; exclude?: string[]; children: ReactNode }) {
+  const { options, load } = useIssueOptions(team, exclude);
   return (
     <Picker
       label="Set parent"
