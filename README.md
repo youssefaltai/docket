@@ -91,7 +91,7 @@ Docket copies Linear's model: everyone signs in, each workspace has its own memb
 - **People** join with an invite link (**Settings → Workspace → Invite**): whoever opens it creates an account, or joins with the one they're signed in to. There are no passwords and no email: to sign in on a new device, open **Settings → Account → Sign in on another device** on one where you're signed in (no one else can sign you in, not even an admin). Links work once and expire after 15 minutes.
 - **Agents** are added by an admin (**Settings → Workspace → Add agent**) and get a token, shown once. They write under their own name, and claiming an issue makes them its delegate while a person stays the assignee.
 - **Scripts** use personal API keys (**Settings → Account → API keys**), read-only or read-write. Keys can't create other keys, invites or sign-in links: that takes the web app.
-- **Removing someone** is suspending them: their access ends at once, their sessions and API keys are deleted, and their history keeps their name. Reinstating them means they sign in again.
+- **Removing someone** is suspending them: their access to the workspace ends at once and their history keeps their name. If it was their only workspace, their sessions and API keys are deleted too, and reinstating them means they sign in again.
 
 Serve it over HTTPS anywhere but localhost.
 

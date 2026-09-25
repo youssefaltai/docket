@@ -45,28 +45,51 @@ test("opening an invite while signed in changes nothing until the invitee accept
   expect((await s.anon.api("POST", "/api/auth/peek", { code: other })).body).toMatchObject({ you: null, needsProfile: true });
 });
 
-test("suspension revokes every credential, even for someone in other workspaces; reinstating doesn't restore them", async () => {
-  // ana is in acme and side (from the test above), with a session, an API key and an unused code.
+test("suspension in one workspace ends access there at once but leaves the others alone", async () => {
+  // ana is in acme and side (from the test above), with a session and an API key.
   expect(await workspaces("ana")).toEqual(expect.arrayContaining([s.workspace, "side"]));
   const cookie = s.as("ana", "cookie");
   const key = s.as("ana", "bearer");
-  const { code } = (await cookie.api("POST", "/api/sign-in-links")).body;
+  await s.api("POST", "/api/teams", { key: "ACM", workspace: s.workspace, name: "Acme team" });
   const socket = key.ws();
   expect(await socket.opened).toBeTrue();
 
-  const patch = (suspended: boolean) => s.as("admin", "cookie").api("PATCH", `/api/workspaces/${s.workspace}/members/ana`, { suspended });
+  // bob, admin of side, suspends ana there: she loses side at once, and nothing else.
+  const patch = (suspended: boolean) => s.as("bob", "cookie").api("PATCH", "/api/workspaces/side/members/ana", { suspended });
   expect((await patch(true)).status).toBe(200);
-  expect((await cookie.api("GET", "/api/me")).status).toBe(401);
+  expect(await socket.closed).toBe(4401); // reconnects without side's events
+  for (const who of [cookie, key]) {
+    expect((await who.api("GET", "/api/me")).status).toBe(200);
+    expect((await who.api("GET", "/api/workspaces/side/members")).status).toBe(404);
+    expect((await who.api("GET", "/api/teams?workspace=" + s.workspace)).status).toBe(200);
+  }
+  expect(await workspaces("ana")).not.toContain("side");
+  // Reinstated, the same account is back in side.
+  expect((await patch(false)).status).toBe(200);
+  expect(await workspaces("ana")).toContain("side");
+});
+
+test("suspension from your only workspace deletes every credential; reinstating doesn't restore them", async () => {
+  await s.user("carl");
+  const carl = s.as("carl", "cookie");
+  const key = s.as("carl", "bearer");
+  const { code } = (await carl.api("POST", "/api/sign-in-links")).body;
+  const socket = key.ws();
+  expect(await socket.opened).toBeTrue();
+
+  const patch = (suspended: boolean) => s.as("admin", "cookie").api("PATCH", `/api/workspaces/${s.workspace}/members/carl`, { suspended });
+  expect((await patch(true)).status).toBe(200);
+  expect((await s.as("carl", "cookie").api("GET", "/api/me")).status).toBe(401);
   expect((await key.api("GET", "/api/me")).status).toBe(401);
   expect(await socket.closed).toBe(4401);
   expect((await s.anon.api("POST", "/api/auth/redeem", { code })).status).toBe(401);
 
   expect((await patch(false)).status).toBe(200);
-  expect((await cookie.api("GET", "/api/me")).status).toBe(401);
+  expect((await s.as("carl", "cookie").api("GET", "/api/me")).status).toBe(401);
   expect((await key.api("GET", "/api/me")).status).toBe(401);
-  // A clean account: they sign in again and have both workspaces back, with no old keys.
-  const back = await s.signIn("ana");
-  expect(await workspaces("ana")).toEqual(expect.arrayContaining([s.workspace, "side"]));
+  // A clean account: they sign in again, with only a fresh key.
+  const back = await s.signIn("carl");
+  expect(await workspaces("carl")).toEqual([s.workspace!]);
   expect((await back.api("GET", "/api/api-keys")).body.map((k: any) => k.name)).toEqual(["tests"]);
 });
 

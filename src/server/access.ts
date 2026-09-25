@@ -618,13 +618,17 @@ const activeAdmins = (workspace: string) =>
 
 /** Suspends a membership; if it was the user's last active one, their sessions and keys go too. */
 /**
- * Suspends a membership and, like Linear, invalidates the user's credentials: sessions, API keys and
- * unused codes all go, even if they're still in other workspaces. Reinstating doesn't bring them back;
- * the person signs in again (a sign-in link from another device, or the server's CLI).
+ * Suspends a membership. Access to this workspace ends at once (membership is checked on every request,
+ * and their sockets reconnect without it). If it was their last active membership, their credentials
+ * go too (sessions, API keys, unused codes), so reinstating gives a clean account that signs in again.
+ * While they're active elsewhere their credentials stay: otherwise any admin of any workspace they
+ * joined could sign them out of the others and kill their keys there.
  */
 function suspend(key: string, row: MemberRow) {
   setSuspended(key, row.id, now());
-  signOutEverywhere(row.id);
+  const elsewhere = db.query("SELECT 1 FROM workspace_members WHERE user_id = ? AND suspended_at IS NULL LIMIT 1").get(row.id);
+  if (elsewhere) revoked({ userId: row.id });
+  else signOutEverywhere(row.id);
 }
 
 export function updateMember(a: Actor, workspace: unknown, username: unknown, patch: { role?: unknown; suspended?: unknown }): WorkspaceMember {
