@@ -277,11 +277,16 @@ function createServer(a: Actor): McpServer {
     "list_issues",
     {
       description:
-        "List issues, one line each: identifier · status · priority · title · @assignee · →@delegate · #labels. Sorted by status, then priority (urgent first, none last), then most recently updated. Only open issues (backlog, todo, in_progress, in_review) unless you pass `status`. Pages of `limit` (default 50): when there are more, the output ends with a cursor to pass as `after` for the next page. Unknown team, assignee, delegate or parent is an error, not an empty list. Use get_issue for the description, comments, sub-issues and blockers.",
+        "List issues, one line each: identifier · status · priority · title · @assignee · →@delegate · #labels. Sorted by status, then priority (urgent first, none last), then most recently updated. Only open issues (backlog, todo, in_progress, in_review) unless you pass `status`; there is no 'open' status, so for open issues leave `status` out. Pages of `limit` (default 50): when there are more, the output ends with a cursor to pass as `after` for the next page. Unknown team, assignee, delegate or parent is an error, not an empty list. Use get_issue for the description, comments, sub-issues and blockers.",
       inputSchema: {
         workspace: workspaceKey.optional().describe("Only issues in this workspace's teams"),
         team: teamKey.optional(),
-        status: z.array(status).optional().describe("Only these statuses. Default: all except done and canceled."),
+        status: z
+          .array(status)
+          .optional()
+          .describe(
+            'Only these statuses, from: backlog, todo, in_progress, in_review, done, canceled. Leave it out for open issues (the default: all but done and canceled); "open" is not a status.',
+          ),
         label: z.string().optional(),
         assignee: assignee.optional(),
         delegate: delegate.optional(),
