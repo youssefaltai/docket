@@ -26,7 +26,7 @@ Agents are good at doing work and bad at keeping track of it. Docket gives them 
 - **Built for agents and humans together.** 14 MCP tools for issues, comments and docs. What an agent does shows up in your UI right away over WebSocket.
 - **Linear-style, but tiny.** List and board views, priorities, labels, sub-issues, blockers, keyboard shortcuts (`C`, `/`, `⌘↵`).
 - **Docs next to your issues.** Markdown docs with version history. Write `API-1` and it links to the issue, with its status shown inline.
-- **Yours.** Self-hosted, a single SQLite file, five runtime dependencies. You can back it up with `cp`.
+- **Yours.** Self-hosted, a single SQLite file, five runtime dependencies. Back it up live with `./backup.sh`.
 - **Works everywhere.** Install it as a PWA on iPhone, iPad or Mac. It works offline for the issues and docs you've already opened.
 
 <table>
@@ -40,10 +40,15 @@ Agents are good at doing work and bad at keeping track of it. Docket gives them 
 
 ```sh
 git clone https://github.com/youssefaltai/docket && cd docket
+mkdir -p data && sudo chown -R 1000:1000 data
 docker compose up -d --build
 ```
 
-Open http://localhost:7100. Your data lives in `./data`.
+Open http://localhost:7100. Your data lives in `./data`, a single SQLite file. Don't `cp` it while Docket is running — WAL mode makes that unsafe. Use `./backup.sh` instead: it takes a consistent snapshot with `VACUUM INTO`, safe to run live.
+
+The `chown` matches `./data` to the container's non-root user (`bun`, uid 1000), which owns it inside the image. Already running Docket without it? Same command, run once, fixes an existing deployment too.
+
+Copy `.env.example` to `.env` to set `DOCKET_TOKEN` or `DOCKET_HOSTS`.
 
 Then hand it to Claude Code:
 
@@ -89,6 +94,9 @@ claude mcp add --transport http --scope user docket https://docket.example.com/m
 | `PORT` | `7100` |
 | `DATABASE_PATH` | `$XDG_DATA_HOME/docket/docket.db` |
 | `DOCKET_TOKEN` | unset (open) |
+| `DOCKET_HOSTS` | unset — extra hostnames (comma-separated) allowed in the `Host` header, besides `localhost`. Needed when serving over Tailscale or another hostname. |
+
+In Docker, set these in a `.env` file next to `docker-compose.yml` (see `.env.example`). `PORT` there only changes the host-side port mapping; the container always listens on `7100` internally.
 
 You can also use an optional config file at `$XDG_CONFIG_HOME/docket/config` or `$XDG_CONFIG_DIRS/docket/config`, with `KEY=VALUE` lines. Real env vars win. Keep it `chmod 600` if it holds the token.
 

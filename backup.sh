@@ -1,7 +1,7 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # Nightly consistent SQLite snapshot of Docket into data/backups/, keeping 14 days.
 # Cron: 17 3 * * * /path/to/docket/backup.sh >> $HOME/docket-backup.log 2>&1
-set -e
+set -euo pipefail
 cd "$(dirname "$0")"
 docker compose exec -T docket bun -e '
 import { Database } from "bun:sqlite";

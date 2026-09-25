@@ -2,9 +2,10 @@ services:
   docket:
     build: .
     ports:
-      - "127.0.0.1:7100:7100"
+      - "127.0.0.1:${PORT:-7100}:7100"
     environment:
       DOCKET_TOKEN: ${DOCKET_TOKEN:-}
+      DOCKET_HOSTS: ${DOCKET_HOSTS:-}
     volumes:
       - ./data:/app/data
     restart: unless-stopped
