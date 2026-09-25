@@ -365,7 +365,7 @@ function Login() {
 }
 
 function NameScreen({ onDone }: { onDone: (name: string) => void }) {
-  const [value, setValue] = useState("");
+  const [value, setValue] = useState(() => getName() ?? "");
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     const name = value.trim();
@@ -382,6 +382,7 @@ function NameScreen({ onDone }: { onDone: (name: string) => void }) {
         className="input"
         type="text"
         autoFocus
+        autoComplete="name"
         placeholder="Your name"
         value={value}
         onChange={(e) => setValue(e.target.value)}
