@@ -23,6 +23,7 @@ import { AppError, changed, checkOneOf, db, exists, now, pickSlug, requireText }
 /** Who a request acts as. Built fresh per request, so role and suspension changes apply at once. */
 export interface Actor {
   id: number;
+  renewCookie?: boolean; // a session in use: re-send its cookie so the browser's copy slides with the idle window
   username: string;
   name: string;
   kind: UserKind;
@@ -95,7 +96,9 @@ function checkName(value: unknown): string {
   return name;
 }
 
-function checkEmail(value: unknown): string {
+/** Optional contact info: never verified (there's no mail) and never used to find an account. */
+function checkEmail(value: unknown): string | null {
+  if (value == null || value === "") return null;
   const email = typeof value === "string" ? value.trim().toLowerCase() : "";
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new AppError(`Invalid email "${value}"`);
   return email;
@@ -114,7 +117,6 @@ function insertUser(kind: UserKind, input: { username?: unknown; name?: unknown;
   const username = checkUsername(input.username);
   const name = checkName(input.name);
   const email = kind === "person" ? checkEmail(input.email) : null;
-  if (email && exists("users", "email", email)) throw new AppError(`An account with ${email} already exists`, 409);
   return db
     .query<{ id: number }, [UserKind, string, string, string | null, string]>(
       "INSERT INTO users (kind, username, name, email, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id",
@@ -133,18 +135,14 @@ export function me(a: Actor): Me {
 }
 
 export function updateMe(a: Actor, patch: { name?: unknown; username?: unknown; email?: unknown }): Me {
-  requirePerson(a);
+  requireSession(a);
   const row = db.query<UserRow, [number]>("SELECT * FROM users WHERE id = ?").get(a.id)!;
   const username =
     patch.username === undefined || String(patch.username).trim().toLowerCase() === row.username
       ? row.username
       : checkUsername(patch.username);
   const name = patch.name === undefined ? row.name : checkName(patch.name);
-  let email = row.email;
-  if (patch.email !== undefined && checkEmail(patch.email) !== row.email) {
-    email = checkEmail(patch.email);
-    if (exists("users", "email", email)) throw new AppError(`An account with ${email} already exists`, 409);
-  }
+  const email = patch.email === undefined ? row.email : checkEmail(patch.email);
   db.query("UPDATE users SET username = ?, name = ?, email = ? WHERE id = ?").run(username, name, email, a.id);
   for (const workspace of a.workspaces.keys()) changed("member", workspace, username);
   return me(a);
@@ -184,8 +182,12 @@ export function sessionActor(token: string): Actor | null {
     db.query("DELETE FROM sessions WHERE id = ?").run(row.session_id);
     return null;
   }
-  if (idle > TOUCH_MS) db.query("UPDATE sessions SET last_seen_at = ? WHERE id = ?").run(now(), row.session_id);
-  return actorFor(row, { scope: "write", sessionId: row.session_id });
+  const actor = actorFor(row, { scope: "write", sessionId: row.session_id });
+  if (idle > TOUCH_MS) {
+    db.query("UPDATE sessions SET last_seen_at = ? WHERE id = ?").run(now(), row.session_id);
+    actor.renewCookie = true;
+  }
+  return actor;
 }
 
 /** The actor behind an API key (`dk_…`), or null if it's unknown or revoked. */
@@ -220,6 +222,14 @@ export function requireAdmin(a: Actor, workspace: unknown): string {
 
 function requirePerson(a: Actor) {
   if (a.kind !== "person") throw new AppError("Only people can do that", 403);
+}
+
+/**
+ * Managing access (keys, sessions, codes, invites, members, agents, your profile) takes a signed-in
+ * session: an API key that could mint credentials would outlive its own revocation.
+ */
+function requireSession(a: Actor) {
+  if (a.sessionId === null) throw new AppError("Sign in to the web app to manage access; API keys can't", 403);
 }
 
 /**
@@ -318,6 +328,7 @@ export function listSessions(a: Actor): Session[] {
 }
 
 export function revokeSession(a: Actor, id: unknown) {
+  requireSession(a);
   const row = db.query("DELETE FROM sessions WHERE id = ? AND user_id = ? RETURNING id").get(Number(id), a.id);
   if (!row) throw new AppError(`Session ${id} not found`, 404);
   revoked({ userId: a.id, sessionId: Number(id) });
@@ -325,6 +336,7 @@ export function revokeSession(a: Actor, id: unknown) {
 
 /** Signs out everywhere else: every session but the current one. */
 export function revokeOtherSessions(a: Actor) {
+  requireSession(a);
   const gone = db
     .query<{ id: number }, [number, number]>("DELETE FROM sessions WHERE user_id = ? AND id != ? RETURNING id")
     .all(a.id, a.sessionId ?? -1);
@@ -370,7 +382,7 @@ export function listApiKeys(a: Actor): ApiKey[] {
 }
 
 export function createApiKey(a: Actor, input: { name?: unknown; scope?: unknown }) {
-  requirePerson(a);
+  requireSession(a);
   const name = requireText(input.name, "name");
   const scope = input.scope === undefined ? "write" : checkOneOf(input.scope, API_KEY_SCOPES, "scope");
   return insertApiKey(a.id, name, scope);
@@ -384,9 +396,10 @@ export function revokeApiKey(a: Actor, id: unknown) {
   revoked({ userId: a.id, keyId: Number(id) });
 }
 
-/** Revokes every session and key of a user (suspended from their last workspace, or an agent removed). */
+/** Revokes every session, key and unused sign-in code of a user (suspended from their last workspace, or an agent removed). */
 function signOutEverywhere(userId: number) {
   db.query("DELETE FROM sessions WHERE user_id = ?").run(userId);
+  db.query("DELETE FROM codes WHERE user_id = ? AND used_at IS NULL").run(userId);
   db.query("UPDATE api_keys SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL").run(now(), userId);
   revoked({ userId });
 }
@@ -396,7 +409,6 @@ function signOutEverywhere(userId: number) {
 interface CodeRow {
   id: number;
   purpose: "invite" | "sign-in";
-  email: string | null;
   user_id: number | null;
   workspace: string | null;
   role: Role | null;
@@ -404,17 +416,16 @@ interface CodeRow {
   used_at: string | null;
 }
 
-function issueCode(fields: { purpose: "invite" | "sign-in"; email?: string; userId?: number; workspace?: string; role?: Role; by?: number }) {
+function issueCode(fields: { purpose: "invite" | "sign-in"; userId?: number; workspace?: string; role?: Role; by?: number }) {
   const code = newCode();
   const time = Date.now();
   const expiresAt = new Date(time + CODE_TTL_MS).toISOString();
   db.query(
-    `INSERT INTO codes (code_hash, purpose, email, user_id, workspace, role, created_by, created_at, expires_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO codes (code_hash, purpose, user_id, workspace, role, created_by, created_at, expires_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     hash(normalizeCode(code)),
     fields.purpose,
-    fields.email ?? null,
     fields.userId ?? null,
     fields.workspace ?? null,
     fields.role ?? null,
@@ -437,31 +448,32 @@ function codeRow(code: unknown): CodeRow {
   return row;
 }
 
-const userIdByEmail = (email: string) =>
-  db.query<{ id: number }, [string]>("SELECT id FROM users WHERE email = ?").get(email)?.id;
-
-export function peekCode(code: unknown): CodeInfo {
+/** `signedIn`: the user whose session came with the request, if any (an invite joins them). */
+export function peekCode(code: unknown, signedIn: number | null): CodeInfo {
   const row = codeRow(code);
   const workspace = row.workspace
     ? db.query<{ name: string }, [string]>("SELECT name FROM workspaces WHERE key = ?").get(row.workspace)?.name ?? null
     : null;
-  const email =
-    row.email ?? (row.user_id ? db.query<{ email: string | null }, [number]>("SELECT email FROM users WHERE id = ?").get(row.user_id)!.email : null);
-  return {
-    kind: row.purpose,
-    email,
-    workspace,
-    needsProfile: row.purpose === "invite" && userIdByEmail(row.email!) === undefined,
-  };
+  const username = row.user_id ? db.query<{ username: string }, [number]>("SELECT username FROM users WHERE id = ?").get(row.user_id)!.username : null;
+  return { kind: row.purpose, workspace, username, needsProfile: row.purpose === "invite" && signedIn === null };
 }
 
-/** Uses a code: an invite adds the membership (creating the account if needed); either way, signs in. */
-export function redeemCode(code: unknown, profile: { name?: unknown; username?: unknown }, client: Client): { user: User; token: string } {
+/**
+ * Uses a code and signs in. A sign-in link opens the account it was made for. An invite is a code the
+ * admin hands over, never tied to an email: redeemed while signed in, it adds you to the workspace;
+ * signed out, it creates a new account from `profile`.
+ */
+export function redeemCode(
+  code: unknown,
+  profile: { name?: unknown; username?: unknown; email?: unknown },
+  client: Client,
+  signedIn: number | null,
+): { user: User; token: string } {
   return db.transaction(() => {
     const row = codeRow(code);
     let userId = row.user_id;
     if (row.purpose === "invite") {
-      userId = userIdByEmail(row.email!) ?? insertUser("person", { ...profile, email: row.email });
+      userId = signedIn ?? insertUser("person", profile);
       const member = db
         .query<{ suspended_at: string | null }, [string, number]>(
           "SELECT suspended_at FROM workspace_members WHERE workspace = ? AND user_id = ?",
@@ -486,16 +498,25 @@ export function redeemCode(code: unknown, profile: { name?: unknown; username?: 
 
 /** A sign-in link for yourself, to sign in on another device. */
 export function selfSignInLink(a: Actor) {
-  requirePerson(a);
+  requireSession(a);
   return issueCode({ purpose: "sign-in", userId: a.id, by: a.id });
 }
 
-/** An admin's sign-in link for a person in their workspace (they lost their devices). */
+/**
+ * An admin's sign-in link for a person who lost their devices. It opens their whole account, so the
+ * caller must be an admin of every workspace they're in; otherwise one admin could reach another's.
+ */
 export function memberSignInLink(a: Actor, workspace: unknown, username: unknown) {
+  requireSession(a);
   const key = requireAdmin(a, workspace);
   const member = memberRow(key, username);
   if (member.kind !== "person") throw new AppError("Agents sign in with their token, not a link");
   if (member.suspended_at) throw new AppError(`${member.username} is suspended; reinstate them first`, 409);
+  const elsewhere = db
+    .query<{ workspace: string }, [number]>("SELECT workspace FROM workspace_members WHERE user_id = ? AND suspended_at IS NULL")
+    .all(member.id)
+    .some(({ workspace }) => a.workspaces.get(workspace) !== "admin");
+  if (elsewhere) throw new AppError(`${member.username} is also in workspaces you don't administer; they can sign in on another device from Settings, or run sign-in-link on the server`, 403);
   return issueCode({ purpose: "sign-in", userId: member.id, by: a.id });
 }
 
@@ -506,18 +527,12 @@ export function recoverySignInLink(username: string) {
   return issueCode({ purpose: "sign-in", userId: user.id });
 }
 
-export function invite(a: Actor, workspace: unknown, input: { email?: unknown; role?: unknown }) {
+/** An invite: a one-time code the admin hands to someone, who joins with it (new account or existing). */
+export function invite(a: Actor, workspace: unknown, input: { role?: unknown }) {
+  requireSession(a);
   const key = requireAdmin(a, workspace);
-  const email = checkEmail(input.email);
   const role = checkOneOf(input.role ?? "member", ["admin", "member"] as const, "role");
-  const existing = userIdByEmail(email);
-  if (existing !== undefined) {
-    const member = db
-      .query<{ suspended_at: string | null }, [string, number]>("SELECT suspended_at FROM workspace_members WHERE workspace = ? AND user_id = ?")
-      .get(key, existing);
-    if (member) throw new AppError(member.suspended_at ? `${email} is suspended here; reinstate them instead` : `${email} is already a member`, 409);
-  }
-  return issueCode({ purpose: "invite", email, workspace: key, role, by: a.id });
+  return issueCode({ purpose: "invite", workspace: key, role, by: a.id });
 }
 
 // --- Workspaces and members ---
@@ -632,6 +647,7 @@ function suspend(key: string, row: MemberRow) {
 }
 
 export function updateMember(a: Actor, workspace: unknown, username: unknown, patch: { role?: unknown; suspended?: unknown }): WorkspaceMember {
+  requireSession(a);
   const key = requireAdmin(a, workspace);
   const row = memberRow(key, username);
   const role = patch.role === undefined ? row.role : checkOneOf(patch.role, ["admin", "member"] as const, "role");
@@ -654,6 +670,7 @@ export function updateMember(a: Actor, workspace: unknown, username: unknown, pa
 
 /** Adds an agent to a workspace: its own account (kind "agent") and a token, shown once. */
 export function createAgent(a: Actor, workspace: unknown, input: { name?: unknown; username?: unknown }) {
+  requireSession(a);
   const key = requireAdmin(a, workspace);
   const { agent, token } = db.transaction(() => {
     const id = insertUser("agent", input);
@@ -666,6 +683,7 @@ export function createAgent(a: Actor, workspace: unknown, input: { name?: unknow
 }
 
 function agentRow(a: Actor, workspace: unknown, username: unknown): { key: string; row: MemberRow } {
+  requireSession(a);
   const key = requireAdmin(a, workspace);
   const row = memberRow(key, username);
   if (row.kind !== "agent") throw new AppError(`${row.username} isn't an agent`, 404);

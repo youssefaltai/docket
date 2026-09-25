@@ -38,7 +38,7 @@ export interface UserRef {
 }
 
 export interface User extends UserRef {
-  email: string | null; // people only
+  email: string | null; // people only, optional; unverified contact info, never used to find an account
   createdAt: string;
 }
 
@@ -106,16 +106,16 @@ export interface CodeLink {
 /** What a code is for, without using it up (POST /api/auth/peek). */
 export interface CodeInfo {
   kind: "invite" | "sign-in";
-  email: string | null;
   workspace: string | null; // invite: the workspace's name
-  needsProfile: boolean; // an invite for an email with no account: redeem needs name and username
+  username: string | null; // sign-in: whose account it opens
+  needsProfile: boolean; // an invite redeemed while signed out creates an account: it needs name and username
 }
 
 export interface SetupInput {
   code: string;
-  email: string;
   name: string;
   username: string;
+  email?: string;
   workspace: WorkspaceInput;
 }
 
@@ -137,7 +137,7 @@ export interface TeamInput {
   description?: string;
 }
 
-export type TeamPatch = Partial<Omit<TeamInput, "key">>; // the key never changes; workspace moves it (you must be in both)
+export type TeamPatch = Partial<Omit<TeamInput, "key" | "workspace">>; // the key and workspace never change
 
 export interface IssueSummary {
   id: string; // identifier, e.g. "BRD-12"

@@ -193,26 +193,14 @@ export function createTeam(a: Actor, input: TeamInput): Team {
   return toTeam(teamRow(a, key));
 }
 
-export function updateTeam(a: Actor, key: string, patch: TeamPatch): Team {
+/** Renames or redescribes a team. Teams never change workspace: their issues, people and links belong to it. */
+export function updateTeam(a: Actor, key: string, patch: TeamPatch & { workspace?: unknown }): Team {
   const row = teamRow(a, key);
+  if (patch.workspace !== undefined && patch.workspace !== row.workspace) throw new AppError("Teams can't move between workspaces");
   const name = patch.name === undefined ? row.name : requireText(patch.name, "name");
   const description = patch.description === undefined ? row.description : optionalText(patch.description, "description");
-  const workspace = patch.workspace === undefined ? row.workspace : requireMember(a, patch.workspace);
-  if (workspace !== row.workspace) {
-    // Assignees, delegates and relations belong to the old workspace; moving would strand them.
-    const linked = db
-      .query(
-        `SELECT 1 FROM issues i WHERE i.team_key = ? AND (i.assignee_id IS NOT NULL OR i.delegate_id IS NOT NULL
-           OR i.parent_id IN (SELECT id FROM issues WHERE team_key != ?)
-           OR i.id IN (SELECT blocked_id FROM issue_blocks x JOIN issues b ON b.id = x.blocker_id WHERE b.team_key != ?)
-           OR i.id IN (SELECT blocker_id FROM issue_blocks x JOIN issues b ON b.id = x.blocked_id WHERE b.team_key != ?)) LIMIT 1`,
-      )
-      .get(row.key, row.key, row.key, row.key);
-    if (linked) throw new AppError("Unassign its issues and remove links to other teams before moving it to another workspace", 409);
-  }
-  db.query("UPDATE teams SET name = ?, description = ?, workspace = ?, updated_at = ? WHERE key = ?").run(name, description, workspace, now(), row.key);
+  db.query("UPDATE teams SET name = ?, description = ?, updated_at = ? WHERE key = ?").run(name, description, now(), row.key);
   changed("team", row.workspace, row.key);
-  if (workspace !== row.workspace) changed("team", workspace, row.key);
   return toTeam(teamRow(a, row.key));
 }
 

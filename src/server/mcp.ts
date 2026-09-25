@@ -244,12 +244,11 @@ function createServer(a: Actor): McpServer {
     "update_team",
     {
       description:
-        "Update a team's name or description, or move it to another workspace you're in; only the fields you pass change. Its key never changes. Only do this when asked to.",
+        "Update a team's name or description; only the fields you pass change. Its key and workspace never change. Only do this when asked to.",
       inputSchema: {
         key: teamKey,
         name: z.string().optional(),
         description: z.string().optional(),
-        workspace: workspaceKey.optional().describe("Move the team to this workspace"),
       },
     },
     writes(({ key, ...patch }) => {

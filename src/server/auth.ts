@@ -47,14 +47,24 @@ const signedOut = (req: Request) => ({ "Set-Cookie": cookieHeader(req, "", 0) })
 const bearerOf = (req: Request) => req.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1];
 const cookieOf = (req: Request) => req.headers.get("cookie")?.match(new RegExp(`(?:^|;\\s*)${COOKIE}=([^;]+)`))?.[1];
 
-/** The request's actor; `stale` marks a cookie that no longer signs in, so the 401 can clear it. */
-function identify(req: Request, bearerOnly: boolean): { actor: Actor | null; stale?: boolean } {
+/** The actor behind a session cookie, if the request carries one that still signs in. */
+const sessionOf = (req: Request) => {
+  const cookie = cookieOf(req);
+  return cookie ? access.sessionActor(cookie) : null;
+};
+
+/**
+ * The request's actor; `stale` marks a cookie that no longer signs in, so the 401 can clear it.
+ * Cookies ride along on same-site requests (a sibling subdomain, another localhost port), so a
+ * cookie-authed WebSocket or write must carry our own Origin.
+ */
+function identify(req: Request, bearerOnly: boolean): { actor: Actor | null; stale?: boolean; crossSite?: boolean } {
   const bearer = bearerOf(req);
   if (bearer) return { actor: access.keyActor(bearer) };
   const cookie = cookieOf(req);
   if (bearerOnly || !cookie) return { actor: null };
   const upgrade = req.headers.get("upgrade")?.toLowerCase() === "websocket";
-  if (upgrade && !sameOrigin(req)) return { actor: null };
+  if ((upgrade || req.method !== "GET") && !sameOrigin(req)) return { actor: null, crossSite: true };
   const actor = access.sessionActor(cookie);
   return actor ? { actor } : { actor: null, stale: true };
 }
@@ -76,11 +86,17 @@ export function actorOf(req: Request): Actor {
 export function guard<T>(route: T, { bearerOnly = false, readCheck = true } = {}): T {
   const wrap = (fn: (req: Request, ...rest: unknown[]) => unknown) => (req: Request, ...rest: unknown[]) => {
     if (!hostAllowed(req)) return forbiddenHost();
-    const { actor, stale } = identify(req, bearerOnly);
+    const { actor, stale, crossSite } = identify(req, bearerOnly);
+    if (crossSite) return json({ error: "Cross-origin request refused" }, 403);
     if (!actor) return unauthorized(stale ? signedOut(req) : undefined);
     if (readCheck && actor.scope === "read" && req.method !== "GET") return json({ error: "This API key is read-only" }, 403);
     actors.set(req, actor);
-    return fn(req, ...rest);
+    const result = fn(req, ...rest);
+    if (!actor.renewCookie) return result;
+    return Promise.resolve(result).then((res) => {
+      if (res instanceof Response) res.headers.append("Set-Cookie", signedIn(req, cookieOf(req)!)["Set-Cookie"]);
+      return res;
+    });
   };
   if (typeof route === "function") return wrap(route as never) as T;
   return Object.fromEntries(Object.entries(route as object).map(([m, fn]) => [m, wrap(fn)])) as T;
@@ -135,10 +151,14 @@ export const authRoutes = {
       return json({ user, workspace }, 201, signedIn(req, token));
     }),
   },
-  "/api/auth/peek": { POST: open((body) => json(access.peekCode(body.code))) },
+  // An invite redeemed with a session joins that user; the Origin check keeps another site from doing it for them.
+  "/api/auth/peek": {
+    POST: open((body, req) => json(access.peekCode(body.code, sameOrigin(req) ? (sessionOf(req)?.id ?? null) : null))),
+  },
   "/api/auth/redeem": {
     POST: open((body, req, client) => {
-      const { user, token } = access.redeemCode(body.code, body, client);
+      const signedInAs = sameOrigin(req) ? (sessionOf(req)?.id ?? null) : null;
+      const { user, token } = access.redeemCode(body.code, body, client, signedInAs);
       return json({ user }, 200, signedIn(req, token));
     }),
   },

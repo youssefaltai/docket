@@ -27,13 +27,14 @@ db.run("PRAGMA busy_timeout = 5000");
 // Append-only: each entry upgrades the schema by one PRAGMA user_version.
 const MIGRATIONS = [
   `
-  -- People and agents. Agents have no email and sign in only with API keys.
+  -- People and agents; the username is the identity. Email is unverified contact info (there's no mail),
+  -- so it's never used to find an account. Agents sign in only with API keys.
   CREATE TABLE users (
     id INTEGER PRIMARY KEY,
     kind TEXT NOT NULL CHECK (kind IN ('person', 'agent')),
     username TEXT NOT NULL UNIQUE,
     name TEXT NOT NULL,
-    email TEXT UNIQUE,
+    email TEXT,
     created_at TEXT NOT NULL
   );
   CREATE TABLE workspaces (
@@ -73,12 +74,11 @@ const MIGRATIONS = [
     revoked_at TEXT
   );
   CREATE INDEX api_keys_user ON api_keys(user_id);
-  -- One-time codes: invites (email, workspace, role) and sign-in links (user).
+  -- One-time codes: invites (workspace, role) and sign-in links (user).
   CREATE TABLE codes (
     id INTEGER PRIMARY KEY,
     code_hash TEXT NOT NULL UNIQUE,
     purpose TEXT NOT NULL CHECK (purpose IN ('invite', 'sign-in')),
-    email TEXT,
     user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
     workspace TEXT REFERENCES workspaces(key) ON DELETE CASCADE,
     role TEXT,
