@@ -66,7 +66,7 @@ Try: *"Create a team called Website in Docket and file issues for everything in 
 
 The container listens on `127.0.0.1:7100` only. Put it behind whatever you already use for HTTPS: a reverse proxy (Caddy, nginx, Traefik), a tunnel, or a private network like Tailscale or WireGuard.
 
-Back up with `./backup.sh`. Run it from a nightly cron: it writes a consistent snapshot into `data/backups/` and keeps 14 days.
+Back up with `./backup.sh`. Run it from a nightly cron: it writes a consistent snapshot into `data/backups/` and keeps 14 days. With the assistant, back up docket-chat's database the same way: `./backup.sh /opt/apps/docket-chat docket-chat /data/chat.db` (its compose folder, service and database path).
 
 </details>
 
