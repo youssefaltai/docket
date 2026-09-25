@@ -23,8 +23,8 @@ Env: `PORT` (default 7100), `DATABASE_PATH` (default `$XDG_DATA_HOME/docket/dock
 ## Data
 
 - **workspaces**: key (PK, URL-safe lowercase slug, e.g. `acme`), name, created_at, updated_at.
-- **projects**: key (PK, 2–5 uppercase letters, unique across all workspaces), workspace (→ workspaces.key; required by the app), name, description, created_at, updated_at.
-- **issues**: id (PK), project_key, number (per-project sequence), title, description, status, priority, labels (JSON array), assignee, parent_id, created_at, updated_at, completed_at. Unique (project_key, number).
+- **projects**: key (PK, 2–5 uppercase letters, unique across all workspaces), workspace (→ workspaces.key; required by the app), name, description, next_number (the next issue number), created_at, updated_at.
+- **issues**: id (PK), project_key, number (per-project sequence from `projects.next_number`; never reused after a delete), title, description, status, priority, labels (JSON array), assignee, parent_id, created_at, updated_at, completed_at. Unique (project_key, number).
 - **issue_blocks**: blocker_id, blocked_id.
 - **comments**: id, issue_id, author, body, created_at.
 
@@ -143,6 +143,10 @@ Tool descriptions must say: docs are markdown; mention issues by identifier (e.g
 ## Workspaces
 
 Migration 3 (additive): creates `workspaces`, inserts `default` / "Default", adds the nullable `projects.workspace` column (SQLite can't add a NOT NULL column with a foreign key) and assigns every existing project to `default`. `Workspace` includes `projectCount`. Mutations publish `{ type: "changed", entity: "workspace", id: key }`.
+
+## Issue numbering
+
+Migration 4 (additive): adds `projects.next_number INTEGER NOT NULL DEFAULT 1`, backfilled to `MAX(number) + 1` per project. `createIssue` takes the number from it (increment inside the insert transaction), so deleting an issue never frees its number. Numbers deleted before the migration (above the current max) can be reused once.
 
 ## Deploy
 

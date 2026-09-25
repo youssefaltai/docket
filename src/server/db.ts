@@ -144,6 +144,11 @@ const MIGRATIONS = [
   UPDATE projects SET workspace = 'default';
   CREATE INDEX projects_workspace ON projects(workspace);
   `,
+  // Issue numbers come from a per-project counter, so a deleted issue's number is never reused.
+  `
+  ALTER TABLE projects ADD COLUMN next_number INTEGER NOT NULL DEFAULT 1;
+  UPDATE projects SET next_number = COALESCE((SELECT MAX(number) FROM issues WHERE project_key = projects.key), 0) + 1;
+  `,
 ];
 
 const { user_version } = db.query("PRAGMA user_version").get() as { user_version: number };
@@ -566,7 +571,7 @@ export function createIssue(input: IssueInput): Issue {
   const identifier = db.transaction(() => {
     const { number } = db
       .query<{ number: number }, [string]>(
-        "SELECT COALESCE(MAX(number), 0) + 1 AS number FROM issues WHERE project_key = ?",
+        "UPDATE projects SET next_number = next_number + 1 WHERE key = ? RETURNING next_number - 1 AS number",
       )
       .get(project)!;
     const row: Record<string, SQLQueryBindings> = {
