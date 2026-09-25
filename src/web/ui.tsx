@@ -18,7 +18,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { Marked } from "marked";
-import { HttpError, api } from "./api";
+import { HttpError, api, isMine } from "./api";
 import {
   OPEN_STATUSES,
   STATUSES,
@@ -117,6 +117,7 @@ export interface AppState {
   newDoc: (project?: string) => void;
   newProject: () => void;
   newWorkspace: () => void;
+  projectSettings: (key: string) => void;
   /** The doc page reports its project so the sidebar and "new" defaults follow it. */
   setDocProject: (key: string | null) => void;
   openNav: () => void;
@@ -332,6 +333,7 @@ export const PencilIcon = icon("M10.5 2.5l3 3L6 13H3v-3z");
 export const CopyIcon = icon("M5.5 5.5h7v7h-7zM10.5 5.5v-2h-7v7h2");
 export const DocIcon = icon("M3.5 2.5a1 1 0 0 1 1-1h4.5l3.5 3.5v8.5a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1zM9 1.5V5h3.5M6 8.5h4M6 11h2.5");
 export const HistoryIcon = icon("M2 8a6 6 0 1 0 6-6 6.5 6.5 0 0 0-4.5 1.8L2 5.3M2 2v3.3h3.3M8 4.7V8l2.7 1.3");
+export const SettingsIcon = icon("M2.5 4.5h6M12 4.5h1.5M2.5 11.5h1.5M7.5 11.5h6M10 3v3M6 10v3");
 export const ComposeIcon = icon("M13.5 8.5v4a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1h4M11.5 2.5l2 2L8 10H6V8z");
 
 export function Logo() {
@@ -446,9 +448,9 @@ export function ProjectMark({ id }: { id: string }) {
   );
 }
 
-/** Project header: mark + inline-editable name, and the Issues / Docs tabs. */
+/** Project header: mark, inline-editable name and a settings button. */
 export function ProjectTitle({ project }: { project: Project }) {
-  const { reloadProjects } = useApp();
+  const { reloadProjects, projectSettings } = useApp();
   return (
     <>
       <ProjectMark id={project.key} />
@@ -457,6 +459,14 @@ export function ProjectTitle({ project }: { project: Project }) {
         value={project.name}
         onSave={(name) => api.updateProject(project.key, { name }).then(reloadProjects, errorToast)}
       />
+      <button
+        className="icon-btn sm"
+        onClick={() => projectSettings(project.key)}
+        aria-label="Project settings"
+        title="Project settings"
+      >
+        <SettingsIcon />
+      </button>
     </>
   );
 }
@@ -877,16 +887,22 @@ export function Modal({
 
 // ---------- Comments ----------
 
+export interface CommentActions {
+  add: (body: string) => Promise<void>;
+  edit: (id: number, body: string) => Promise<void>;
+  remove: (id: number) => Promise<void>;
+}
+
 /** A comment thread with composer, shared by issues and docs. `children` are extra timeline events. */
 export function Comments({
   title = "Comments",
   comments,
-  onComment,
+  actions,
   children,
 }: {
   title?: string;
   comments: Comment[];
-  onComment: (body: string) => Promise<void>;
+  actions: CommentActions;
   children?: ReactNode;
 }) {
   return (
@@ -894,25 +910,69 @@ export function Comments({
       <ol className="timeline">
         {children}
         {comments.map((c) => (
-          <li className="comment" key={c.id}>
-            <div className="comment-head">
-              <Avatar name={c.author} />
-              <span className="comment-author" dir="auto">
-                {c.author}
-              </span>
-              <time title={fullDate(c.createdAt)}>{ago(c.createdAt)}</time>
-            </div>
-            <Markdown text={c.body} />
-          </li>
+          <CommentItem key={c.id} comment={c} actions={actions} />
         ))}
       </ol>
-      <Composer onSubmit={onComment} />
+      <Composer onSubmit={actions.add} />
     </Section>
   );
 }
 
-function Composer({ onSubmit }: { onSubmit: (body: string) => Promise<void> }) {
-  const [body, setBody] = useState("");
+function CommentItem({ comment: c, actions }: { comment: Comment; actions: CommentActions }) {
+  const [editing, setEditing] = useState(false);
+  const save = async (body: string) => {
+    if (body !== c.body.trim()) await actions.edit(c.id, body);
+    setEditing(false);
+  };
+  const remove = () => {
+    if (confirm("Delete this comment? This can’t be undone.")) actions.remove(c.id).catch(errorToast);
+  };
+  return (
+    <li className="comment">
+      <div className="comment-head">
+        <Avatar name={c.author} />
+        <span className="comment-author" dir="auto">
+          {c.author}
+        </span>
+        <time title={fullDate(c.createdAt)}>{ago(c.createdAt)}</time>
+        {c.editedAt && (
+          <span className="comment-edited" title={`Edited ${fullDate(c.editedAt)}`}>
+            edited
+          </span>
+        )}
+        {isMine(c.author) && !editing && (
+          <span className="comment-actions">
+            <button className="icon-btn xs" onClick={() => setEditing(true)} aria-label="Edit comment" title="Edit">
+              <PencilIcon />
+            </button>
+            <button className="icon-btn xs" onClick={remove} aria-label="Delete comment" title="Delete">
+              <TrashIcon />
+            </button>
+          </span>
+        )}
+      </div>
+      {editing ? (
+        <Composer initial={c.body} action="Save" onSubmit={save} onCancel={() => setEditing(false)} />
+      ) : (
+        <Markdown text={c.body} />
+      )}
+    </li>
+  );
+}
+
+/** Writes a new comment, or edits one when given `initial` and `onCancel`. */
+function Composer({
+  onSubmit,
+  initial = "",
+  action = "Comment",
+  onCancel,
+}: {
+  onSubmit: (body: string) => Promise<void>;
+  initial?: string;
+  action?: string;
+  onCancel?: () => void;
+}) {
+  const [body, setBody] = useState(initial);
   const [busy, setBusy] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
   useAutosize(ref, body);
@@ -937,6 +997,7 @@ function Composer({ onSubmit }: { onSubmit: (body: string) => Promise<void> }) {
         dir="auto"
         placeholder="Leave a comment…"
         aria-label="Comment"
+        autoFocus={!!onCancel}
         value={body}
         onChange={(e) => setBody(e.target.value)}
         onKeyDown={(e) => {
@@ -945,13 +1006,19 @@ function Composer({ onSubmit }: { onSubmit: (body: string) => Promise<void> }) {
             send();
           } else if (e.key === "Escape") {
             e.preventDefault();
-            e.currentTarget.blur();
+            if (onCancel) onCancel();
+            else e.currentTarget.blur();
           }
         }}
       />
       <div className="composer-foot">
+        {onCancel && (
+          <button className="btn btn-ghost btn-sm" onClick={onCancel}>
+            Cancel
+          </button>
+        )}
         <button className="btn btn-primary btn-sm" disabled={!body.trim() || busy} onClick={send}>
-          Comment <Kbd>{MOD}↵</Kbd>
+          {action} <Kbd>{MOD}↵</Kbd>
         </button>
       </div>
     </div>

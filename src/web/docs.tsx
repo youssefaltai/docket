@@ -298,6 +298,12 @@ export function DocPage({ slug }: { slug: string }) {
     invalidate(); // drop any in-flight fetch that predates this change
     setDoc(fresh);
   };
+  // Comment calls answer with the whole doc; apply it unless something newer landed.
+  const withFresh = async (call: () => Promise<Document>) => {
+    const n = invalidate();
+    const fresh = await call();
+    if (isLatest(n)) setDoc(fresh);
+  };
   const patch = (p: DocumentPatch) =>
     api.updateDocument(doc.slug, p).then(apply, (e) => {
       errorToast(e);
@@ -406,10 +412,10 @@ export function DocPage({ slug }: { slug: string }) {
                   )}
                   <Comments
                     comments={doc.comments}
-                    onComment={async (text) => {
-                      const n = invalidate();
-                      const fresh = await api.commentDocument(doc.slug, text);
-                      if (isLatest(n)) setDoc(fresh);
+                    actions={{
+                      add: (body) => withFresh(() => api.commentDocument(doc.slug, body)),
+                      edit: (cid, body) => withFresh(() => api.editDocumentComment(doc.slug, cid, body)),
+                      remove: (cid) => withFresh(() => api.deleteDocumentComment(doc.slug, cid)),
                     }}
                   />
                 </>

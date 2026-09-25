@@ -35,6 +35,7 @@ import {
   useApp,
   useAutosize,
   useFetch,
+  type CommentActions,
 } from "./ui";
 
 export function IssuePage({ id }: { id: string }) {
@@ -123,10 +124,16 @@ export function IssuePage({ id }: { id: string }) {
       });
   };
 
-  const comment = async (body: string) => {
+  // Each comment call answers with the whole issue; apply it unless something newer landed.
+  const withFresh = async (call: () => Promise<Issue>) => {
     const n = invalidate();
-    const fresh = await api.comment(issue.id, body);
+    const fresh = await call();
     if (isLatest(n)) setIssue(fresh);
+  };
+  const comments: CommentActions = {
+    add: (body) => withFresh(() => api.comment(issue.id, body)),
+    edit: (cid, body) => withFresh(() => api.editComment(issue.id, cid, body)),
+    remove: (cid) => withFresh(() => api.deleteComment(issue.id, cid)),
   };
 
   const remove = async () => {
@@ -174,7 +181,7 @@ export function IssuePage({ id }: { id: string }) {
             <Description key={`d-${issue.id}`} value={issue.description} onSave={(description) => patch({ description })} />
             <SubIssues issue={issue} onPatch={patchChild} />
             <Docs issue={issue} />
-            <Activity issue={issue} onComment={comment} />
+            <Activity issue={issue} actions={comments} />
           </div>
         </div>
         <aside className="issue-props">
@@ -317,9 +324,9 @@ function Docs({ issue }: { issue: Issue }) {
   );
 }
 
-function Activity({ issue, onComment }: { issue: Issue; onComment: (body: string) => Promise<void> }) {
+function Activity({ issue, actions }: { issue: Issue; actions: CommentActions }) {
   return (
-    <Comments title="Activity" comments={issue.comments} onComment={onComment}>
+    <Comments title="Activity" comments={issue.comments} actions={actions}>
       <li className="event">
         <span className="event-dot" />
         Created <time title={fullDate(issue.createdAt)}>{ago(issue.createdAt)}</time>

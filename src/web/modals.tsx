@@ -1,6 +1,6 @@
 // New issue, doc, project and workspace dialogs.
 import { useRef, useState, type ReactNode } from "react";
-import { PRIORITY_LABELS, STATUS_LABELS, type IssueInput, type Workspace } from "../shared/types";
+import { PRIORITY_LABELS, STATUS_LABELS, type IssueInput, type ProjectPatch, type Workspace } from "../shared/types";
 import { api } from "./api";
 import { AssigneePicker, LabelsPicker, ParentPicker, PriorityPicker, ProjectPicker, StatusPicker } from "./pickers";
 import {
@@ -350,6 +350,70 @@ export function NewWorkspaceModal({ onCreate, onClose }: { onCreate: (w: Workspa
         <span>Name</span>
         <input className="input" autoFocus dir="auto" placeholder="Acme" value={name} onChange={(e) => setName(e.target.value)} />
         <small>A workspace groups related projects, with their issues and docs.</small>
+      </label>
+    </FormModal>
+  );
+}
+
+/** Edits what the header can't inline: the description, the workspace it's in, and that workspace's name. */
+export function ProjectSettingsModal({ projectKey, onClose }: { projectKey: string; onClose: () => void }) {
+  const app = useApp();
+  const project = app.projects?.find((p) => p.key === projectKey);
+  const home = app.workspaces?.find((w) => w.key === project?.workspace);
+  const [description, setDescription] = useState(project?.description ?? "");
+  const [workspace, setWorkspace] = useState(project?.workspace ?? "");
+  const [workspaceName, setWorkspaceName] = useState(home?.name ?? "");
+  if (!project || !home) return null;
+
+  return (
+    <FormModal
+      title="Project settings"
+      aside={
+        <span className="muted" dir="auto">
+          {project.name}
+        </span>
+      }
+      action="Save"
+      ready={!!workspaceName.trim()}
+      onSubmit={async () => {
+        if (workspaceName.trim() !== home.name) await api.updateWorkspace(home.key, { name: workspaceName.trim() });
+        const patch: ProjectPatch = {};
+        if (description.trim() !== project.description) patch.description = description.trim();
+        if (workspace !== project.workspace) patch.workspace = workspace;
+        if (Object.keys(patch).length) await api.updateProject(project.key, patch);
+        app.reloadProjects();
+        onClose();
+      }}
+      onClose={onClose}
+    >
+      <label className="field">
+        <span>
+          Description <em>optional</em>
+        </span>
+        <textarea
+          className="input"
+          autoFocus
+          dir="auto"
+          rows={2}
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+        />
+      </label>
+      <label className="field">
+        <span>Workspace</span>
+        <select className="input" value={workspace} onChange={(e) => setWorkspace(e.target.value)}>
+          {app.workspaces?.map((w) => (
+            <option key={w.key} value={w.key}>
+              {w.name}
+            </option>
+          ))}
+        </select>
+        <small>Moving keeps its key, issues and docs.</small>
+      </label>
+      <label className="field">
+        <span>Workspace name</span>
+        <input className="input" dir="auto" value={workspaceName} onChange={(e) => setWorkspaceName(e.target.value)} />
+        <small>Renames {home.name} for all its projects.</small>
       </label>
     </FormModal>
   );

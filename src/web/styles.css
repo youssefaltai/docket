@@ -1073,8 +1073,20 @@ kbd {
 .comment-author {
   font-weight: 600;
 }
-.comment-head time {
+.comment-head time,
+.comment-edited {
   color: var(--muted);
+}
+.comment-actions {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+  opacity: 0;
+  transition: opacity var(--t);
+}
+.comment:hover .comment-actions,
+.comment-actions:focus-within {
+  opacity: 1;
 }
 .comment .md {
   font-size: 13.5px;
@@ -1102,6 +1114,7 @@ kbd {
 .composer-foot {
   display: flex;
   justify-content: flex-end;
+  gap: 6px;
   padding: 6px 8px 8px;
 }
 
@@ -2176,7 +2189,8 @@ textarea.input {
 }
 
 @media (hover: none) {
-  .desc-edit {
+  .desc-edit,
+  .comment-actions {
     opacity: 1;
   }
 }
