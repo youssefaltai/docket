@@ -448,6 +448,7 @@ function Card({
       onDragEnd={onDragEnd}
     >
       <div className="card-head">
+        <StatusPicker value={issue.status} onChange={(status) => set({ status })} className="row-btn" />
         <span className="row-id">{issue.id}</span>
         <span className="grow" />
         <AssigneePicker value={issue.assignee} onChange={(assignee) => set({ assignee })} className="row-btn" align="end" />
