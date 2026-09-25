@@ -1,9 +1,10 @@
 import "./config.ts";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
-import { formatCode, needsSetup, onRevoke, setupCode } from "./access.ts";
+import { formatCode, needsSetup, onRevoke, purgeExpiredKeys, setupCode } from "./access.ts";
 import { apiRoutes } from "./api.ts";
 import { actorOf, authRoutes, guard } from "./auth.ts";
+import { proxyChat } from "./chat.ts";
 import { onChange } from "./db.ts";
 import { HARD_MAX_BODY, http, publicFile, secure, webApp } from "./http.ts";
 import { handleMcp } from "./mcp.ts";
@@ -46,6 +47,8 @@ const server = Bun.serve({
     ...(Object.fromEntries(Object.entries(authRoutes).map(([path, route]) => [path, http(route)])) as typeof authRoutes),
     ...(Object.fromEntries(Object.entries(apiRoutes).map(([path, route]) => [path, http(guard(route))])) as typeof apiRoutes),
     "/mcp": http(guard(handleMcp, { mcp: true })),
+    "/api/chat": http(guard(proxyChat)),
+    "/api/chat/*": http(guard(proxyChat)),
     "/ws": http(
       guard((req: Request, server: Bun.Server<SocketData>) => {
         const a = actorOf(req);
@@ -68,6 +71,8 @@ const server = Bun.serve({
     message() {},
   },
 });
+
+setInterval(purgeExpiredKeys, 60 * 60 * 1000);
 
 onChange((event) => server.publish(topic(event.workspace), JSON.stringify(event)));
 
