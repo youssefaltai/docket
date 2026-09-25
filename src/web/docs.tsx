@@ -2,7 +2,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import type { Document, DocumentPatch, DocumentSummary, DocumentVersion, DocumentVersionSummary } from "../shared/types";
 import { HttpError, api } from "./api";
-import { ProjectPicker } from "./pickers";
+import { TeamPicker } from "./pickers";
 import {
   Avatar,
   ChevronRightIcon,
@@ -17,8 +17,8 @@ import {
   Markdown,
   MenuButton,
   PlusIcon,
-  ProjectMark,
-  ProjectNotFound,
+  TeamMark,
+  TeamNotFound,
   SearchIcon,
   Section,
   StatusIcon,
@@ -40,32 +40,32 @@ import {
 
 // ---------- Docs list ----------
 
-export function DocsView({ projectKey }: { projectKey: string | null }) {
+export function DocsView({ teamKey }: { teamKey: string | null }) {
   const app = useApp();
-  const project = projectKey ? app.projects?.find((p) => p.key === projectKey) : undefined;
+  const team = teamKey ? app.teams?.find((p) => p.key === teamKey) : undefined;
   const [search, setSearch] = useState("");
   const q = useDebounced(search.trim(), 150);
 
   useEffect(() => {
     nav.lastDocs = location.pathname;
-    document.title = `${project ? `${project.name} docs` : projectKey || "All docs"} · Docket`;
-  }, [projectKey, project?.name]);
+    document.title = `${team ? `${team.name} docs` : teamKey || "All docs"} · Docket`;
+  }, [teamKey, team?.name]);
 
   // "All docs" is the current workspace's; wait until it's known.
-  const workspace = projectKey ? undefined : app.workspace?.key;
+  const workspace = teamKey ? undefined : app.workspace?.key;
   const { data: docs } = useFetch(
-    projectKey || workspace ? () => api.documents({ project: projectKey ?? undefined, workspace, q: q || undefined }) : null,
-    [projectKey, workspace, q],
+    teamKey || workspace ? () => api.documents({ team: teamKey ?? undefined, workspace, q: q || undefined }) : null,
+    [teamKey, workspace, q],
   );
-  const newDoc = () => app.newDoc(projectKey ?? undefined);
+  const newDoc = () => app.newDoc(teamKey ?? undefined);
 
-  // Server order is project key, then position; keep it while grouping.
+  // Server order is team key, then position; keep it while grouping.
   const groups = new Map<string, DocumentSummary[]>();
-  for (const d of docs ?? []) groups.set(d.project, [...(groups.get(d.project) ?? []), d]);
+  for (const d of docs ?? []) groups.set(d.team, [...(groups.get(d.team) ?? []), d]);
 
   let body;
-  if (projectKey && app.projects && !project) {
-    body = <ProjectNotFound projectKey={projectKey} back="/docs" backLabel="All docs" />;
+  if (teamKey && app.teams && !team) {
+    body = <TeamNotFound teamKey={teamKey} back="/docs" backLabel="All docs" />;
   } else if (!docs) {
     body = null;
   } else if (docs.length === 0) {
@@ -91,10 +91,10 @@ export function DocsView({ projectKey }: { projectKey: string | null }) {
           </button>
         }
       >
-        Specs, plans and notes{project ? ` for ${project.name}` : ""}, written in Markdown by you or your agents.
+        Specs, plans and notes{team ? ` for ${team.name}` : ""}, written in Markdown by you or your agents.
       </EmptyState>
     );
-  } else if (projectKey) {
+  } else if (teamKey) {
     body = <div className="list">{docs.map((d) => <DocRow key={d.slug} doc={d} />)}</div>;
   } else {
     body = (
@@ -102,10 +102,10 @@ export function DocsView({ projectKey }: { projectKey: string | null }) {
         {[...groups].map(([key, list]) => (
           <section key={key}>
             <div className="group">
-              <Link to={`/p/${key}/docs`} className="group-toggle">
-                <ProjectMark id={key} />
+              <Link to={`/t/${key}/docs`} className="group-toggle">
+                <TeamMark id={key} />
                 <span className="group-label" dir="auto">
-                  {app.projects?.find((p) => p.key === key)?.name ?? key}
+                  {app.teams?.find((p) => p.key === key)?.name ?? key}
                 </span>
                 <span className="count">{list.length}</span>
               </Link>
@@ -125,8 +125,8 @@ export function DocsView({ projectKey }: { projectKey: string | null }) {
   return (
     <>
       <ListHeader
-        project={project}
-        title={projectKey ?? "All docs"}
+        team={team}
+        title={teamKey ?? "All docs"}
         count={docs?.length ?? 0}
         view="docs"
         onNew={newDoc}
@@ -151,11 +151,11 @@ function DocRow({ doc }: { doc: DocumentSummary }) {
         {doc.title}
       </Link>
       <span className="grow" />
-      <span className="row-meta" title={`Updated ${fullDate(doc.updatedAt)} by ${doc.updatedBy}`}>
+      <span className="row-meta" title={`Updated ${fullDate(doc.updatedAt)} by ${doc.updatedBy.name}`}>
         Updated {ago(doc.updatedAt)}
         <span className="row-by">
           {" by "}
-          <span dir="auto">{doc.updatedBy}</span>
+          <span dir="auto">{doc.updatedBy.name}</span>
         </span>
       </span>
     </div>
@@ -178,7 +178,7 @@ export function DocPage({ slug }: { slug: string }) {
   const body = useRef<HTMLDivElement>(null);
   const startAt = useRef(0); // scroll ratio to open the editor at
   const unsaved = useRef(false); // editor holds changes it can't save (remote conflict)
-  const { setDocProject } = app;
+  const { setDocTeam } = app;
 
   useEffect(() => {
     if (nav.editDoc === slug) nav.editDoc = "";
@@ -188,8 +188,8 @@ export function DocPage({ slug }: { slug: string }) {
     document.title = `${doc?.title || "Doc"} · Docket`;
   }, [doc?.title]);
 
-  useEffect(() => setDocProject(doc?.project ?? null), [doc?.project, setDocProject]);
-  useEffect(() => () => setDocProject(null), [setDocProject]);
+  useEffect(() => setDocTeam(doc?.team ?? null), [doc?.team, setDocTeam]);
+  useEffect(() => () => setDocTeam(null), [setDocTeam]);
 
   // Honor #section links once the content is there.
   const loaded = !!doc;
@@ -233,15 +233,15 @@ export function DocPage({ slug }: { slug: string }) {
 
   const outline = useOutline(body, scroller);
 
-  const projectKey = doc?.project;
-  const project = app.projects?.find((p) => p.key === projectKey);
+  const teamKey = doc?.team;
+  const team = app.teams?.find((p) => p.key === teamKey);
   const header = (
     <header className="header">
       <MenuButton />
       <nav className="crumbs">
-        {projectKey ? (
-          <Link to={`/p/${projectKey}/docs`} dir="auto">
-            {project?.name ?? projectKey}
+        {teamKey ? (
+          <Link to={`/t/${teamKey}/docs`} dir="auto">
+            {team?.name ?? teamKey}
           </Link>
         ) : (
           <Link to={nav.lastDocs}>Docs</Link>
@@ -337,13 +337,13 @@ export function DocPage({ slug }: { slug: string }) {
                 onSave={(title) => patch({ title })}
               />
               <div className="doc-meta">
-                <ProjectPicker value={doc.project} onChange={(p) => p !== doc.project && patch({ project: p })} className="doc-meta-btn">
-                  <ProjectMark id={doc.project} />
-                  <span dir="auto">{project?.name ?? doc.project}</span>
-                </ProjectPicker>
+                <TeamPicker value={doc.team} onChange={(p) => p !== doc.team && patch({ team: p })} className="doc-meta-btn">
+                  <TeamMark id={doc.team} />
+                  <span dir="auto">{team?.name ?? doc.team}</span>
+                </TeamPicker>
                 <span aria-hidden="true">·</span>
                 <span title={fullDate(doc.updatedAt)}>
-                  Updated {ago(doc.updatedAt)} by <span dir="auto">{doc.updatedBy}</span>
+                  Updated {ago(doc.updatedAt)} by <span dir="auto">{doc.updatedBy.name}</span>
                 </span>
                 {doc.versionCount > 0 && (
                   <>
@@ -359,7 +359,7 @@ export function DocPage({ slug }: { slug: string }) {
                 <div className="doc-banner">
                   <HistoryIcon />
                   <span className="doc-banner-text">
-                    Version from <time>{fullDate(preview.createdAt)}</time> by <span dir="auto">{preview.author}</span>
+                    Version from <time>{fullDate(preview.createdAt)}</time> by <span dir="auto">{preview.author.name}</span>
                   </span>
                   <span className="grow" />
                   <button className="btn btn-ghost btn-sm" onClick={() => setPreview(null)}>
@@ -463,7 +463,7 @@ async function remove(doc: Document) {
   try {
     await api.deleteDocument(doc.slug);
     toast(`Deleted “${doc.title}”`);
-    navigate(`/p/${doc.project}/docs`);
+    navigate(`/t/${doc.team}/docs`);
   } catch (e) {
     errorToast(e);
   }
@@ -551,10 +551,10 @@ function History({
           return (
             <li key={v.id}>
               <button className={cls("version", on && "on")} onClick={() => onSelect(v, i === 0)} aria-pressed={on}>
-                <Avatar name={v.author} />
+                <Avatar user={v.author} />
                 <span className="version-text">
                   <span className="version-author" dir="auto">
-                    {v.author}
+                    {v.author.name}
                   </span>
                   <time title={fullDate(v.createdAt)}>{ago(v.createdAt)}</time>
                 </span>
@@ -654,7 +654,7 @@ function DocEditor({
     s.blocked = true;
     clearTimeout(s.timer);
     onStatus("idle");
-    setConflict(doc.updatedBy);
+    setConflict(doc.updatedBy.name);
   }, [doc.content, doc.updatedAt]);
 
   const change = (text: string) => {

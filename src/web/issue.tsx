@@ -1,8 +1,8 @@
 // Issue page: title, description, sub-issues, comments and the properties panel.
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { CLOSED_STATUSES, PRIORITY_LABELS, STATUS_LABELS, nameKey, type Issue, type IssuePatch } from "../shared/types";
-import { HttpError, api, getMe } from "./api";
-import { AssigneePicker, BlockedByPicker, LabelsPicker, ParentPicker, PriorityPicker, StatusPicker } from "./pickers";
+import { CLOSED_STATUSES, PRIORITY_LABELS, STATUS_LABELS, type Issue } from "../shared/types";
+import { HttpError, api } from "./api";
+import { AssigneePicker, BlockedByPicker, DelegatePicker, LabelsPicker, ParentPicker, PriorityPicker, StatusPicker } from "./pickers";
 import {
   Avatar,
   ago,
@@ -21,13 +21,16 @@ import {
   PencilIcon,
   PlusIcon,
   PriorityIcon,
-  ProjectMark,
+  TeamMark,
   Section,
   StatusIcon,
   TitleEditor,
   TrashIcon,
   errorToast,
   fullDate,
+  isMe,
+  toPatch,
+  type IssueChange,
   nav,
   navigate,
   sortIssues,
@@ -46,15 +49,15 @@ export function IssuePage({ id }: { id: string }) {
     document.title = `${issue ? `${issue.id} ${issue.title}` : id} · Docket`;
   }, [id, issue?.title]);
 
-  const projectKey = issue?.project ?? id.replace(/-\d+$/, "");
-  const project = app.projects?.find((p) => p.key === projectKey);
+  const teamKey = issue?.team ?? id.replace(/-\d+$/, "");
+  const team = app.teams?.find((p) => p.key === teamKey);
 
   const header = (actions?: ReactNode) => (
     <header className="header">
       <MenuButton />
       <nav className="crumbs">
-        <Link to={`/p/${projectKey}`} dir="auto">
-          {project?.name ?? projectKey}
+        <Link to={`/t/${teamKey}`} dir="auto">
+          {team?.name ?? teamKey}
         </Link>
         <ChevronRightIcon />
         <span className="crumb-id">{issue?.id ?? id}</span>
@@ -82,12 +85,12 @@ export function IssuePage({ id }: { id: string }) {
   // just the one child for `patchChild`) so a patch and a patchChild racing each other
   // can't clobber one another's optimistic update; the seq guard only drops a response
   // that's been superseded by another call of the *same* kind.
-  const patch = (p: IssuePatch) => {
+  const patch = (p: IssueChange) => {
     const n = invalidate();
     const now = new Date().toISOString();
     setIssue((cur) => (cur ? { ...cur, ...p, updatedAt: now } : cur));
     api
-      .updateIssue(issue.id, p)
+      .updateIssue(issue.id, toPatch(p))
       .then((fresh) => {
         if (!isLatest(n)) return;
         setIssue((cur) => (cur ? { ...fresh, children: cur.children } : cur));
@@ -98,13 +101,13 @@ export function IssuePage({ id }: { id: string }) {
       });
   };
 
-  const patchChild = (childId: string, p: IssuePatch) => {
+  const patchChild = (childId: string, p: IssueChange) => {
     const n = invalidate();
     setIssue((cur) =>
       cur ? { ...cur, children: cur.children.map((c) => (c.id === childId ? { ...c, ...p } : c)) } : cur,
     );
     api
-      .updateIssue(childId, p)
+      .updateIssue(childId, toPatch(p))
       .then((fresh) => {
         if (!isLatest(n)) return;
         setIssue((cur) =>
@@ -136,14 +139,13 @@ export function IssuePage({ id }: { id: string }) {
     remove: (cid) => withFresh(() => api.deleteComment(issue.id, cid)),
   };
 
-  // A member can claim an open issue no other active member holds (a revoked member or leftover free text
-  // doesn't hold one), including their own not yet in progress: the same rule as the server, which has the
-  // last word and names the holder if someone got there first.
-  const me = getMe().member;
+  // You can claim an open issue no other active member holds (a suspended member doesn't hold one),
+  // including your own not yet in progress: the server's rule, which has the last word.
+  const { assignee } = issue;
   const heldByOther =
-    !!issue.assignee && nameKey(issue.assignee) !== nameKey(me?.name ?? "") && app.members.some((m) => nameKey(m) === nameKey(issue.assignee!));
-  const alreadyMine = !!me && !!issue.assignee && nameKey(issue.assignee) === nameKey(me.name) && issue.status === "in_progress";
-  const claimable = !!me && !CLOSED_STATUSES.includes(issue.status) && !heldByOther && !alreadyMine;
+    !!assignee && !isMe(assignee) && app.members.some((m) => m.user.username === assignee.username && !m.suspendedAt);
+  const alreadyMine = isMe(assignee) && issue.status === "in_progress";
+  const claimable = !CLOSED_STATUSES.includes(issue.status) && !heldByOther && !alreadyMine;
   const claim = () => withFresh(() => api.claimIssue(issue.id)).catch(errorToast);
 
   // The description is the one field sent with baseUpdatedAt, since a stale save would overwrite someone's
@@ -366,7 +368,7 @@ function Description({
   );
 }
 
-function SubIssues({ issue, onPatch }: { issue: Issue; onPatch: (id: string, p: IssuePatch) => void }) {
+function SubIssues({ issue, onPatch }: { issue: Issue; onPatch: (id: string, p: IssueChange) => void }) {
   const app = useApp();
   const children = sortIssues(issue.children);
   const done = children.filter((c) => c.status === "done").length;
@@ -377,7 +379,7 @@ function SubIssues({ issue, onPatch }: { issue: Issue; onPatch: (id: string, p: 
       action={
         <button
           className="btn btn-ghost btn-sm"
-          onClick={() => app.newIssue({ project: issue.project, parent: issue.id, status: "todo" })}
+          onClick={() => app.newIssue({ team: issue.team, parent: issue.id, status: "todo" })}
         >
           <PlusIcon /> Add
         </button>
@@ -415,7 +417,7 @@ function Docs({ issue }: { issue: Issue }) {
               {d.title}
             </Link>
             <span className="grow" />
-            <time className="row-time" dateTime={d.updatedAt} title={`Updated ${fullDate(d.updatedAt)} by ${d.updatedBy}`}>
+            <time className="row-time" dateTime={d.updatedAt} title={`Updated ${fullDate(d.updatedAt)} by ${d.updatedBy.name}`}>
               {ago(d.updatedAt)}
             </time>
           </div>
@@ -465,9 +467,9 @@ function Relations({ ids, children }: { ids: string[]; children?: ReactNode }) {
   );
 }
 
-function Properties({ issue, patch }: { issue: Issue; patch: (p: IssuePatch) => void }) {
+function Properties({ issue, patch }: { issue: Issue; patch: (p: IssueChange) => void }) {
   const app = useApp();
-  const project = app.projects?.find((p) => p.key === issue.project);
+  const team = app.teams?.find((p) => p.key === issue.team);
   const none = <span className="muted">None</span>;
   return (
     <>
@@ -485,19 +487,25 @@ function Properties({ issue, patch }: { issue: Issue; patch: (p: IssuePatch) => 
       </Prop>
       <Prop label="Assignee">
         <AssigneePicker value={issue.assignee} onChange={(assignee) => patch({ assignee })} className="prop-btn">
-          <Avatar name={issue.assignee} />
-          {issue.assignee ? <span dir="auto">{issue.assignee}</span> : <span className="muted">Unassigned</span>}
+          <Avatar user={issue.assignee} />
+          {issue.assignee ? <span dir="auto">{issue.assignee.name}</span> : <span className="muted">Unassigned</span>}
         </AssigneePicker>
+      </Prop>
+      <Prop label="Delegate">
+        <DelegatePicker value={issue.delegate} onChange={(delegate) => patch({ delegate })} className="prop-btn">
+          <Avatar user={issue.delegate} />
+          {issue.delegate ? <span dir="auto">{issue.delegate.name}</span> : none}
+        </DelegatePicker>
       </Prop>
       <Prop label="Labels">
         <LabelsPicker value={issue.labels} onChange={(labels) => patch({ labels })} className="prop-btn prop-wrap">
           {issue.labels.length ? issue.labels.map((l) => <LabelChip key={l} name={l} />) : <span className="muted">Add labels</span>}
         </LabelsPicker>
       </Prop>
-      <Prop label="Project">
-        <Link to={`/p/${issue.project}`} className="prop-btn">
-          <ProjectMark id={issue.project} />
-          <span dir="auto">{project?.name ?? issue.project}</span>
+      <Prop label="Team">
+        <Link to={`/t/${issue.team}`} className="prop-btn">
+          <TeamMark id={issue.team} />
+          <span dir="auto">{team?.name ?? issue.team}</span>
         </Link>
       </Prop>
       <Prop label="Parent">
@@ -505,7 +513,7 @@ function Properties({ issue, patch }: { issue: Issue; patch: (p: IssuePatch) => 
           <ParentPicker
             value={issue.parent}
             onChange={(parent) => patch({ parent })}
-            project={issue.project}
+            team={issue.team}
             exclude={[issue.id, ...issue.children.map((c) => c.id)]}
             className={issue.parent ? "icon-btn xs" : "prop-btn"}
           >

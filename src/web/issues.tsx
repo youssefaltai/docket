@@ -1,8 +1,9 @@
 // Issues view: header with search + filters, and the list / board layouts.
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { CLOSED_STATUSES, STATUSES, STATUS_LABELS, type IssuePatch, type IssueSummary, type Status } from "../shared/types";
-import { api, getMe, store } from "./api";
-import { AssigneePicker, Picker, PriorityPicker, StatusPicker, personOption } from "./pickers";
+import { CLOSED_STATUSES, STATUSES, STATUS_LABELS, type IssueSummary, type Status } from "../shared/types";
+import { api, store } from "./api";
+import { getMe } from "./auth";
+import { AssigneePicker, Picker, PriorityPicker, StatusPicker, useMembers, userOption } from "./pickers";
 import {
   Avatar,
   BlockedIcon,
@@ -17,7 +18,7 @@ import {
   ListHeader,
   ListIcon,
   PlusIcon,
-  ProjectNotFound,
+  TeamNotFound,
   SearchIcon,
   StatusIcon,
   TagIcon,
@@ -25,6 +26,8 @@ import {
   errorToast,
   fullDate,
   nav,
+  toPatch,
+  type IssueChange,
   sortIssues,
   timeAgo,
   useApp,
@@ -33,11 +36,11 @@ import {
 } from "./ui";
 
 type View = "list" | "board";
-type Patch = (id: string, patch: IssuePatch) => void;
+type Patch = (id: string, change: IssueChange) => void;
 
-export function IssuesView({ projectKey }: { projectKey: string | null }) {
+export function IssuesView({ teamKey }: { teamKey: string | null }) {
   const app = useApp();
-  const project = projectKey ? app.projects?.find((p) => p.key === projectKey) : undefined;
+  const team = teamKey ? app.teams?.find((p) => p.key === teamKey) : undefined;
   const [view, setView] = useState<View>(() => (store.get("view") === "board" ? "board" : "list"));
   const [search, setSearch] = useState("");
   const [label, setLabel] = useState("");
@@ -47,26 +50,26 @@ export function IssuesView({ projectKey }: { projectKey: string | null }) {
 
   useEffect(() => {
     nav.lastList = location.pathname;
-    document.title = `${project?.name ?? (projectKey || "All issues")} · Docket`;
-  }, [projectKey, project?.name]);
+    document.title = `${team?.name ?? (teamKey || "All issues")} · Docket`;
+  }, [teamKey, team?.name]);
 
   // "All issues" is the current workspace's; wait until it's known.
-  const workspace = projectKey ? undefined : app.workspace?.key;
+  const workspace = teamKey ? undefined : app.workspace?.key;
   const {
     data: issues,
     setData: setIssues,
     reload,
     invalidate,
   } = useFetch(
-    projectKey || workspace ? () => api.issues({ project: projectKey ?? undefined, workspace, q, label, assignee }) : null,
-    [projectKey, workspace, q, label, assignee],
+    teamKey || workspace ? () => api.issues({ team: teamKey ?? undefined, workspace, q, label, assignee }) : null,
+    [teamKey, workspace, q, label, assignee],
   );
 
   const patch: Patch = (id, p) => {
     invalidate(); // drop any in-flight fetch that predates this change
     const now = new Date().toISOString();
     setIssues((list) => list?.map((i) => (i.id === id ? { ...i, ...p, updatedAt: now } : i)) ?? null);
-    api.updateIssue(id, p).catch((e) => {
+    api.updateIssue(id, toPatch(p)).catch((e) => {
       errorToast(e);
       reload();
     });
@@ -83,22 +86,22 @@ export function IssuesView({ projectKey }: { projectKey: string | null }) {
   };
 
   let body;
-  if (!projectKey && app.workspaceProjects?.length === 0) {
+  if (!teamKey && app.workspaceTeams?.length === 0) {
     body = (
       <EmptyState
         icon={<IssuesIcon />}
         title="Welcome to Docket"
         action={
-          <button className="btn btn-primary" onClick={app.newProject}>
-            Create project
+          <button className="btn btn-primary" onClick={app.newTeam}>
+            Create team
           </button>
         }
       >
-        Projects group issues under a short key, like DOC-12. Create one to get started.
+        Teams group issues under a short key, like DOC-12. Create one to get started.
       </EmptyState>
     );
-  } else if (projectKey && app.projects && !project) {
-    body = <ProjectNotFound projectKey={projectKey} back="/" backLabel="All issues" />;
+  } else if (teamKey && app.teams && !team) {
+    body = <TeamNotFound teamKey={teamKey} back="/" backLabel="All issues" />;
   } else if (!issues) {
     body = null;
   } else if (issues.length === 0) {
@@ -124,7 +127,7 @@ export function IssuesView({ projectKey }: { projectKey: string | null }) {
           </button>
         }
       >
-        Issues you create{project ? ` in ${project.name}` : ""} will show up here.
+        Issues you create{team ? ` in ${team.name}` : ""} will show up here.
       </EmptyState>
     );
   } else if (view === "board") {
@@ -136,8 +139,8 @@ export function IssuesView({ projectKey }: { projectKey: string | null }) {
   return (
     <>
       <ListHeader
-        project={project}
-        title={projectKey ?? "All issues"}
+        team={team}
+        title={teamKey ?? "All issues"}
         count={issues?.length ?? 0}
         view="issues"
         onNew={() => app.newIssue()}
@@ -164,20 +167,20 @@ export function IssuesView({ projectKey }: { projectKey: string | null }) {
   );
 }
 
+/** `assignee` is a username. */
 function Filters(props: { label: string; setLabel: (v: string) => void; assignee: string; setAssignee: (v: string) => void }) {
-  const { labels, people, members, name, loadDirectory } = useApp();
+  const { labels, loadDirectory } = useApp();
+  const people = useMembers("person");
+  const me = getMe().user;
   const any = (label: string, icon: ReactNode) => ({ value: "", label, icon });
-  const mine = props.assignee === name;
-  // Once members exist, root's display name isn't anyone's identity, so there's nothing to call "mine".
-  const hasMine = !!getMe().member || members.length === 0;
+  const mine = props.assignee === me.username;
+  const selected = people.find((u) => u.username === props.assignee) ?? null;
   return (
     <>
-      {hasMine && (
-        <button className={cls("chip", mine && "chip-on")} aria-pressed={mine} onClick={() => props.setAssignee(mine ? "" : name)}>
-          <Avatar name={name} />
-          <span className="chip-text">Mine</span>
-        </button>
-      )}
+      <button className={cls("chip", mine && "chip-on")} aria-pressed={mine} onClick={() => props.setAssignee(mine ? "" : me.username)}>
+        <Avatar user={me} />
+        <span className="chip-text">Mine</span>
+      </button>
       <Picker
         label="Filter by label"
         options={[any("Any label", <TagIcon />), ...labels.map((l) => ({ value: l, label: l, icon: <LabelDot name={l} /> }))]}
@@ -194,15 +197,15 @@ function Filters(props: { label: string; setLabel: (v: string) => void; assignee
       </Picker>
       <Picker
         label="Filter by assignee"
-        options={[any("Anyone", <Avatar name={null} />), ...people.map((p) => personOption(p, name))]}
+        options={[any("Anyone", <Avatar user={null} />), ...people.map(userOption)]}
         selected={[props.assignee]}
         onPick={props.setAssignee}
         onOpen={loadDirectory}
         className={cls("chip", props.assignee && "chip-on")}
       >
-        <Avatar name={props.assignee || null} />
+        <Avatar user={selected} />
         <span className="chip-text" dir="auto">
-          {props.assignee || "Assignee"}
+          {selected?.name ?? (props.assignee || "Assignee")}
         </span>
         <ChevronDownIcon className="chip-caret" />
       </Picker>
@@ -279,7 +282,7 @@ function StatusIconLabel({ status }: { status: Status }) {
 }
 
 function IssueRow({ issue, onPatch }: { issue: IssueSummary; onPatch: Patch }) {
-  const set = (p: IssuePatch) => onPatch(issue.id, p);
+  const set = (p: IssueChange) => onPatch(issue.id, p);
   return (
     <div className="row">
       <PriorityPicker value={issue.priority} onChange={(priority) => set({ priority })} className="row-btn" />
@@ -395,7 +398,7 @@ function Card({
   onDragStart: () => void;
   onDragEnd: () => void;
 }) {
-  const set = (p: IssuePatch) => onPatch(issue.id, p);
+  const set = (p: IssueChange) => onPatch(issue.id, p);
   return (
     <div
       className={cls("card", dragging && "card-dragging")}

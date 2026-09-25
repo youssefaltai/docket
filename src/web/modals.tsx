@@ -1,8 +1,8 @@
-// New issue, doc, project and workspace dialogs.
+// New issue, doc, team and workspace dialogs.
 import { useRef, useState, type ReactNode } from "react";
-import { PRIORITY_LABELS, STATUS_LABELS, type IssueInput, type ProjectPatch, type Workspace } from "../shared/types";
+import { PRIORITY_LABELS, STATUS_LABELS, type IssueInput, type TeamPatch, type UserRef, type Workspace } from "../shared/types";
 import { api } from "./api";
-import { AssigneePicker, LabelsPicker, ParentPicker, PriorityPicker, ProjectPicker, StatusPicker } from "./pickers";
+import { AssigneePicker, LabelsPicker, ParentPicker, PriorityPicker, TeamPicker, StatusPicker } from "./pickers";
 import {
   Avatar,
   ChevronRightIcon,
@@ -13,7 +13,7 @@ import {
   Modal,
   ParentIcon,
   PriorityIcon,
-  ProjectMark,
+  TeamMark,
   StatusIcon,
   TagIcon,
   errorToast,
@@ -52,42 +52,43 @@ export function ModalHead({ onClose, children }: { onClose: () => void; children
   );
 }
 
-/** "Project ›" in front of a new issue or doc's title. */
-function ProjectCrumb({ value, onChange }: { value: string; onChange: (key: string) => void }) {
-  const { projects } = useApp();
-  const project = projects?.find((p) => p.key === value);
+/** "Team ›" in front of a new issue or doc's title. */
+function TeamCrumb({ value, onChange }: { value: string; onChange: (key: string) => void }) {
+  const { teams } = useApp();
+  const team = teams?.find((p) => p.key === value);
   return (
     <>
-      <ProjectPicker value={value} onChange={onChange} className="chip">
-        {project && <ProjectMark id={project.key} />}
-        <span dir="auto">{project?.name ?? "Project"}</span>
-      </ProjectPicker>
+      <TeamPicker value={value} onChange={onChange} className="chip">
+        {team && <TeamMark id={team.key} />}
+        <span dir="auto">{team?.name ?? "Team"}</span>
+      </TeamPicker>
       <ChevronRightIcon className="muted" />
     </>
   );
 }
 
-type Draft = Required<Omit<IssueInput, "blockedBy">>;
+type Draft = Required<Omit<IssueInput, "blockedBy" | "assignee" | "delegate">> & { assignee: UserRef | null };
 
 export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueInput>; onClose: () => void }) {
   const [draft, setDraft] = useState<Draft>(() => ({
-    project: defaults.project ?? "",
+    team: defaults.team ?? "",
     title: defaults.title ?? "",
     description: defaults.description ?? "",
     status: defaults.status ?? "todo",
     priority: defaults.priority ?? 0,
     labels: defaults.labels ?? [],
-    assignee: defaults.assignee ?? null,
+    assignee: null,
     parent: defaults.parent ?? null,
   }));
   const set = <K extends keyof Draft>(key: K) => (value: Draft[K]) => setDraft((d) => ({ ...d, [key]: value }));
-  const { project, title, description, status, priority, labels, assignee, parent } = draft;
+  const { team, title, description, status, priority, labels, assignee, parent } = draft;
   const desc = useRef<HTMLTextAreaElement>(null);
   useAutosize(desc, description);
 
-  const { busy, submit } = useSubmit(!!title.trim() && !!project, async () => {
+  const { busy, submit } = useSubmit(!!title.trim() && !!team, async () => {
     const issue = await api.createIssue({
       ...draft,
+      assignee: assignee?.username ?? null,
       title: title.trim(),
       description: description.trim() || undefined,
     });
@@ -98,10 +99,10 @@ export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueIn
   return (
     <Modal label="New issue" onClose={onClose} onSubmit={submit}>
       <ModalHead onClose={onClose}>
-        {/* A parent belongs to the old project, so switching projects clears it. */}
-        <ProjectCrumb
-          value={project}
-          onChange={(key) => key !== project && setDraft((d) => ({ ...d, project: key, parent: null }))}
+        {/* A parent belongs to the old team, so switching teams clears it. */}
+        <TeamCrumb
+          value={team}
+          onChange={(key) => key !== team && setDraft((d) => ({ ...d, team: key, parent: null }))}
         />
         <span className="modal-title">New issue</span>
       </ModalHead>
@@ -142,8 +143,8 @@ export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueIn
           {priority ? PRIORITY_LABELS[priority] : "Priority"}
         </PriorityPicker>
         <AssigneePicker value={assignee} onChange={set("assignee")} className="chip">
-          <Avatar name={assignee} />
-          <span dir="auto">{assignee ?? "Assignee"}</span>
+          <Avatar user={assignee} />
+          <span dir="auto">{assignee?.name ?? "Assignee"}</span>
         </AssigneePicker>
         <LabelsPicker value={labels} onChange={set("labels")} className="chip">
           {labels.length ? (
@@ -160,8 +161,8 @@ export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueIn
             </>
           )}
         </LabelsPicker>
-        {project && (
-          <ParentPicker value={parent} onChange={set("parent")} project={project} className="chip">
+        {team && (
+          <ParentPicker value={parent} onChange={set("parent")} team={team} className="chip">
             <ParentIcon />
             {parent ? <span className="mono">{parent}</span> : "Parent"}
           </ParentPicker>
@@ -169,7 +170,7 @@ export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueIn
       </div>
       <div className="modal-foot">
         <span className="grow" />
-        <button className="btn btn-primary" disabled={!title.trim() || !project || busy} onClick={submit}>
+        <button className="btn btn-primary" disabled={!title.trim() || !team || busy} onClick={submit}>
           Create issue <Kbd>{MOD}↵</Kbd>
         </button>
       </div>
@@ -177,12 +178,12 @@ export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueIn
   );
 }
 
-export function NewDocModal({ project: initial, onClose }: { project: string; onClose: () => void }) {
-  const [project, setProject] = useState(initial);
+export function NewDocModal({ team: initial, onClose }: { team: string; onClose: () => void }) {
+  const [team, setTeam] = useState(initial);
   const [title, setTitle] = useState("");
-  const ready = !!title.trim() && !!project;
+  const ready = !!title.trim() && !!team;
   const { busy, submit } = useSubmit(ready, async () => {
-    const doc = await api.createDocument({ project, title: title.trim() });
+    const doc = await api.createDocument({ team, title: title.trim() });
     nav.editDoc = doc.slug; // open straight into edit mode
     navigate(`/doc/${doc.slug}`);
     onClose();
@@ -191,7 +192,7 @@ export function NewDocModal({ project: initial, onClose }: { project: string; on
   return (
     <Modal label="New doc" className="modal-sm" onClose={onClose} onSubmit={submit}>
       <ModalHead onClose={onClose}>
-        <ProjectCrumb value={project} onChange={setProject} />
+        <TeamCrumb value={team} onChange={setTeam} />
         <span className="modal-title">New doc</span>
       </ModalHead>
       <div className="modal-body modal-body-doc">
@@ -276,7 +277,7 @@ function deriveKey(name: string): string {
   return key.slice(0, 5);
 }
 
-export function NewProjectModal({ onClose }: { onClose: () => void }) {
+export function NewTeamModal({ onClose }: { onClose: () => void }) {
   const app = useApp();
   const [name, setName] = useState("");
   const [customKey, setCustomKey] = useState<string | null>(null);
@@ -286,7 +287,7 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
 
   return (
     <FormModal
-      title="New project"
+      title="New team"
       aside={
         workspace && (
           <span className="muted" dir="auto">
@@ -294,17 +295,17 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
           </span>
         )
       }
-      action="Create project"
+      action="Create team"
       ready={!!name.trim() && /^[A-Z]{2,5}$/.test(key) && !!workspace}
       onSubmit={async () => {
-        const project = await api.createProject({
+        const team = await api.createTeam({
           key,
           workspace: workspace!.key,
           name: name.trim(),
           description: description.trim() || undefined,
         });
-        app.reloadProjects();
-        navigate(`/p/${project.key}`);
+        app.reloadTeams();
+        navigate(`/t/${team.key}`);
         onClose();
       }}
       onClose={onClose}
@@ -349,39 +350,39 @@ export function NewWorkspaceModal({ onCreate, onClose }: { onCreate: (w: Workspa
       <label className="field">
         <span>Name</span>
         <input className="input" autoFocus dir="auto" placeholder="Acme" value={name} onChange={(e) => setName(e.target.value)} />
-        <small>A workspace groups related projects, with their issues and docs.</small>
+        <small>A workspace groups related teams, with their issues and docs.</small>
       </label>
     </FormModal>
   );
 }
 
 /** Edits what the header can't inline: the description, the workspace it's in, and that workspace's name. */
-export function ProjectSettingsModal({ projectKey, onClose }: { projectKey: string; onClose: () => void }) {
+export function TeamSettingsModal({ teamKey, onClose }: { teamKey: string; onClose: () => void }) {
   const app = useApp();
-  const project = app.projects?.find((p) => p.key === projectKey);
-  const home = app.workspaces?.find((w) => w.key === project?.workspace);
-  const [description, setDescription] = useState(project?.description ?? "");
-  const [workspace, setWorkspace] = useState(project?.workspace ?? "");
+  const team = app.teams?.find((p) => p.key === teamKey);
+  const home = app.workspaces?.find((w) => w.key === team?.workspace);
+  const [description, setDescription] = useState(team?.description ?? "");
+  const [workspace, setWorkspace] = useState(team?.workspace ?? "");
   const [workspaceName, setWorkspaceName] = useState(home?.name ?? "");
-  if (!project || !home) return null;
+  if (!team || !home) return null;
 
   return (
     <FormModal
-      title="Project settings"
+      title="Team settings"
       aside={
         <span className="muted" dir="auto">
-          {project.name}
+          {team.name}
         </span>
       }
       action="Save"
       ready={!!workspaceName.trim()}
       onSubmit={async () => {
         if (workspaceName.trim() !== home.name) await api.updateWorkspace(home.key, { name: workspaceName.trim() });
-        const patch: ProjectPatch = {};
-        if (description.trim() !== project.description) patch.description = description.trim();
-        if (workspace !== project.workspace) patch.workspace = workspace;
-        if (Object.keys(patch).length) await api.updateProject(project.key, patch);
-        app.reloadProjects();
+        const patch: TeamPatch = {};
+        if (description.trim() !== team.description) patch.description = description.trim();
+        if (workspace !== team.workspace) patch.workspace = workspace;
+        if (Object.keys(patch).length) await api.updateTeam(team.key, patch);
+        app.reloadTeams();
         onClose();
       }}
       onClose={onClose}
@@ -413,7 +414,7 @@ export function ProjectSettingsModal({ projectKey, onClose }: { projectKey: stri
       <label className="field">
         <span>Workspace name</span>
         <input className="input" dir="auto" value={workspaceName} onChange={(e) => setWorkspaceName(e.target.value)} />
-        <small>Renames {home.name} for all its projects.</small>
+        <small>Renames {home.name} for all its teams.</small>
       </label>
     </FormModal>
   );

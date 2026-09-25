@@ -462,7 +462,7 @@ kbd {
   color: var(--muted);
 }
 
-.project-mark {
+.team-mark {
   display: inline-grid;
   place-items: center;
   width: 16px;
@@ -789,6 +789,9 @@ kbd {
 .avatar-none > svg {
   width: var(--av, 18px);
   height: var(--av, 18px);
+}
+.avatar-agent {
+  border-radius: 30%;
 }
 
 /* ---------- Board ---------- */
