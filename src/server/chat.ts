@@ -84,8 +84,6 @@ export async function proxyChat(req: Request, server: Bun.Server<unknown>): Prom
     if (!body) return error("That message is too long", "invalid", 413);
     if (body.size && !isJson(req)) return error("Expected Content-Type: application/json", "invalid", 415);
   }
-  // Every request reads with the session's chat key, except a confirm: it writes, with a key made for it alone.
-  const key = req.method === "POST" && CONFIRM.test(url.pathname) ? chatWriteKey(actor) : { token: chatKey(actor), drop: () => {} };
 
   const target = new URL(base);
   target.pathname = target.pathname.replace(/\/+$/, "") + url.pathname.slice("/api".length);
@@ -94,6 +92,9 @@ export async function proxyChat(req: Request, server: Bun.Server<unknown>): Prom
   const root = new URL(base).pathname.replace(/\/+$/, "") + "/chat";
   if (target.pathname !== root && !target.pathname.startsWith(`${root}/`)) return error("Not found", "not_found", 404);
 
+  // Every request reads with the session's chat key, except a confirm: it writes, with a key made for it alone.
+  // Minted last, so every return below either hands it upstream or drops it.
+  const key = req.method === "POST" && CONFIRM.test(url.pathname) ? chatWriteKey(actor) : { token: chatKey(actor), drop: () => {} };
   const headers = pick(req.headers, REQUEST_HEADERS);
   headers.set("authorization", `Bearer ${key.token}`);
   const started = new AbortController();

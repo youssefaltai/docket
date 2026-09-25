@@ -450,7 +450,13 @@ const CHAT_WRITE_KEY_TTL_MS = 5 * 60 * 1000;
 export function chatWriteKey(a: Actor): { token: string; drop: () => void } {
   if (a.sessionId === null) throw new AppError("The assistant works from the web app, not with an API key", 403);
   const { token, id } = mintChatKey(a, "write", CHAT_WRITE_KEY_TTL_MS);
-  return { token, drop: () => void db.query("DELETE FROM api_keys WHERE id = ?").run(id) };
+  return {
+    token,
+    drop: () => {
+      db.query("DELETE FROM api_keys WHERE id = ?").run(id);
+      revoked({ userId: a.id, keyId: id }); // and any socket opened with it
+    },
+  };
 }
 
 function mintChatKey(a: Actor, scope: ApiKeyScope, ttl: number) {

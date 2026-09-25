@@ -158,7 +158,10 @@ describe("with CHAT_URL", () => {
     // Still live mid-answer, and never in the person's key list.
     expect((await s.with({ token }).api("GET", "/api/me")).status).toBe(200);
     expect(JSON.stringify((await s.api("GET", "/api/api-keys")).body)).not.toContain("Chat (automatic)");
+    const socket = s.with({ token }).ws();
+    expect(await socket.opened).toBeTrue();
     stop.abort();
+    expect(await socket.closed).toBe(4401); // a socket opened with it goes too
     for (let i = 0; i < 100 && (await s.with({ token }).api("GET", "/api/me")).status !== 401; i++) await Bun.sleep(20);
     expect((await s.with({ token }).api("GET", "/api/me")).status).toBe(401);
     letGo();
