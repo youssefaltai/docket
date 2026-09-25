@@ -402,30 +402,23 @@ function WorkspaceSettings({ workspace }: { workspace: Workspace }) {
 }
 
 function Members({ workspace, members, reload, readOnly }: { workspace: string; members: WorkspaceMember[]; reload: () => void; readOnly: boolean }) {
-  const { secret, show } = useSecret();
   const update = (m: WorkspaceMember, patch: { role?: Exclude<Role, "agent">; suspended?: boolean }) =>
     auth.updateMember(workspace, m.user.username, patch).then(reload, errorToast);
   const actions = (m: WorkspaceMember): [string, () => void][] => {
-    const { name, username } = m.user;
+    const { name } = m.user;
     if (m.suspendedAt) return [["Reinstate", () => update(m, { suspended: false })]];
     const role = m.role === "admin" ? "member" : "admin";
-    const signInLink = () =>
-      auth.memberSignInLink(workspace, username).then(
-        (link) => show(linkSecret(link, <>Sign-in link for <strong dir="auto">{name}</strong>. Send it to them.</>)),
-        errorToast,
-      );
     const suspend = () => {
-      if (confirm(`Suspend ${name}? They lose access to this workspace; what they wrote stays theirs.`)) update(m, { suspended: true });
+      const note = "They're signed out everywhere and their API keys stop working; what they wrote stays theirs.";
+      if (confirm(`Suspend ${name}? ${note}`)) update(m, { suspended: true });
     };
     return [
       [`Make ${role}`, () => update(m, { role })],
-      ["Sign-in link", signInLink],
       ["Suspend", suspend],
     ];
   };
   return (
     <Section title="Members" count={members.length}>
-      {secret}
       <div className="settings-list">
         {members.map((m) => (
           <MemberRow key={m.user.username} m={m} meta={meta(m.email, m.role === "admin" ? "Admin" : "Member", m.suspendedAt && "Suspended")}>

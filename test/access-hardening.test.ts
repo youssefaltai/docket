@@ -29,15 +29,10 @@ test("inviting someone else's email doesn't sign the inviter in as them", async 
   expect(got?.workspaces ?? []).not.toContain("acme");
 });
 
-test("an admin's sign-in link for a member can't open that member's other workspaces", async () => {
+test("no admin can mint a sign-in link for someone else", async () => {
   await s.user("bob", { workspace: "evil", by: "mallory" });
-  const link = await s.as("mallory").api("POST", "/api/workspaces/evil/members/bob/sign-in-links");
-  if (link.status === 201) {
-    const got = await redeemAnon(link.body.code);
-    expect(got?.workspaces ?? []).not.toContain(s.workspace);
-  } else {
-    expect(link.status).toBe(403);
-  }
+  // There's no such route at all: only the server's CLI signs someone else in.
+  expect((await s.as("mallory").api("POST", "/api/workspaces/evil/members/bob/sign-in-links")).status).toBe(404);
 });
 
 test("taking someone's email doesn't take their invites", async () => {
@@ -86,7 +81,6 @@ test("an API key can't mint credentials or change who it belongs to", async () =
   const ws = s.workspace;
   expect((await admin.api("POST", `/api/workspaces/${ws}/invites`, { role: "admin" })).status).toBe(403);
   expect((await admin.api("PATCH", `/api/workspaces/${ws}/members/bob`, { role: "admin" })).status).toBe(403);
-  expect((await admin.api("POST", `/api/workspaces/${ws}/members/bob/sign-in-links`)).status).toBe(403);
   expect((await admin.api("POST", `/api/workspaces/${ws}/agents`, { name: "Leak", username: "leak" })).status).toBe(403);
   // Revoking still works with a key, so a leaked key can be killed from a script.
   const spare = (await s.as("bob").api("POST", "/api/api-keys", { name: "spare" })).body;

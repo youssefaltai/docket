@@ -96,12 +96,6 @@ export const apiRoutes = {
       access.updateMember(actorOf(req), req.params.key, req.params.username, await body(req)),
     ),
   },
-  "/api/workspaces/:key/members/:username/sign-in-links": {
-    POST: handle<"/api/workspaces/:key/members/:username/sign-in-links">(
-      (req) => link(req, access.memberSignInLink(actorOf(req), req.params.key, req.params.username)),
-      201,
-    ),
-  },
   "/api/workspaces/:key/invites": {
     POST: handle<"/api/workspaces/:key/invites">(async (req) => link(req, access.invite(actorOf(req), req.params.key, await body(req))), 201),
   },
