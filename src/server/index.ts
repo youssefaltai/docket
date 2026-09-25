@@ -1,3 +1,4 @@
+import "./config.ts";
 import { join } from "node:path";
 import index from "../web/index.html";
 import { apiRoutes } from "./api.ts";

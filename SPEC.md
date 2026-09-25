@@ -9,6 +9,8 @@ Rules: minimal, simple, clean, smooth. Few dependencies (react, react-dom, marke
 ```
 src/shared/types.ts   the contract (do not change without updating both sides)
 src/server/index.ts   Bun.serve: routes, /api, /mcp, /ws, serves the web app
+src/server/config.ts  loads an optional XDG config file into process.env (imported first)
+src/server/paths.ts   XDG Base Directory resolution
 src/server/db.ts      bun:sqlite schema, migrations, queries
 src/server/api.ts     REST handlers
 src/server/mcp.ts     MCP server + tools
@@ -16,7 +18,7 @@ src/web/index.html    HTML entry (Bun HTML import, bundled by Bun)
 src/web/*.tsx, *.css  React UI
 ```
 
-Env: `PORT` (default 7100), `DATABASE_PATH` (default `./data/docket.db`). Dev: `bun run dev`. Prod: `bun run start`.
+Env: `PORT` (default 7100), `DATABASE_PATH` (default `$XDG_DATA_HOME/docket/docket.db`, falling back to `./data/docket.db` if that already exists). Optional config file at `$XDG_CONFIG_HOME/docket/config` (or `$XDG_CONFIG_DIRS/docket/config`), `KEY=VALUE` lines; real env vars win. Dev: `bun run dev`. Prod: `bun run start`.
 
 ## Data
 
