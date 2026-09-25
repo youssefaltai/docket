@@ -1,6 +1,6 @@
 // Signed-out screens: first-run setup, and signing in with a one-time code (a sign-in link or an invite).
 import { useEffect, useState, type ReactNode } from "react";
-import type { CodeInfo } from "../shared/types";
+import type { CodeInfo, UserRef } from "../shared/types";
 import { HttpError } from "./api";
 import { auth } from "./auth";
 import { Field, Logo } from "./ui";
@@ -30,6 +30,7 @@ function AuthForm({
   ready,
   onSubmit,
   children,
+  after,
 }: {
   title: string;
   intro: string;
@@ -37,7 +38,8 @@ function AuthForm({
   action: string;
   ready: boolean;
   onSubmit: () => void;
-  children: ReactNode;
+  children?: ReactNode;
+  after?: ReactNode; // below the main button, e.g. Cancel
 }) {
   return (
     <form
@@ -55,6 +57,7 @@ function AuthForm({
       <button className="btn btn-primary" disabled={!ready}>
         {action}
       </button>
+      {after}
     </form>
   );
 }
@@ -154,13 +157,14 @@ export function Login() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
-  // A code needs no more input unless it's an invite for someone without an account yet.
+  // A sign-in link goes straight in. An invite always stops first: a new account needs a profile, and
+  // a signed-in one must agree to join (peeking changes nothing; only redeeming does).
   const use = (value: string) => {
     setBusy(true);
     setError("");
     auth.peek(value).then(
       (found) => {
-        if (found.needsProfile) {
+        if (found.kind === "invite") {
           setCode(value);
           setInfo(found);
           setBusy(false);
@@ -181,11 +185,12 @@ export function Login() {
     else auth.needsSetup().then((needed) => needed && location.replace("/setup"), () => {});
   }, []);
 
+  if (info?.you) return <Accept code={code} info={info} you={info.you} onError={fail} />;
   if (info) return <Join code={code} info={info} onError={fail} />;
   return (
     <AuthForm
       title="Sign in to Docket"
-      intro="Paste your sign-in link or code. Ask a workspace admin for one, or make one in Settings on a device where you're signed in."
+      intro="Paste your sign-in link or code. Make one in Settings on a device where you're signed in, or open an invite link."
       error={error}
       action={busy ? "Signing in…" : "Sign in"}
       ready={!!input.trim() && !busy}
@@ -201,6 +206,29 @@ export function Login() {
         disabled={busy}
       />
     </AuthForm>
+  );
+}
+
+/** Accepting an invite while signed in: it adds this account to the workspace, so ask first. */
+function Accept({ code, info, you, onError }: { code: string; info: CodeInfo; you: UserRef; onError: (err: unknown) => void }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <AuthForm
+      title={`Join ${info.workspace ?? "this workspace"}?`}
+      intro={`You'll join as ${you.name} (@${you.username}). To join as someone else, sign out first.`}
+      error=""
+      action={busy ? "Joining…" : "Join"}
+      ready={!busy}
+      onSubmit={() => {
+        setBusy(true);
+        auth.redeem(code).then(enter, onError);
+      }}
+      after={
+        <button type="button" className="btn btn-ghost" onClick={enter}>
+          Cancel
+        </button>
+      }
+    />
   );
 }
 

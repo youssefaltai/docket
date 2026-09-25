@@ -106,6 +106,7 @@ export interface CodeInfo {
   kind: "invite" | "sign-in";
   workspace: string | null; // invite: the workspace's name
   username: string | null; // sign-in: whose account it opens
+  you: UserRef | null; // invite peeked while signed in: the account that would join (the page asks before redeeming)
   needsProfile: boolean; // an invite redeemed while signed out creates an account: it needs name and username
 }
 

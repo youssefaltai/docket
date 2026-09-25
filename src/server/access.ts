@@ -403,7 +403,7 @@ export function revokeApiKey(a: Actor, id: unknown) {
 function signOutEverywhere(userId: number) {
   db.query("DELETE FROM sessions WHERE user_id = ?").run(userId);
   db.query("DELETE FROM codes WHERE user_id = ? AND used_at IS NULL").run(userId);
-  db.query("UPDATE api_keys SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL").run(now(), userId);
+  db.query("DELETE FROM api_keys WHERE user_id = ?").run(userId);
   revoked({ userId });
 }
 
@@ -458,7 +458,10 @@ export function peekCode(code: unknown, signedIn: number | null): CodeInfo {
     ? db.query<{ name: string }, [string]>("SELECT name FROM workspaces WHERE key = ?").get(row.workspace)?.name ?? null
     : null;
   const username = row.user_id ? db.query<{ username: string }, [number]>("SELECT username FROM users WHERE id = ?").get(row.user_id)!.username : null;
-  return { kind: row.purpose, workspace, username, needsProfile: row.purpose === "invite" && signedIn === null };
+  const invite = row.purpose === "invite";
+  // Who would join: redeeming an invite while signed in adds that account, so the page asks first.
+  const you = invite && signedIn !== null ? toRef(db.query<UserRow, [number]>("SELECT * FROM users WHERE id = ?").get(signedIn)!) : null;
+  return { kind: row.purpose, workspace, username, you, needsProfile: invite && signedIn === null };
 }
 
 /**
@@ -496,23 +499,6 @@ export function redeemCode(
 export function selfSignInLink(a: Actor) {
   requireSession(a);
   return issueCode({ purpose: "sign-in", userId: a.id, by: a.id });
-}
-
-/**
- * An admin's sign-in link for a person who lost their devices. It opens their whole account, so the
- * caller must be an admin of every workspace they're in; otherwise one admin could reach another's.
- */
-export function memberSignInLink(a: Actor, workspace: unknown, username: unknown) {
-  const key = requireAdminSession(a, workspace);
-  const member = memberRow(key, username);
-  if (member.kind !== "person") throw new AppError("Agents sign in with their token, not a link");
-  if (member.suspended_at) throw new AppError(`${member.username} is suspended; reinstate them first`, 409);
-  const elsewhere = db
-    .query<{ workspace: string }, [number]>("SELECT workspace FROM workspace_members WHERE user_id = ? AND suspended_at IS NULL")
-    .all(member.id)
-    .some(({ workspace }) => a.workspaces.get(workspace) !== "admin");
-  if (elsewhere) throw new AppError(`${member.username} is also in workspaces you don't administer; they can sign in on another device from Settings, or run sign-in-link on the server`, 403);
-  return issueCode({ purpose: "sign-in", userId: member.id, by: a.id });
 }
 
 /** For `bun run sign-in-link <username>` on the server: shell access is the proof, so there's no HTTP route. */
@@ -631,13 +617,18 @@ const activeAdmins = (workspace: string) =>
     .get(workspace)!.n;
 
 /** Suspends a membership; if it was the user's last active one, their sessions and keys go too. */
+/**
+ * Suspends a membership. Access to this workspace ends at once (membership is checked on every request,
+ * and their sockets reconnect without it). If it was their last active membership, their credentials
+ * go too (sessions, API keys, unused codes), so reinstating gives a clean account that signs in again.
+ * While they're active elsewhere their credentials stay: otherwise any admin of any workspace they
+ * joined could sign them out of the others and kill their keys there.
+ */
 function suspend(key: string, row: MemberRow) {
   setSuspended(key, row.id, now());
-  const others = db
-    .query("SELECT 1 FROM workspace_members WHERE user_id = ? AND suspended_at IS NULL LIMIT 1")
-    .get(row.id);
-  if (!others) signOutEverywhere(row.id);
-  else revoked({ userId: row.id }); // their sockets reconnect without this workspace
+  const elsewhere = db.query("SELECT 1 FROM workspace_members WHERE user_id = ? AND suspended_at IS NULL LIMIT 1").get(row.id);
+  if (elsewhere) revoked({ userId: row.id });
+  else signOutEverywhere(row.id);
 }
 
 export function updateMember(a: Actor, workspace: unknown, username: unknown, patch: { role?: unknown; suspended?: unknown }): WorkspaceMember {
@@ -652,6 +643,8 @@ export function updateMember(a: Actor, workspace: unknown, username: unknown, pa
   db.transaction(() => {
     if (losesAdmin && activeAdmins(key) === 1) throw new AppError("Add another admin first", 409);
     if (role !== row.role) db.query("UPDATE workspace_members SET role = ? WHERE workspace = ? AND user_id = ?").run(role, key, row.id);
+    // Invites an admin made die with their admin rights, so no one can pre-mint a way back in.
+    if (losesAdmin) db.query("DELETE FROM codes WHERE created_by = ? AND workspace = ? AND used_at IS NULL").run(row.id, key);
     if (suspending) suspend(key, row);
     if (reinstating) setSuspended(key, row.id, null);
   }).immediate();

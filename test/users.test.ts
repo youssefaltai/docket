@@ -40,7 +40,6 @@ test("only admins manage the workspace", async () => {
   expect((await patch("admin", { suspended: true }, ana)).status).toBe(403);
   expect((await patch("ana", { role: "admin" }, ana)).status).toBe(403);
   expect((await ana.api("PATCH", `/api/workspaces/${ws}`, { name: "Mine" })).status).toBe(403);
-  expect((await ana.api("POST", `/api/workspaces/${ws}/members/admin/sign-in-links`)).status).toBe(403);
   expect((await ana.api("POST", `/api/workspaces/${ws}/agents/bot/token`)).status).toBe(403);
   // Agents can't manage anything either, even with their own key.
   expect((await s.as("bot").api("POST", `/api/workspaces/${ws}/invites`, { role: "admin" })).status).toBe(403);
@@ -147,15 +146,8 @@ test("an agent's token rotates and its sockets close; deleting suspends it and k
   expect((await s.api("DELETE", `/api/workspaces/${ws}/agents/temp-bot`)).status).toBeLessThan(300);
   expect((await fresh.api("GET", "/api/me")).status).toBe(401);
   expect((await members()).find((m) => m.user.username === "temp-bot").suspendedAt).toBeString();
-  // Agents have no sessions, so no sign-in links either.
-  expect((await s.api("POST", `/api/workspaces/${ws}/members/bot/sign-in-links`)).status).toBeGreaterThanOrEqual(400);
-});
-
-test("an admin's sign-in link for a person signs them in once", async () => {
-  const link = await s.api("POST", `/api/workspaces/${ws}/members/ana/sign-in-links`);
-  expect(link.status).toBe(201);
-  const res = await s.anon.api("POST", "/api/auth/redeem", { code: link.body.code });
-  expect((await s.with({ cookie: sessionCookie(res.headers) }, "cookie").api("GET", "/api/me")).body.user.username).toBe("ana");
+  // Agents have no sessions, so the recovery CLI refuses them too.
+  expect((await s.cli("sign-in-link", "temp-bot")).exitCode).not.toBe(0);
 });
 
 test("the last active admin can't be suspended or demoted", async () => {

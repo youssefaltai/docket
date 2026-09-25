@@ -54,7 +54,7 @@ export interface TestServer {
   /** Invites a person into a workspace (default: setup's, invited by `by`, default admin) and signs them in. For an existing user it adds the workspace. */
   user: (username: string, opts?: { role?: "admin" | "member"; workspace?: string; name?: string; by?: string }) => Promise<Caller>;
   /** Signs a person in again through an admin's sign-in link, with a fresh session and API key (e.g. after a suspension). */
-  signIn: (username: string, opts?: { workspace?: string }) => Promise<Caller>;
+  signIn: (username: string) => Promise<Caller>;
   /** Creates an agent in a workspace (default: setup's). */
   agent: (username: string, opts?: { workspace?: string; name?: string }) => Promise<Caller>;
   /** Runs `bun run <script> ...args` with this server's environment and database. */
@@ -189,10 +189,12 @@ export async function startServer(
       const fresh = redeemed.headers.getSetCookie().some((c) => c.startsWith("docket_session="));
       return signedIn(username, fresh ? sessionCookie(redeemed.headers) : known!.cookie!);
     },
-    async signIn(username, { workspace: key = workspace! } = {}) {
-      const link = await admin.api("POST", `/api/workspaces/${key}/members/${username}/sign-in-links`);
-      if (link.status !== 201) throw new Error(`sign-in link for ${username}: ${link.status} ${JSON.stringify(link.body)}`);
-      const redeemed = await anon.api("POST", "/api/auth/redeem", { code: link.body.code });
+    // Signs someone in afresh the only way that doesn't need their own session: the server's recovery CLI.
+    async signIn(username) {
+      const out = await server.cli("sign-in-link", username);
+      const code = out.stdout.match(/\/login#(\S+)/)?.[1];
+      if (out.exitCode !== 0 || !code) throw new Error(`sign-in-link ${username}: ${out.exitCode} ${out.stderr}`);
+      const redeemed = await anon.api("POST", "/api/auth/redeem", { code });
       if (redeemed.status !== 200) throw new Error(`redeem ${username}: ${redeemed.status} ${JSON.stringify(redeemed.body)}`);
       return signedIn(username, sessionCookie(redeemed.headers), true);
     },
