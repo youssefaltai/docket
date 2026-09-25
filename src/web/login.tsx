@@ -113,9 +113,13 @@ export function Setup() {
 
 /** The code in `#XXXXX-XXXXX` (a pasted link), taken out of the address bar right away. */
 function takeCode(): string {
-  const code = decodeURIComponent(location.hash.slice(1)).trim();
-  if (code) history.replaceState(null, "", location.pathname + location.search);
-  return code;
+  const raw = location.hash.slice(1);
+  if (raw) history.replaceState(null, "", location.pathname + location.search);
+  try {
+    return decodeURIComponent(raw).trim();
+  } catch {
+    return raw.trim(); // a mangled fragment (e.g. "%E0") is just a bad code, which the server rejects
+  }
 }
 
 /** Accepts a whole link or just its code. */

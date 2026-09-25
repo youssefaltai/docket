@@ -321,8 +321,13 @@ function AccountMenu() {
     ...(workspace?.role === "admin" ? [{ value: "/settings/workspace", label: "Workspace settings" }] : []),
     { value: "signout", label: "Sign out" },
   ];
-  const pick = (value: string) =>
-    value === "signout" ? auth.logout().then(() => location.replace("/login"), errorToast) : navigate(value);
+  // Signing out forgets this browser's workspace too, so the next person doesn't start in yours.
+  const signOut = () =>
+    auth.logout().then(() => {
+      store.set("workspace", "");
+      location.replace("/login");
+    }, errorToast);
+  const pick = (value: string) => (value === "signout" ? signOut() : navigate(value));
   return (
     <Picker label="Account" options={options} selected={[]} onPick={pick} className="whoami">
       <Avatar user={user} />
