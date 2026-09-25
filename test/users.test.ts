@@ -35,7 +35,7 @@ test("members lists people and agents with their roles", async () => {
 test("only admins manage the workspace", async () => {
   const ana = s.as("ana");
   expect((await ana.api("GET", `/api/workspaces/${ws}/members`)).status).toBe(200);
-  expect((await ana.api("POST", `/api/workspaces/${ws}/invites`, { email: "x@example.com", role: "member" })).status).toBe(403);
+  expect((await ana.api("POST", `/api/workspaces/${ws}/invites`, { role: "member" })).status).toBe(403);
   expect((await ana.api("POST", `/api/workspaces/${ws}/agents`, { name: "Rogue", username: "rogue" })).status).toBe(403);
   expect((await patch("admin", { suspended: true }, ana)).status).toBe(403);
   expect((await patch("ana", { role: "admin" }, ana)).status).toBe(403);
@@ -43,12 +43,12 @@ test("only admins manage the workspace", async () => {
   expect((await ana.api("POST", `/api/workspaces/${ws}/members/admin/sign-in-links`)).status).toBe(403);
   expect((await ana.api("POST", `/api/workspaces/${ws}/agents/bot/token`)).status).toBe(403);
   // Agents can't manage anything either, even with their own key.
-  expect((await s.as("bot").api("POST", `/api/workspaces/${ws}/invites`, { email: "y@example.com", role: "admin" })).status).toBe(403);
+  expect((await s.as("bot").api("POST", `/api/workspaces/${ws}/invites`, { role: "admin" })).status).toBe(403);
 });
 
 test("usernames are validated and globally unique", async () => {
   const redeem = async (username: string) => {
-    const { code } = (await s.api("POST", `/api/workspaces/${ws}/invites`, { email: `${Math.random()}@example.com`, role: "member" })).body;
+    const { code } = (await s.api("POST", `/api/workspaces/${ws}/invites`, { role: "member" })).body;
     return (await s.anon.api("POST", "/api/auth/redeem", { code, name: "N", username })).status;
   };
   for (const bad of ["A", "has space", "x", "a".repeat(33), "ümlaut"]) expect([bad, await redeem(bad)]).toEqual([bad, 400]);

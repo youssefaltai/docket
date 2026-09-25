@@ -42,14 +42,14 @@ export interface TestServer {
   databasePath: string;
   /** The workspace setup created ("acme"), or null with `setup: false`. */
   workspace: string | null;
-  /** The setup admin; `s.api` and `s.tool` are shorthands for it. */
+  /** The setup admin (cookie for REST, key for MCP); `s.api` and `s.tool` are shorthands for it. */
   admin: Caller;
   api: Caller["api"];
   tool: Caller["tool"];
   anon: Caller;
   /** Arbitrary credentials, for tests of forged, stale or revoked ones. */
   with: (creds: Creds, via?: Via) => Caller;
-  /** A user made earlier by s.user or s.agent, here or on a server this one shares with. */
+  /** A user made earlier by s.user or s.agent, here or on a server this one shares with. People default to their cookie, agents to their key. */
   as: (username: string, via?: Via) => Caller;
   /** Invites a person into a workspace (default: setup's, invited by `by`, default admin) and signs them in. For an existing user it adds the workspace. */
   user: (username: string, opts?: { role?: "admin" | "member"; workspace?: string; name?: string; by?: string }) => Promise<Caller>;
@@ -140,7 +140,7 @@ export async function startServer(
       token = key.body.token as string;
     }
     users.set(username, { token, cookie });
-    return caller(username, { token, cookie }, "bearer");
+    return as(username);
   }
 
   let workspace = opts.sharing?.workspace ?? null;
@@ -157,11 +157,12 @@ export async function startServer(
     workspace = "acme";
   }
 
-  const as = (username: string, via: Via = "bearer") => {
+  // People act through their browser session, agents through their key, as in real use.
+  function as(username: string, via?: Via): Caller {
     const creds = users.get(username);
     if (!creds) throw new Error(`no test user "${username}"; make it with s.user or s.agent first`);
-    return caller(username, creds, via);
-  };
+    return caller(username, creds, via ?? (creds.cookie ? "cookie" : "bearer"));
+  }
   const admin = users.has("admin") ? as("admin") : anon;
 
   const server: Internal = {
@@ -177,7 +178,7 @@ export async function startServer(
     with: (creds, via = "bearer") => caller(null, creds, via),
     as,
     async user(username, { role = "member", workspace: key = workspace!, name = username, by = "admin" } = {}) {
-      const invite = await as(by).api("POST", `/api/workspaces/${key}/invites`, { email: `${username}@example.com`, role });
+      const invite = await as(by).api("POST", `/api/workspaces/${key}/invites`, { role });
       if (invite.status >= 300) throw new Error(`invite ${username}: ${invite.status} ${JSON.stringify(invite.body)}`);
       // An existing user accepts while signed in; a new one creates an account.
       const known = users.get(username);

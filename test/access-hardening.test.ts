@@ -76,11 +76,21 @@ test("moving a team never shows another workspace's titles", async () => {
 });
 
 test("an API key can't mint credentials or change who it belongs to", async () => {
-  const key = s.as("bob"); // bearer
+  const key = s.as("bob", "bearer");
   expect((await key.api("POST", "/api/api-keys", { name: "copy" })).status).toBe(403);
   expect((await key.api("POST", "/api/sign-in-links")).status).toBe(403);
   expect((await key.api("DELETE", "/api/sessions")).status).toBe(403);
   expect((await key.api("PATCH", "/api/me", { email: "bob2@example.com" })).status).toBe(403);
+  // Nor can an admin's key: an invite, agent or promotion made with a leaked key would outlive it.
+  const admin = s.as("admin", "bearer");
+  const ws = s.workspace;
+  expect((await admin.api("POST", `/api/workspaces/${ws}/invites`, { role: "admin" })).status).toBe(403);
+  expect((await admin.api("PATCH", `/api/workspaces/${ws}/members/bob`, { role: "admin" })).status).toBe(403);
+  expect((await admin.api("POST", `/api/workspaces/${ws}/members/bob/sign-in-links`)).status).toBe(403);
+  expect((await admin.api("POST", `/api/workspaces/${ws}/agents`, { name: "Leak", username: "leak" })).status).toBe(403);
+  // Revoking still works with a key, so a leaked key can be killed from a script.
+  const spare = (await s.as("bob").api("POST", "/api/api-keys", { name: "spare" })).body;
+  expect((await key.api("DELETE", `/api/api-keys/${spare.apiKey.id}`)).status).toBeLessThan(300);
   // The browser session still can.
   expect((await s.as("bob", "cookie").api("POST", "/api/sign-in-links")).status).toBe(201);
 });

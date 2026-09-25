@@ -72,18 +72,23 @@ describe("signed in", () => {
     expect((await s.anon.api("POST", "/api/auth/peek", { code: link.body.code })).status).toBe(401);
   });
 
-  test("an invite for a new email needs a profile, and adds the membership", async () => {
-    const invite = (await s.api("POST", `/api/workspaces/${s.workspace}/invites`, { email: "new@example.com", role: "member" })).body;
-    expect((await s.anon.api("POST", "/api/auth/peek", { code: invite.code })).body).toMatchObject({
-      kind: "invite",
-      email: "new@example.com",
-      needsProfile: true,
-    });
-    expect((await s.anon.api("POST", "/api/auth/redeem", { code: invite.code })).status).toBeGreaterThanOrEqual(400);
-    const joined = await s.anon.api("POST", "/api/auth/redeem", { code: invite.code, name: "New", username: "newbie" });
+  test("an invite makes a new account when signed out, and joins you when signed in", async () => {
+    const invite = async () => (await s.api("POST", `/api/workspaces/${s.workspace}/invites`, { role: "member" })).body.code;
+    const code = await invite();
+    expect((await s.anon.api("POST", "/api/auth/peek", { code })).body).toMatchObject({ kind: "invite", workspace: "Acme", needsProfile: true });
+    expect((await s.anon.api("POST", "/api/auth/redeem", { code })).status).toBeGreaterThanOrEqual(400);
+    const joined = await s.anon.api("POST", "/api/auth/redeem", { code, name: "New", username: "newbie" });
     expect(joined.status).toBe(200);
-    const me = await s.with({ cookie: sessionCookie(joined.headers) }, "cookie").api("GET", "/api/me");
-    expect(me.body.workspaces).toEqual([expect.objectContaining({ key: s.workspace, role: "member" })]);
+    const newbie = s.with({ cookie: sessionCookie(joined.headers) }, "cookie");
+    expect((await newbie.api("GET", "/api/me")).body.workspaces).toEqual([expect.objectContaining({ key: s.workspace, role: "member" })]);
+
+    // Signed in, an invite to another workspace joins you; any profile sent along is ignored.
+    await s.api("POST", "/api/workspaces", { name: "Other", key: "other" });
+    const other = (await s.api("POST", "/api/workspaces/other/invites", { role: "member" })).body.code;
+    expect((await newbie.api("POST", "/api/auth/peek", { code: other })).body).toMatchObject({ needsProfile: false });
+    const accepted = await newbie.api("POST", "/api/auth/redeem", { code: other, name: "X", username: "someone-else" });
+    expect(accepted.body.user.username).toBe("newbie");
+    expect((await newbie.api("GET", "/api/me")).body.workspaces.map((w: any) => w.key).sort()).toEqual(["acme", "other"]);
   });
 
   test("the session cookie is opaque, HttpOnly and Lax", async () => {
@@ -114,7 +119,7 @@ describe("signed in", () => {
     expect((await third.api("GET", "/api/me")).status).toBe(401);
     expect((await mine.api("GET", "/api/me")).status).toBe(200);
     // Signing out of every session leaves API keys alone.
-    expect((await s.as("sid").api("GET", "/api/me")).status).toBe(200);
+    expect((await s.as("sid", "bearer").api("GET", "/api/me")).status).toBe(200);
 
     expect((await mine.api("POST", "/api/logout")).status).toBeLessThan(300);
     expect((await mine.api("GET", "/api/me")).status).toBe(401);
