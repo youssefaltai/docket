@@ -40,7 +40,7 @@ type Patch = (id: string, change: IssueChange) => void;
 
 export function IssuesView({ teamKey }: { teamKey: string | null }) {
   const app = useApp();
-  const team = teamKey ? app.teams?.find((p) => p.key === teamKey) : undefined;
+  const team = teamKey ? app.teams?.find((t) => t.key === teamKey) : undefined;
   const [view, setView] = useState<View>(() => (store.get("view") === "board" ? "board" : "list"));
   const [search, setSearch] = useState("");
   const [label, setLabel] = useState("");

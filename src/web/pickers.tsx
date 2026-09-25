@@ -327,7 +327,7 @@ export function LabelsPicker({
 
 export function TeamPicker({ value, onChange, children, ...rest }: Trigger & { value: string; onChange: (key: string) => void }) {
   const { workspaceTeams } = useApp();
-  const options = (workspaceTeams ?? []).map((p) => ({ value: p.key, label: p.name, icon: <TeamMark id={p.key} /> }));
+  const options = (workspaceTeams ?? []).map((t) => ({ value: t.key, label: t.name, icon: <TeamMark id={t.key} /> }));
   return (
     <Picker label="Team" options={options} selected={[value]} onPick={onChange} {...rest}>
       {children}

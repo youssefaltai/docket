@@ -1379,7 +1379,7 @@ kbd {
   vertical-align: -1.5px;
 }
 
-/* ---------- Project tabs ---------- */
+/* ---------- Tabs ---------- */
 
 .tabs {
   margin-left: 4px;
@@ -2311,9 +2311,6 @@ textarea.input {
 .settings-buttons {
   justify-content: flex-end;
 }
-.settings-inline .input {
-  min-width: 200px;
-}
 .settings-list {
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -2390,14 +2387,10 @@ textarea.input {
 
 /* ---------- Sign in ---------- */
 
-.auth .field {
+.login .field {
   width: min(300px, 100%);
   text-align: left;
 }
-.auth .field .input {
+.login .field .input {
   width: 100%;
-}
-.auth p strong {
-  color: var(--text);
-  font-weight: 500;
 }

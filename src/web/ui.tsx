@@ -44,9 +44,12 @@ export type Route =
   | { view: "issues"; team: string | null }
   | { view: "docs"; team: string | null }
   | { view: "issue"; id: string }
-  | { view: "doc"; slug: string };
+  | { view: "doc"; slug: string }
+  | { view: "settings"; section: "account" | "workspace" };
 
 export function parseRoute(path: string): Route {
+  const settings = /^\/settings\/(account|workspace)\/?$/.exec(path);
+  if (settings) return { view: "settings", section: settings[1] as "account" | "workspace" };
   const issue = /^\/issue\/([^/]+)/.exec(path);
   if (issue) return { view: "issue", id: decodeURIComponent(issue[1]!).toUpperCase() };
   const doc = /^\/doc\/([^/]+)/.exec(path);
@@ -129,7 +132,7 @@ export const useApp = () => useContext(AppContext);
 
 /** Bumped (debounced) on every server event; views refetch when it changes. */
 export const LiveContext = createContext(0);
-export const useLive = () => useContext(LiveContext);
+const useLive = () => useContext(LiveContext);
 
 // ---------- Hooks & helpers ----------
 
@@ -199,10 +202,27 @@ export function useAutosize(ref: RefObject<HTMLTextAreaElement | null>, value: s
   }, [ref, value]);
 }
 
+/** Runs one action at a time; failures toast unless `onError` handles them. */
+export function useRun() {
+  const [busy, setBusy] = useState(false);
+  const run = async (action: () => Promise<unknown>, onError: (e: unknown) => void = errorToast) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await action();
+    } catch (e) {
+      onError(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return { busy, run };
+}
+
 export const isEditable = (t: EventTarget | null) =>
   t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
 
-export const openCount = (p: Team) => OPEN_STATUSES.reduce((n, s) => n + p.counts[s], 0);
+export const openCount = (t: Team) => OPEN_STATUSES.reduce((n, s) => n + t.counts[s], 0);
 
 /** An issue edit as the UI shows it (users as refs), so it can be applied optimistically. */
 export type IssueChange = Omit<IssuePatch, "assignee" | "delegate"> & { assignee?: UserRef | null; delegate?: UserRef | null };
@@ -282,6 +302,13 @@ export function toast(text: string, href?: string) {
 
 export const errorToast = (e: unknown) => toast(e instanceof Error ? e.message : String(e));
 
+/** Copies `text` and toasts `done`. */
+export const copyText = (text: string, done: string) =>
+  navigator.clipboard.writeText(text).then(
+    () => toast(done),
+    () => toast("Couldn’t copy to clipboard"),
+  );
+
 export function Toaster() {
   const list = useSyncExternalStore(
     (cb) => {
@@ -346,7 +373,7 @@ export const MoreIcon = (props: IconProps) => <Dots strokeWidth={2.4} {...props}
 export const CopyIcon = icon("M5.5 5.5h7v7h-7zM10.5 5.5v-2h-7v7h2");
 export const DocIcon = icon("M3.5 2.5a1 1 0 0 1 1-1h4.5l3.5 3.5v8.5a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1zM9 1.5V5h3.5M6 8.5h4M6 11h2.5");
 export const HistoryIcon = icon("M2 8a6 6 0 1 0 6-6 6.5 6.5 0 0 0-4.5 1.8L2 5.3M2 2v3.3h3.3M8 4.7V8l2.7 1.3");
-export const SettingsIcon = icon("M2.5 4.5h6M12 4.5h1.5M2.5 11.5h1.5M7.5 11.5h6M10 3v3M6 10v3");
+const SettingsIcon = icon("M2.5 4.5h6M12 4.5h1.5M2.5 11.5h1.5M7.5 11.5h6M10 3v3M6 10v3");
 export const ComposeIcon = icon("M13.5 8.5v4a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1h4M11.5 2.5l2 2L8 10H6V8z");
 
 export function Logo() {
@@ -465,7 +492,7 @@ export function TeamMark({ id }: { id: string }) {
 }
 
 /** Team header: mark, inline-editable name and a settings button. */
-export function TeamTitle({ team }: { team: Team }) {
+function TeamTitle({ team }: { team: Team }) {
   const { reloadTeams, teamSettings } = useApp();
   return (
     <>
@@ -487,16 +514,15 @@ export function TeamTitle({ team }: { team: Team }) {
   );
 }
 
-export function TeamTabs({ team, view }: { team: string; view: "issues" | "docs" }) {
-  const tab = (v: typeof view, to: string, label: string) => (
-    <Link to={to} className={cls("tab", view === v && "on")} aria-current={view === v ? "page" : undefined}>
-      {label}
-    </Link>
-  );
+/** Links as tabs: [to, label, whether it's the current one]. */
+export function Tabs({ label, tabs }: { label: string; tabs: [to: string, label: string, on: boolean][] }) {
   return (
-    <nav className="tabs" aria-label="Team views">
-      {tab("issues", `/t/${team}`, "Issues")}
-      {tab("docs", `/t/${team}/docs`, "Docs")}
+    <nav className="tabs" aria-label={label}>
+      {tabs.map(([to, text, on]) => (
+        <Link key={to} to={to} className={cls("tab", on && "on")} aria-current={on ? "page" : undefined}>
+          {text}
+        </Link>
+      ))}
     </nav>
   );
 }
@@ -530,6 +556,17 @@ export function EmptyState({
       {children && <p>{children}</p>}
       {action}
     </div>
+  );
+}
+
+/** A labeled form field, with an optional hint below. */
+export function Field({ label, hint, children }: { label: ReactNode; hint?: ReactNode; children: ReactNode }) {
+  return (
+    <label className="field">
+      <span>{label}</span>
+      {children}
+      {hint && <small>{hint}</small>}
+    </label>
   );
 }
 
@@ -637,7 +674,15 @@ export function ListHeader({
         {team ? <TeamTitle team={team} /> : <span>{title}</span>}
         {count > 0 && <span className="header-count">{count}</span>}
       </div>
-      {team && <TeamTabs team={team.key} view={view} />}
+      {team && (
+        <Tabs
+          label="Team views"
+          tabs={[
+            [`/t/${team.key}`, "Issues", view === "issues"],
+            [`/t/${team.key}/docs`, "Docs", view === "docs"],
+          ]}
+        />
+      )}
       <button className="icon-btn mobile-only" onClick={onNew} aria-label={view === "docs" ? "New doc" : "New issue"}>
         <PlusIcon />
       </button>
@@ -679,7 +724,7 @@ export function TeamNotFound({ teamKey, back, backLabel }: { teamKey: string; ba
   );
 }
 
-/** A titled block on the issue and doc pages: sub-issues, docs, comments… */
+/** A titled block: sub-issues, comments, a settings section… */
 export function Section({
   title,
   count,
@@ -816,7 +861,7 @@ export function Markdown({ text, className }: { text: string; className?: string
   const { teams } = useApp();
   const index = useIssueIndex();
   const html = useMemo(() => {
-    chipKeys = new Set(teams?.map((p) => p.key));
+    chipKeys = new Set(teams?.map((t) => t.key));
     chipIndex = index;
     return (marked.parse(text) as string).replace(/<(p|h[1-6]|ul|ol|blockquote|table|td|th)(?=[\s>])/g, '<$1 dir="auto"');
   }, [text, teams, index]);
@@ -989,21 +1034,16 @@ function Composer({
   onCancel?: () => void;
 }) {
   const [body, setBody] = useState(initial);
-  const [busy, setBusy] = useState(false);
+  const { busy, run } = useRun();
   const ref = useRef<HTMLTextAreaElement>(null);
   useAutosize(ref, body);
-  const send = async () => {
+  const send = () => {
     const text = body.trim();
-    if (!text || busy) return;
-    setBusy(true);
-    try {
-      await onSubmit(text);
-      setBody("");
-    } catch (e) {
-      errorToast(e);
-    } finally {
-      setBusy(false);
-    }
+    if (text)
+      run(async () => {
+        await onSubmit(text);
+        setBody("");
+      });
   };
   return (
     <div className="composer">

@@ -1,21 +1,33 @@
 // Settings: your account (profile, devices, API keys) and, for admins, the workspace (members, invites, agents).
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
-import type { ApiKeyScope, CodeLink, Session, WorkspaceMember } from "../shared/types";
-import { auth, getMe, loadMe, mcpCommand } from "./auth";
+import type { ApiKeyScope, CodeLink, Role, Session, Workspace, WorkspaceMember } from "../shared/types";
+import { auth, getMe } from "./auth";
 import { Picker } from "./pickers";
-import { Avatar, CopyIcon, EmptyState, Link, MenuButton, MoreIcon, PlusIcon, Section, ago, cls, errorToast, toast, useFetch } from "./ui";
+import {
+  Avatar,
+  CopyIcon,
+  EmptyState,
+  Field,
+  MenuButton,
+  MoreIcon,
+  PlusIcon,
+  Section,
+  Tabs,
+  ago,
+  cls,
+  copyText,
+  errorToast,
+  toast,
+  useApp,
+  useFetch,
+  useRun,
+} from "./ui";
 
-type Tab = "account" | "workspace";
-
-export function SettingsPage({ section, workspace }: { section: Tab; workspace: string | null }) {
+export function SettingsPage({ section }: { section: "account" | "workspace" }) {
+  const { workspace } = useApp();
   useEffect(() => {
     document.title = "Settings · Docket";
   }, []);
-  const tab = (t: Tab, label: string) => (
-    <Link to={`/settings/${t}`} className={cls("tab", section === t && "on")} aria-current={section === t ? "page" : undefined}>
-      {label}
-    </Link>
-  );
   return (
     <>
       <header className="header">
@@ -23,17 +35,20 @@ export function SettingsPage({ section, workspace }: { section: Tab; workspace: 
         <div className="header-title">
           <span>Settings</span>
         </div>
-        <nav className="tabs" aria-label="Settings">
-          {tab("account", "Account")}
-          {tab("workspace", "Workspace")}
-        </nav>
+        <Tabs
+          label="Settings"
+          tabs={[
+            ["/settings/account", "Account", section === "account"],
+            ["/settings/workspace", "Workspace", section === "workspace"],
+          ]}
+        />
       </header>
       <div className="content">
         <div className="settings">
           {section === "account" ? (
             <AccountSettings />
           ) : workspace ? (
-            <WorkspaceSettings key={workspace} workspace={workspace} />
+            <WorkspaceSettings key={workspace.key} workspace={workspace} />
           ) : (
             <EmptyState title="No workspace">Pick a workspace in the sidebar first.</EmptyState>
           )}
@@ -45,24 +60,9 @@ export function SettingsPage({ section, workspace }: { section: Tab; workspace: 
 
 // ---------- Shared bits ----------
 
-/** Runs one action at a time; failures toast unless `onError` handles them. */
-function useRun() {
-  const [busy, setBusy] = useState(false);
-  const run = async (action: () => Promise<unknown>, onError: (e: unknown) => void = errorToast) => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      await action();
-    } catch (e) {
-      onError(e);
-    } finally {
-      setBusy(false);
-    }
-  };
-  return { busy, run };
-}
-
-const copy = (text: string, what: string) => navigator.clipboard.writeText(text).then(() => toast(`${what} copied`), errorToast);
+/** The command that connects an MCP client with a token. */
+const mcpCommand = (token: string) =>
+  `claude mcp add --transport http --scope user docket ${location.origin}/mcp --header "Authorization: Bearer ${token}"`;
 
 interface Shown {
   lead?: ReactNode;
@@ -73,7 +73,7 @@ interface Shown {
 
 const LINK_NOTE = "Expires in 15 minutes, works once.";
 const TOKEN_NOTE = "Shown once. Treat it like a password.";
-const linkSecret = (link: CodeLink, note = LINK_NOTE, lead?: ReactNode): Shown => ({ lead, value: link.url, note, copies: [["Link", link.url]] });
+const linkSecret = (link: CodeLink, lead?: ReactNode, note = LINK_NOTE): Shown => ({ lead, value: link.url, note, copies: [["link", link.url]] });
 
 /** A secret shown this one time: a link or a token, with copy buttons. */
 function Secret({ lead, value, note, copies, onDone }: Shown & { onDone: () => void }) {
@@ -85,9 +85,9 @@ function Secret({ lead, value, note, copies, onDone }: Shown & { onDone: () => v
         <span className="secret-note">{note}</span>
         <span className="grow" />
         {copies.map(([what, text]) => (
-          <button key={what} className="btn btn-sm" onClick={() => copy(text, what)}>
+          <button key={what} className="btn btn-sm" onClick={() => copyText(text, "Copied")}>
             <CopyIcon />
-            Copy {what.toLowerCase()}
+            Copy {what}
           </button>
         ))}
         <button className="btn btn-sm btn-ghost" onClick={onDone}>
@@ -96,6 +96,12 @@ function Secret({ lead, value, note, copies, onDone }: Shown & { onDone: () => v
       </div>
     </div>
   );
+}
+
+/** One secret at a time: `secret` renders it (null when there's none), `show` sets it. */
+function useSecret() {
+  const [shown, setShown] = useState<Shown | null>(null);
+  return { secret: shown && <Secret {...shown} onDone={() => setShown(null)} />, show: setShown };
 }
 
 function Row({ icon, title, meta, dim, children }: { icon?: ReactNode; title: ReactNode; meta?: ReactNode; dim?: boolean; children?: ReactNode }) {
@@ -108,6 +114,24 @@ function Row({ icon, title, meta, dim, children }: { icon?: ReactNode; title: Re
       </div>
       {children}
     </div>
+  );
+}
+
+/** A member's row: avatar, "name @username", dimmed when suspended or removed. */
+function MemberRow({ m, meta, children }: { m: WorkspaceMember; meta: string; children?: ReactNode }) {
+  return (
+    <Row
+      dim={!!m.suspendedAt}
+      icon={<Avatar user={m.user} />}
+      title={
+        <>
+          <span dir="auto">{m.user.name}</span> <span className="muted">@{m.user.username}</span>
+        </>
+      }
+      meta={meta}
+    >
+      {children}
+    </Row>
   );
 }
 
@@ -126,9 +150,16 @@ function Choice<T extends string>({ label, value, options, onChange }: { label: 
 }
 
 /** A row's "…" menu. */
-function RowMenu({ label, actions, onPick }: { label: string; actions: [value: string, label: string][]; onPick: (value: string) => void }) {
+function RowMenu({ label, actions }: { label: string; actions: [label: string, run: () => void][] }) {
   return (
-    <Picker label={label} options={actions.map(([value, label]) => ({ value, label }))} selected={[]} onPick={onPick} className="icon-btn sm" align="end">
+    <Picker
+      label={label}
+      options={actions.map(([label]) => ({ value: label, label }))}
+      selected={[]}
+      onPick={(picked) => actions.find(([label]) => label === picked)?.[1]()}
+      className="icon-btn sm"
+      align="end"
+    >
       <MoreIcon />
     </Picker>
   );
@@ -166,9 +197,7 @@ function Profile() {
     setError("");
     run(
       async () => {
-        await auth.updateMe(patch);
-        const me = await loadMe(); // refresh what getMe() returns elsewhere
-        setSaved(me.user);
+        setSaved((await auth.updateMe(patch)).user);
         toast("Profile saved");
       },
       (e) => setError(e instanceof Error ? e.message : String(e)),
@@ -177,19 +206,15 @@ function Profile() {
   return (
     <Section title="Profile">
       <form className="settings-form" onSubmit={submit}>
-        <label className="field">
-          <span>Name</span>
+        <Field label="Name">
           <input className="input" dir="auto" value={name} onChange={(e) => setName(e.target.value)} />
-        </label>
-        <label className="field">
-          <span>Username</span>
+        </Field>
+        <Field label="Username" hint="Used to assign issues and to mention you. Lowercase letters, digits, “.”, “_” and “-”.">
           <input className="input" autoCapitalize="off" spellCheck={false} value={username} onChange={(e) => setUsername(e.target.value.toLowerCase())} />
-          <small>Used to assign issues and to mention you. Lowercase letters, digits, “.”, “_” and “-”.</small>
-        </label>
-        <label className="field">
-          <span>Email</span>
+        </Field>
+        <Field label="Email">
           <input className="input" type="email" autoCapitalize="off" value={email} onChange={(e) => setEmail(e.target.value)} />
-        </label>
+        </Field>
         {error && (
           <p className="settings-error" role="alert" dir="auto">
             {error}
@@ -206,15 +231,13 @@ function Profile() {
 }
 
 function SignInLink() {
-  const [shown, setShown] = useState<Shown | null>(null);
+  const { secret, show } = useSecret();
   const { busy, run } = useRun();
-  const create = () => run(async () => setShown(linkSecret(await auth.signInLink())));
+  const create = () => run(async () => show(linkSecret(await auth.signInLink())));
   return (
     <Section title="Sign in on another device">
       <p className="settings-hint">Open the link on your phone or another computer to sign in there as you.</p>
-      {shown ? (
-        <Secret {...shown} onDone={() => setShown(null)} />
-      ) : (
+      {secret ?? (
         <button className="btn" disabled={busy} onClick={create}>
           Get a sign-in link
         </button>
@@ -279,13 +302,13 @@ const scopeLabel = (scope: ApiKeyScope) => SCOPES.find(([s]) => s === scope)![1]
 function ApiKeys() {
   const keys = useFetch(() => auth.apiKeys(), []);
   const [adding, setAdding] = useState(false);
-  const [shown, setShown] = useState<Shown | null>(null);
+  const { secret, show } = useSecret();
   const revoke = (id: number, name: string) => {
     if (confirm(`Revoke the API key “${name}”? Anything using it stops working.`)) auth.revokeApiKey(id).then(keys.reload, errorToast);
   };
   const created = (token: string) => {
     setAdding(false);
-    setShown({ value: token, note: TOKEN_NOTE, copies: [["Token", token], ["MCP command", mcpCommand(token)]] });
+    show({ value: token, note: TOKEN_NOTE, copies: [["token", token], ["MCP command", mcpCommand(token)]] });
     keys.reload();
   };
   return (
@@ -301,7 +324,7 @@ function ApiKeys() {
       }
     >
       <p className="settings-hint">For scripts and MCP clients that act as you.</p>
-      {shown && <Secret {...shown} onDone={() => setShown(null)} />}
+      {secret}
       {adding && <NewApiKey onCancel={() => setAdding(false)} onCreated={created} />}
       {!!keys.data?.length && (
         <div className="settings-list">
@@ -332,10 +355,9 @@ function NewApiKey({ onCancel, onCreated }: { onCancel: () => void; onCreated: (
   };
   return (
     <form className="settings-form settings-card" onSubmit={submit}>
-      <label className="field">
-        <span>Name</span>
+      <Field label="Name">
         <input className="input" autoFocus dir="auto" placeholder="Laptop scripts" value={name} onChange={(e) => setName(e.target.value)} />
-      </label>
+      </Field>
       <div className="field">
         <span>Access</span>
         <Choice label="Access" value={scope} options={SCOPES} onChange={setScope} />
@@ -360,71 +382,55 @@ function FormButtons({ label, disabled, onCancel }: { label: string; disabled: b
 
 // ---------- Workspace ----------
 
-function WorkspaceSettings({ workspace }: { workspace: string }) {
-  const members = useFetch(() => auth.members(workspace), [workspace]);
-  const admin = getMe().workspaces.find((w) => w.key === workspace)?.role === "admin";
-  const all = members.data ?? [];
-  const people = all.filter((m) => m.user.kind === "person");
-  const agents = all.filter((m) => m.user.kind === "agent");
-  if (!admin)
-    return (
-      <>
-        <p className="settings-note">Only admins manage the workspace.</p>
-        <Members workspace={workspace} members={people} reload={members.reload} readOnly />
-      </>
-    );
+function WorkspaceSettings({ workspace }: { workspace: Workspace }) {
+  const { members, loadDirectory } = useApp();
+  const admin = workspace.role === "admin";
+  const people = members.filter((m) => m.user.kind === "person");
+  const agents = members.filter((m) => m.user.kind === "agent");
   return (
     <>
-      <Members workspace={workspace} members={people} reload={members.reload} />
-      <Invite workspace={workspace} />
-      <Agents workspace={workspace} agents={agents} reload={members.reload} />
+      {!admin && <p className="settings-note">Only admins manage the workspace.</p>}
+      <Members workspace={workspace.key} members={people} reload={loadDirectory} readOnly={!admin} />
+      {admin && (
+        <>
+          <Invite workspace={workspace.key} />
+          <Agents workspace={workspace.key} agents={agents} reload={loadDirectory} />
+        </>
+      )}
     </>
   );
 }
 
-function Members({ workspace, members, reload, readOnly }: { workspace: string; members: WorkspaceMember[]; reload: () => void; readOnly?: boolean }) {
-  const [shown, setShown] = useState<Shown | null>(null);
-  const update = (m: WorkspaceMember, patch: { role?: "admin" | "member"; suspended?: boolean }) =>
+function Members({ workspace, members, reload, readOnly }: { workspace: string; members: WorkspaceMember[]; reload: () => void; readOnly: boolean }) {
+  const { secret, show } = useSecret();
+  const update = (m: WorkspaceMember, patch: { role?: Exclude<Role, "agent">; suspended?: boolean }) =>
     auth.updateMember(workspace, m.user.username, patch).then(reload, errorToast);
-  const act = (m: WorkspaceMember, action: string) => {
+  const actions = (m: WorkspaceMember): [string, () => void][] => {
     const { name, username } = m.user;
-    if (action === "admin" || action === "member") update(m, { role: action });
-    else if (action === "reinstate") update(m, { suspended: false });
-    else if (action === "suspend") {
-      if (confirm(`Suspend ${name}? They lose access to this workspace; what they wrote stays theirs.`)) update(m, { suspended: true });
-    } else if (action === "link") {
+    if (m.suspendedAt) return [["Reinstate", () => update(m, { suspended: false })]];
+    const role = m.role === "admin" ? "member" : "admin";
+    const signInLink = () =>
       auth.memberSignInLink(workspace, username).then(
-        (link) => setShown(linkSecret(link, LINK_NOTE, <>Sign-in link for <strong dir="auto">{name}</strong>. Send it to them.</>)),
+        (link) => show(linkSecret(link, <>Sign-in link for <strong dir="auto">{name}</strong>. Send it to them.</>)),
         errorToast,
       );
-    }
+    const suspend = () => {
+      if (confirm(`Suspend ${name}? They lose access to this workspace; what they wrote stays theirs.`)) update(m, { suspended: true });
+    };
+    return [
+      [`Make ${role}`, () => update(m, { role })],
+      ["Sign-in link", signInLink],
+      ["Suspend", suspend],
+    ];
   };
-  const actions = (m: WorkspaceMember): [string, string][] =>
-    m.suspendedAt
-      ? [["reinstate", "Reinstate"]]
-      : [
-          m.role === "admin" ? ["member", "Make member"] : ["admin", "Make admin"],
-          ["link", "Sign-in link"],
-          ["suspend", "Suspend"],
-        ];
   return (
     <Section title="Members" count={members.length}>
-      {shown && <Secret {...shown} onDone={() => setShown(null)} />}
+      {secret}
       <div className="settings-list">
         {members.map((m) => (
-          <Row
-            key={m.user.username}
-            dim={!!m.suspendedAt}
-            icon={<Avatar user={m.user} />}
-            title={
-              <>
-                <span dir="auto">{m.user.name}</span> <span className="muted">@{m.user.username}</span>
-              </>
-            }
-            meta={meta(m.email, m.role === "admin" ? "Admin" : "Member", m.suspendedAt && "Suspended")}
-          >
-            {!readOnly && <RowMenu label={`Manage ${m.user.name}`} actions={actions(m)} onPick={(a) => act(m, a)} />}
-          </Row>
+          <MemberRow key={m.user.username} m={m} meta={meta(m.email, m.role === "admin" ? "Admin" : "Member", m.suspendedAt && "Suspended")}>
+            {!readOnly && <RowMenu label={`Manage ${m.user.name}`} actions={actions(m)} />}
+          </MemberRow>
         ))}
       </div>
     </Section>
@@ -433,20 +439,19 @@ function Members({ workspace, members, reload, readOnly }: { workspace: string; 
 
 /** An invite is a one-time link you hand over yourself: whoever opens it joins (there's no email to check). */
 function Invite({ workspace }: { workspace: string }) {
-  const [role, setRole] = useState<"admin" | "member">("member");
-  const [shown, setShown] = useState<Shown | null>(null);
+  const [role, setRole] = useState<Exclude<Role, "agent">>("member");
+  const { secret, show } = useSecret();
   const { busy, run } = useRun();
   const submit = (e: FormEvent) => {
     e.preventDefault();
     run(async () => {
       const link = await auth.invite(workspace, role);
-      const lead = <>Invite link for a new {role === "admin" ? "admin" : "member"}.</>;
-      setShown(linkSecret(link, "Send it to one person. Whoever opens it joins; it works once and expires in 15 minutes.", lead));
+      show(linkSecret(link, <>Invite link for a new {role}.</>, "Send it to one person. Whoever opens it joins; it works once and expires in 15 minutes."));
     });
   };
   return (
     <Section title="Invite">
-      {shown && <Secret {...shown} onDone={() => setShown(null)} />}
+      {secret}
       <form className="settings-inline" onSubmit={submit}>
         <Choice
           label="Role"
@@ -467,26 +472,28 @@ function Invite({ workspace }: { workspace: string }) {
 
 function Agents({ workspace, agents, reload }: { workspace: string; agents: WorkspaceMember[]; reload: () => void }) {
   const [adding, setAdding] = useState(false);
-  const [shown, setShown] = useState<Shown | null>(null);
+  const { secret, show } = useSecret();
   const showToken = (name: string, token: string) => {
     const command = mcpCommand(token);
-    setShown({
+    show({
       lead: <>Connect <strong dir="auto">{name}</strong> with this command.</>,
       value: command,
       note: TOKEN_NOTE,
-      copies: [["Command", command], ["Token", token]],
+      copies: [["command", command], ["token", token]],
     });
     reload();
   };
-  const act = (m: WorkspaceMember, action: string) => {
+  const actions = (m: WorkspaceMember): [string, () => void][] => {
     const { name, username } = m.user;
-    if (action === "token") {
+    const newToken = () => {
       // A removed agent comes back with a new token, so there's no old one to warn about.
       if (m.suspendedAt || confirm(`Issue a new token for ${name}? The old token stops working.`))
         auth.rotateAgentToken(workspace, username).then(({ token }) => showToken(name, token), errorToast);
-    } else if (action === "remove") {
+    };
+    const remove = () => {
       if (confirm(`Remove ${name}? Its token stops working; what it wrote stays.`)) auth.removeAgent(workspace, username).then(reload, errorToast);
-    }
+    };
+    return m.suspendedAt ? [["New token", newToken]] : [["New token", newToken], ["Remove", remove]];
   };
   return (
     <Section
@@ -502,7 +509,7 @@ function Agents({ workspace, agents, reload }: { workspace: string; agents: Work
       }
     >
       <p className="settings-hint">Agents connect over MCP with their own token, and everything they write carries their name.</p>
-      {shown && <Secret {...shown} onDone={() => setShown(null)} />}
+      {secret}
       {adding && (
         <NewAgent
           workspace={workspace}
@@ -516,23 +523,9 @@ function Agents({ workspace, agents, reload }: { workspace: string; agents: Work
       {agents.length > 0 && (
         <div className="settings-list">
           {agents.map((m) => (
-            <Row
-              key={m.user.username}
-              dim={!!m.suspendedAt}
-              icon={<Avatar user={m.user} />}
-              title={
-                <>
-                  <span dir="auto">{m.user.name}</span> <span className="muted">@{m.user.username}</span>
-                </>
-              }
-              meta={meta(m.suspendedAt ? "Removed" : `Added ${ago(m.joinedAt)}`)}
-            >
-              <RowMenu
-                label={`Manage ${m.user.name}`}
-                actions={m.suspendedAt ? [["token", "New token"]] : [["token", "New token"], ["remove", "Remove"]]}
-                onPick={(a) => act(m, a)}
-              />
-            </Row>
+            <MemberRow key={m.user.username} m={m} meta={meta(m.suspendedAt ? "Removed" : `Added ${ago(m.joinedAt)}`)}>
+              <RowMenu label={`Manage ${m.user.name}`} actions={actions(m)} />
+            </MemberRow>
           ))}
         </div>
       )}
@@ -555,12 +548,10 @@ function NewAgent({ workspace, onCancel, onCreated }: { workspace: string; onCan
   };
   return (
     <form className="settings-form settings-card" onSubmit={submit}>
-      <label className="field">
-        <span>Name</span>
+      <Field label="Name">
         <input className="input" autoFocus dir="auto" placeholder="Claude (frontend)" value={name} onChange={(e) => setName(e.target.value)} />
-      </label>
-      <label className="field">
-        <span>Username</span>
+      </Field>
+      <Field label="Username" hint="Used to delegate issues to it.">
         <input
           className="input"
           autoCapitalize="off"
@@ -569,8 +560,7 @@ function NewAgent({ workspace, onCancel, onCreated }: { workspace: string; onCan
           value={username}
           onChange={(e) => setUsername(e.target.value.toLowerCase())}
         />
-        <small>Used to delegate issues to it.</small>
-      </label>
+      </Field>
       <FormButtons label="Add agent" disabled={!ready} onCancel={onCancel} />
     </form>
   );

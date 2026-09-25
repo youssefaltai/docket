@@ -42,7 +42,7 @@ import {
 
 export function DocsView({ teamKey }: { teamKey: string | null }) {
   const app = useApp();
-  const team = teamKey ? app.teams?.find((p) => p.key === teamKey) : undefined;
+  const team = teamKey ? app.teams?.find((t) => t.key === teamKey) : undefined;
   const [search, setSearch] = useState("");
   const q = useDebounced(search.trim(), 150);
 
@@ -105,7 +105,7 @@ export function DocsView({ teamKey }: { teamKey: string | null }) {
               <Link to={`/t/${key}/docs`} className="group-toggle">
                 <TeamMark id={key} />
                 <span className="group-label" dir="auto">
-                  {app.teams?.find((p) => p.key === key)?.name ?? key}
+                  {app.teams?.find((t) => t.key === key)?.name ?? key}
                 </span>
                 <span className="count">{list.length}</span>
               </Link>
@@ -234,7 +234,7 @@ export function DocPage({ slug }: { slug: string }) {
   const outline = useOutline(body, scroller);
 
   const teamKey = doc?.team;
-  const team = app.teams?.find((p) => p.key === teamKey);
+  const team = app.teams?.find((t) => t.key === teamKey);
   const header = (
     <header className="header">
       <MenuButton />
@@ -337,7 +337,7 @@ export function DocPage({ slug }: { slug: string }) {
                 onSave={(title) => patch({ title })}
               />
               <div className="doc-meta">
-                <TeamPicker value={doc.team} onChange={(p) => p !== doc.team && patch({ team: p })} className="doc-meta-btn">
+                <TeamPicker value={doc.team} onChange={(key) => key !== doc.team && patch({ team: key })} className="doc-meta-btn">
                   <TeamMark id={doc.team} />
                   <span dir="auto">{team?.name ?? doc.team}</span>
                 </TeamPicker>

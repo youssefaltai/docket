@@ -1,6 +1,6 @@
 const CACHE = "docket-v2";
 
-self.addEventListener("install", (event) => {
+self.addEventListener("install", () => {
   self.skipWaiting();
 });
 
@@ -66,14 +66,13 @@ async function switchSession(request) {
 
 self.addEventListener("fetch", (event) => {
   const { request } = event;
-  const path = new URL(request.url).pathname;
-  if (request.method === "POST" && SESSION_SWITCHES.includes(path)) {
+  const url = new URL(request.url);
+  if (request.method === "POST" && SESSION_SWITCHES.includes(url.pathname)) {
     event.respondWith(switchSession(request));
     return;
   }
   if (request.method !== "GET") return;
 
-  const url = new URL(request.url);
   if (url.pathname === "/mcp" || url.pathname === "/ws") return;
   if (url.origin !== self.location.origin) return;
 

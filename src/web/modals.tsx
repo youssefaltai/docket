@@ -1,12 +1,13 @@
 // New issue, doc, team and workspace dialogs.
 import { useRef, useState, type ReactNode } from "react";
-import { PRIORITY_LABELS, STATUS_LABELS, type IssueInput, type TeamPatch, type UserRef, type Workspace } from "../shared/types";
+import { PRIORITY_LABELS, STATUS_LABELS, type IssueInput, type UserRef, type Workspace } from "../shared/types";
 import { api } from "./api";
 import { AssigneePicker, LabelsPicker, ParentPicker, PriorityPicker, TeamPicker, StatusPicker } from "./pickers";
 import {
   Avatar,
   ChevronRightIcon,
   CloseIcon,
+  Field,
   Kbd,
   LabelDot,
   MOD,
@@ -16,31 +17,15 @@ import {
   TeamMark,
   StatusIcon,
   TagIcon,
-  errorToast,
   nav,
   navigate,
   toast,
   useApp,
   useAutosize,
+  useRun,
 } from "./ui";
 
-/** Submits once at a time; a failure is shown and the form stays open to retry. */
-function useSubmit(ready: boolean, action: () => Promise<void>) {
-  const [busy, setBusy] = useState(false);
-  const submit = async () => {
-    if (!ready || busy) return;
-    setBusy(true);
-    try {
-      await action();
-    } catch (e) {
-      errorToast(e);
-      setBusy(false);
-    }
-  };
-  return { busy, submit };
-}
-
-export function ModalHead({ onClose, children }: { onClose: () => void; children: ReactNode }) {
+function ModalHead({ onClose, children }: { onClose: () => void; children: ReactNode }) {
   return (
     <div className="modal-head">
       {children}
@@ -55,7 +40,7 @@ export function ModalHead({ onClose, children }: { onClose: () => void; children
 /** "Team ›" in front of a new issue or doc's title. */
 function TeamCrumb({ value, onChange }: { value: string; onChange: (key: string) => void }) {
   const { teams } = useApp();
-  const team = teams?.find((p) => p.key === value);
+  const team = teams?.find((t) => t.key === value);
   return (
     <>
       <TeamPicker value={value} onChange={onChange} className="chip">
@@ -85,16 +70,20 @@ export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueIn
   const desc = useRef<HTMLTextAreaElement>(null);
   useAutosize(desc, description);
 
-  const { busy, submit } = useSubmit(!!title.trim() && !!team, async () => {
-    const issue = await api.createIssue({
-      ...draft,
-      assignee: assignee?.username ?? null,
-      title: title.trim(),
-      description: description.trim() || undefined,
+  const { busy, run } = useRun();
+  const submit = () => {
+    if (!title.trim() || !team) return;
+    run(async () => {
+      const issue = await api.createIssue({
+        ...draft,
+        assignee: assignee?.username ?? null,
+        title: title.trim(),
+        description: description.trim() || undefined,
+      });
+      toast(`Created ${issue.id}`, `/issue/${issue.id}`);
+      onClose();
     });
-    toast(`Created ${issue.id}`, `/issue/${issue.id}`);
-    onClose();
-  });
+  };
 
   return (
     <Modal label="New issue" onClose={onClose} onSubmit={submit}>
@@ -182,12 +171,16 @@ export function NewDocModal({ team: initial, onClose }: { team: string; onClose:
   const [team, setTeam] = useState(initial);
   const [title, setTitle] = useState("");
   const ready = !!title.trim() && !!team;
-  const { busy, submit } = useSubmit(ready, async () => {
-    const doc = await api.createDocument({ team, title: title.trim() });
-    nav.editDoc = doc.slug; // open straight into edit mode
-    navigate(`/doc/${doc.slug}`);
-    onClose();
-  });
+  const { busy, run } = useRun();
+  const submit = () => {
+    if (!ready) return;
+    run(async () => {
+      const doc = await api.createDocument({ team, title: title.trim() });
+      nav.editDoc = doc.slug; // open straight into edit mode
+      navigate(`/doc/${doc.slug}`);
+      onClose();
+    });
+  };
 
   return (
     <Modal label="New doc" className="modal-sm" onClose={onClose} onSubmit={submit}>
@@ -241,7 +234,10 @@ function FormModal({
   onClose: () => void;
   children: ReactNode;
 }) {
-  const { busy, submit } = useSubmit(ready, onSubmit);
+  const { busy, run } = useRun();
+  const submit = () => {
+    if (ready) run(onSubmit);
+  };
   return (
     <Modal label={title} className="modal-sm" onClose={onClose} onSubmit={submit}>
       <ModalHead onClose={onClose}>
@@ -310,26 +306,26 @@ export function NewTeamModal({ onClose }: { onClose: () => void }) {
       }}
       onClose={onClose}
     >
-      <label className="field">
-        <span>Name</span>
+      <Field label="Name">
         <input className="input" autoFocus dir="auto" placeholder="Docket" value={name} onChange={(e) => setName(e.target.value)} />
-      </label>
-      <label className="field">
-        <span>Key</span>
+      </Field>
+      <Field label="Key" hint={`2–5 letters. Issues are numbered ${key || "DOC"}-1, ${key || "DOC"}-2, …`}>
         <input
           className="input mono"
           placeholder="DOC"
           value={key}
           onChange={(e) => setCustomKey(e.target.value.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 5))}
         />
-        <small>2–5 letters. Issues are numbered {key || "DOC"}-1, {key || "DOC"}-2, …</small>
-      </label>
-      <label className="field">
-        <span>
-          Description <em>optional</em>
-        </span>
+      </Field>
+      <Field
+        label={
+          <>
+            Description <em>optional</em>
+          </>
+        }
+      >
         <textarea className="input" dir="auto" rows={2} value={description} onChange={(e) => setDescription(e.target.value)} />
-      </label>
+      </Field>
     </FormModal>
   );
 }
@@ -347,19 +343,17 @@ export function NewWorkspaceModal({ onCreate, onClose }: { onCreate: (w: Workspa
       }}
       onClose={onClose}
     >
-      <label className="field">
-        <span>Name</span>
+      <Field label="Name" hint="A workspace groups related teams, with their issues and docs.">
         <input className="input" autoFocus dir="auto" placeholder="Acme" value={name} onChange={(e) => setName(e.target.value)} />
-        <small>A workspace groups related teams, with their issues and docs.</small>
-      </label>
+      </Field>
     </FormModal>
   );
 }
 
-/** Edits what the header can't inline: the description, the workspace it's in, and that workspace's name. */
+/** Edits what the header can't inline: the description and, for admins, the workspace's name. */
 export function TeamSettingsModal({ teamKey, onClose }: { teamKey: string; onClose: () => void }) {
   const app = useApp();
-  const team = app.teams?.find((p) => p.key === teamKey);
+  const team = app.teams?.find((t) => t.key === teamKey);
   const home = app.workspaces?.find((w) => w.key === team?.workspace);
   const [description, setDescription] = useState(team?.description ?? "");
   const [workspaceName, setWorkspaceName] = useState(home?.name ?? "");
@@ -378,18 +372,19 @@ export function TeamSettingsModal({ teamKey, onClose }: { teamKey: string; onClo
       ready={!admin || !!workspaceName.trim()}
       onSubmit={async () => {
         if (admin && workspaceName.trim() !== home.name) await api.updateWorkspace(home.key, { name: workspaceName.trim() });
-        const patch: TeamPatch = {};
-        if (description.trim() !== team.description) patch.description = description.trim();
-        if (Object.keys(patch).length) await api.updateTeam(team.key, patch);
+        if (description.trim() !== team.description) await api.updateTeam(team.key, { description: description.trim() });
         app.reloadTeams();
         onClose();
       }}
       onClose={onClose}
     >
-      <label className="field">
-        <span>
-          Description <em>optional</em>
-        </span>
+      <Field
+        label={
+          <>
+            Description <em>optional</em>
+          </>
+        }
+      >
         <textarea
           className="input"
           autoFocus
@@ -398,13 +393,11 @@ export function TeamSettingsModal({ teamKey, onClose }: { teamKey: string; onClo
           value={description}
           onChange={(e) => setDescription(e.target.value)}
         />
-      </label>
+      </Field>
       {admin && (
-        <label className="field">
-          <span>Workspace name</span>
+        <Field label="Workspace name" hint={`Renames ${home.name} for all its teams.`}>
           <input className="input" dir="auto" value={workspaceName} onChange={(e) => setWorkspaceName(e.target.value)} />
-          <small>Renames {home.name} for all its teams.</small>
-        </label>
+        </Field>
       )}
     </FormModal>
   );

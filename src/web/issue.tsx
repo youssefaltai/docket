@@ -26,6 +26,7 @@ import {
   StatusIcon,
   TitleEditor,
   TrashIcon,
+  copyText,
   errorToast,
   fullDate,
   isMe,
@@ -50,7 +51,7 @@ export function IssuePage({ id }: { id: string }) {
   }, [id, issue?.title]);
 
   const teamKey = issue?.team ?? id.replace(/-\d+$/, "");
-  const team = app.teams?.find((p) => p.key === teamKey);
+  const team = app.teams?.find((t) => t.key === teamKey);
 
   const header = (actions?: ReactNode) => (
     <header className="header">
@@ -187,11 +188,7 @@ export function IssuePage({ id }: { id: string }) {
     }
   };
 
-  const copyId = () =>
-    navigator.clipboard.writeText(issue.id).then(
-      () => toast(`Copied ${issue.id}`),
-      () => toast("Couldn’t copy to clipboard"),
-    );
+  const copyId = () => copyText(issue.id, `Copied ${issue.id}`);
 
   return (
     <>
@@ -469,7 +466,7 @@ function Relations({ ids, children }: { ids: string[]; children?: ReactNode }) {
 
 function Properties({ issue, patch }: { issue: Issue; patch: (p: IssueChange) => void }) {
   const app = useApp();
-  const team = app.teams?.find((p) => p.key === issue.team);
+  const team = app.teams?.find((t) => t.key === issue.team);
   const none = <span className="muted">None</span>;
   return (
     <>
