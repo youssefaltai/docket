@@ -390,7 +390,7 @@ function SubIssues({ issue, onPatch }: { issue: Issue; onPatch: (id: string, p: 
       action={
         <button
           className="btn btn-ghost btn-sm"
-          onClick={() => app.newIssue({ team: issue.team, parent: issue.id, status: "todo" })}
+          onClick={() => app.newIssue({ team: issue.team, parent: issue.id })}
         >
           <PlusIcon /> Add
         </button>
