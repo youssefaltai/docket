@@ -4,6 +4,7 @@ import { startServer, type TestServer } from "./server.ts";
 
 // A stand-in chat service: /echo says what it received; /stream sends one event, waits to be released, sends another.
 let release = () => {};
+let upstreamAborted = false;
 const upstream = Bun.serve({
   port: 0,
   routes: {
@@ -16,6 +17,27 @@ const upstream = Bun.serve({
         body: await req.text(),
       }),
     "/chat": () => Response.json({ root: true }),
+    // Holds its answer back (a model that's slow to start) until the client goes away.
+    "/chat/slow": async (req) => {
+      upstreamAborted = false;
+      await new Promise((resolve) => req.signal.addEventListener("abort", resolve));
+      upstreamAborted = true;
+      return new Response("late");
+    },
+    // Streams pings until the client goes away, and notes that it did.
+    "/chat/hang": (req) => {
+      upstreamAborted = false;
+      const body = new ReadableStream({
+        async start(c) {
+          req.signal.addEventListener("abort", () => (upstreamAborted = true));
+          while (!req.signal.aborted) {
+            c.enqueue(new TextEncoder().encode(": ping\n\n"));
+            await Bun.sleep(50);
+          }
+        },
+      });
+      return new Response(body, { headers: { "Content-Type": "text/event-stream" } });
+    },
     "/chat/stream": () => {
       const held = new Promise<void>((resolve) => (release = resolve));
       const body = new ReadableStream({
@@ -100,6 +122,24 @@ describe("with CHAT_URL", () => {
     release();
     for (let r = await reader.read(); !r.done; r = await reader.read()) text += decoder.decode(r.value);
     expect(text).toBe("data: first\n\ndata: second\n\n");
+  });
+
+  test("Stop: the browser aborting cancels the upstream request", async () => {
+    const stop = new AbortController();
+    const res = await fetch(new URL("/api/chat/hang", s.url), { headers: { Cookie: s.admin.cookie! }, signal: stop.signal });
+    await res.body!.getReader().read();
+    stop.abort();
+    for (let i = 0; i < 100 && !upstreamAborted; i++) await Bun.sleep(20);
+    expect(upstreamAborted).toBeTrue();
+
+    // Before the first byte too: Stop while the service is still waiting on its model.
+    const early = new AbortController();
+    const pending = fetch(new URL("/api/chat/slow", s.url), { headers: { Cookie: s.admin.cookie! }, signal: early.signal }).catch(() => null);
+    await Bun.sleep(200);
+    early.abort();
+    await pending;
+    for (let i = 0; i < 100 && !upstreamAborted; i++) await Bun.sleep(20);
+    expect(upstreamAborted).toBeTrue();
   });
 
   test("only a signed-in browser gets through", async () => {
