@@ -6,6 +6,7 @@
   "packageManager": "bun@1.4.2",
   "scripts": {
     "dev": "DATABASE_PATH=${DATABASE_PATH:-dev.db} bun --hot src/server/index.ts",
+    "seed": "bun scripts/seed.ts",
     "start": "NODE_ENV=production bun src/server/index.ts",
     "typecheck": "tsc --noEmit"
   },

@@ -9,6 +9,7 @@ You need [Bun](https://bun.sh) 1.4+ (CI uses the version in `package.json`).
 ```sh
 bun install
 bun run dev          # http://localhost:7100, hot reload
+bun run seed         # demo data into the empty dev server, in another terminal
 bun test
 bun run typecheck
 ```
@@ -24,6 +25,7 @@ src/shared/types.ts   the contract between server and UI
 src/server/           Bun.serve, SQLite, REST, MCP
 src/web/              React UI, no framework beyond React
 test/                 bun test, black-box over HTTP
+scripts/seed.ts       demo data, created over REST
 ```
 
 ## Tests
