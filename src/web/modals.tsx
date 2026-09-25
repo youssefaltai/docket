@@ -362,9 +362,9 @@ export function TeamSettingsModal({ teamKey, onClose }: { teamKey: string; onClo
   const team = app.teams?.find((p) => p.key === teamKey);
   const home = app.workspaces?.find((w) => w.key === team?.workspace);
   const [description, setDescription] = useState(team?.description ?? "");
-  const [workspace, setWorkspace] = useState(team?.workspace ?? "");
   const [workspaceName, setWorkspaceName] = useState(home?.name ?? "");
   if (!team || !home) return null;
+  const admin = home.role === "admin"; // only admins rename the workspace
 
   return (
     <FormModal
@@ -375,12 +375,11 @@ export function TeamSettingsModal({ teamKey, onClose }: { teamKey: string; onClo
         </span>
       }
       action="Save"
-      ready={!!workspaceName.trim()}
+      ready={!admin || !!workspaceName.trim()}
       onSubmit={async () => {
-        if (workspaceName.trim() !== home.name) await api.updateWorkspace(home.key, { name: workspaceName.trim() });
+        if (admin && workspaceName.trim() !== home.name) await api.updateWorkspace(home.key, { name: workspaceName.trim() });
         const patch: TeamPatch = {};
         if (description.trim() !== team.description) patch.description = description.trim();
-        if (workspace !== team.workspace) patch.workspace = workspace;
         if (Object.keys(patch).length) await api.updateTeam(team.key, patch);
         app.reloadTeams();
         onClose();
@@ -400,22 +399,13 @@ export function TeamSettingsModal({ teamKey, onClose }: { teamKey: string; onClo
           onChange={(e) => setDescription(e.target.value)}
         />
       </label>
-      <label className="field">
-        <span>Workspace</span>
-        <select className="input" value={workspace} onChange={(e) => setWorkspace(e.target.value)}>
-          {app.workspaces?.map((w) => (
-            <option key={w.key} value={w.key}>
-              {w.name}
-            </option>
-          ))}
-        </select>
-        <small>Moving keeps its key, issues and docs.</small>
-      </label>
-      <label className="field">
-        <span>Workspace name</span>
-        <input className="input" dir="auto" value={workspaceName} onChange={(e) => setWorkspaceName(e.target.value)} />
-        <small>Renames {home.name} for all its teams.</small>
-      </label>
+      {admin && (
+        <label className="field">
+          <span>Workspace name</span>
+          <input className="input" dir="auto" value={workspaceName} onChange={(e) => setWorkspaceName(e.target.value)} />
+          <small>Renames {home.name} for all its teams.</small>
+        </label>
+      )}
     </FormModal>
   );
 }
