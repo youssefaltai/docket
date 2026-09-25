@@ -460,7 +460,21 @@ function issueId(identifier: unknown): number {
 function blockerIds(identifiers: unknown, self?: number): number[] {
   if (!Array.isArray(identifiers)) throw new AppError("blockedBy must be an array of issue identifiers");
   const ids = [...new Set(identifiers.map(issueId))];
-  if (self !== undefined && ids.includes(self)) throw new AppError("An issue can't block itself");
+  if (self === undefined) return ids; // a new issue blocks nothing yet, so it can't close a cycle
+  if (ids.includes(self)) throw new AppError("An issue can't block itself");
+  if (ids.length === 0) return ids;
+  // A blocker must not already depend on this issue, directly or through a chain of blocks.
+  const cycle = db
+    .query<{ ref: string }, [number]>(
+      `WITH RECURSIVE downstream(id) AS (
+         SELECT blocked_id FROM issue_blocks WHERE blocker_id = ?
+         UNION SELECT x.blocked_id FROM issue_blocks x JOIN downstream d ON x.blocker_id = d.id
+       )
+       SELECT ${ident("i")} AS ref FROM issues i JOIN downstream d ON d.id = i.id
+       WHERE i.id IN (${ids.join(", ")})`,
+    )
+    .get(self);
+  if (cycle) throw new AppError(`${cycle.ref} is already blocked by this issue (directly or indirectly); that would be a cycle`);
   return ids;
 }
 
@@ -636,10 +650,31 @@ export function updateIssue(identifier: string, patch: IssuePatch): Issue {
 }
 
 export function deleteIssue(identifier: string) {
-  const { ref } = db
-    .query<{ ref: string }, [number]>("DELETE FROM issues WHERE id = ? RETURNING project_key || '-' || number AS ref")
-    .get(issueId(identifier))!;
+  const id = issueId(identifier);
+  // Issues that lose their parent, a blocker link or a sub-issue, and docs that lose a ref, change too.
+  const issues = db
+    .query<{ id: number; ref: string }, [number, number, number, number]>(
+      `SELECT i.id, ${ident("i")} AS ref FROM issues i
+       WHERE i.parent_id = ? OR i.id = (SELECT parent_id FROM issues WHERE id = ?)
+         OR i.id IN (SELECT blocked_id FROM issue_blocks WHERE blocker_id = ?)
+         OR i.id IN (SELECT blocker_id FROM issue_blocks WHERE blocked_id = ?)`,
+    )
+    .all(id, id, id, id);
+  const docs = db
+    .query<{ slug: string }, [number]>(
+      "SELECT d.slug FROM document_refs r JOIN documents d ON d.id = r.document_id WHERE r.issue_id = ?",
+    )
+    .all(id);
+  const time = now();
+  const ref = db.transaction(() => {
+    for (const issue of issues) db.query("UPDATE issues SET updated_at = ? WHERE id = ?").run(time, issue.id);
+    return db
+      .query<{ ref: string }, [number]>("DELETE FROM issues WHERE id = ? RETURNING project_key || '-' || number AS ref")
+      .get(id)!.ref;
+  })();
   changed("issue", ref);
+  for (const issue of issues) changed("issue", issue.ref);
+  for (const doc of docs) changed("document", doc.slug);
 }
 
 export function addComment(identifier: string, body: unknown, author: unknown): Issue {

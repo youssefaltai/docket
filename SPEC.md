@@ -25,10 +25,10 @@ Env: `PORT` (default 7100), `DATABASE_PATH` (default `$XDG_DATA_HOME/docket/dock
 - **workspaces**: key (PK, URL-safe lowercase slug, e.g. `acme`), name, created_at, updated_at.
 - **projects**: key (PK, 2–5 uppercase letters, unique across all workspaces), workspace (→ workspaces.key; required by the app), name, description, next_number (the next issue number), created_at, updated_at.
 - **issues**: id (PK), project_key, number (per-project sequence from `projects.next_number`; never reused after a delete), title, description, status, priority, labels (JSON array), assignee, parent_id, created_at, updated_at, completed_at. Unique (project_key, number).
-- **issue_blocks**: blocker_id, blocked_id.
+- **issue_blocks**: blocker_id, blocked_id. No cycles: setting `blockedBy` fails (400) if the issue itself or any issue it already blocks, directly or through a chain, is among the blockers.
 - **comments**: id, issue_id, author, body, created_at.
 
-Identifier = `${project_key}-${number}`, parsed case-insensitively. Issues can't move between projects. Any change to an issue or its comments bumps `updated_at`. `completed_at` is set when status enters done/canceled, cleared when it leaves. List order: status order, then priority (1→4, then 0 last), then `updated_at` desc. WAL mode on.
+Identifier = `${project_key}-${number}`, parsed case-insensitively. Issues can't move between projects. Any change to an issue or its comments bumps `updated_at`. Deleting an issue also bumps `updated_at` on, and publishes `issue` events for, its sub-issues (parent cleared), its parent, and the issues it blocked or was blocked by; docs that mentioned it get a `document` event. `completed_at` is set when status enters done/canceled, cleared when it leaves. List order: status order, then priority (1→4, then 0 last), then `updated_at` desc. WAL mode on.
 
 ## REST (JSON; errors are `{ "error": string }` with 4xx)
 
