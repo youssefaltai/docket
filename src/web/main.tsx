@@ -120,7 +120,9 @@ function App({ name, onChangeName }: { name: string; onChangeName?: () => void }
       ([members, list]) => {
         const active = members.filter((m) => !m.revokedAt).map((m) => m.name);
         const names = active.length ? active : [...defaultPeople(name), ...list.map((i) => i.assignee).filter((a): a is string => !!a)];
-        setPeople([...new Set(names)].sort((a, b) => a.localeCompare(b)));
+        // You first, then everyone else alphabetically.
+        const others = [...new Set(names)].filter((n) => n !== name).sort((a, b) => a.localeCompare(b));
+        setPeople(names.includes(name) || !active.length ? [name, ...others] : others);
       },
       () => {},
     );

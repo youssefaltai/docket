@@ -997,6 +997,17 @@ kbd {
   background: none;
   font: 14px/1.6 var(--font);
 }
+.editor-conflict {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 8px 8px 14px;
+  border-top: 1px solid var(--border);
+  background: #fff8eb;
+  color: var(--text-2);
+  font-size: 13px;
+}
 .editor-foot {
   display: flex;
   align-items: center;

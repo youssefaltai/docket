@@ -125,6 +125,7 @@ export const api = {
   issue: (id: string) => request<Issue>("GET", `/api/issues/${enc(id)}`),
   createIssue: (input: IssueInput) => request<Issue>("POST", "/api/issues", input),
   updateIssue: (id: string, patch: IssuePatch) => request<Issue>("PATCH", `/api/issues/${enc(id)}`, patch),
+  claimIssue: (id: string) => request<Issue>("POST", `/api/issues/${enc(id)}/claim`, {}),
   deleteIssue: (id: string) => request<{ ok: true }>("DELETE", `/api/issues/${enc(id)}`),
   comment: (id: string, body: string) => request<Issue>("POST", `/api/issues/${enc(id)}/comments`, withAuthor({ body })),
   editComment: (id: string, cid: number, body: string) =>
