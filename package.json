@@ -3,8 +3,9 @@
   "private": true,
   "license": "MIT",
   "type": "module",
+  "packageManager": "bun@1.4.2",
   "scripts": {
-    "dev": "bun --hot src/server/index.ts",
+    "dev": "DATABASE_PATH=${DATABASE_PATH:-dev.db} bun --hot src/server/index.ts",
     "start": "NODE_ENV=production bun src/server/index.ts",
     "typecheck": "tsc --noEmit"
   },

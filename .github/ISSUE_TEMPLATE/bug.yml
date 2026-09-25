@@ -1,0 +1,14 @@
+name: Bug report
+description: Something doesn't work as expected
+labels: [bug]
+body:
+  - type: textarea
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Where
+      description: Browser, MCP client (e.g. Claude Code), and how you run Docket (Docker, bun).

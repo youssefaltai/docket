@@ -1,0 +1,10 @@
+name: Idea
+description: Suggest a feature or change
+labels: [enhancement]
+body:
+  - type: textarea
+    attributes:
+      label: The problem
+      description: What are you trying to do, and what gets in the way? Docket stays small, so the why matters most.
+    validations:
+      required: true
