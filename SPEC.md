@@ -28,19 +28,22 @@ Env vars and the optional XDG config file: see README's Configuration section. D
 
 Linear's model: sign-in is always required, accounts are global, each workspace has its own members and roles, agents are app users with their own token, removing someone is suspending them. Enterprise-only Linear features (SAML/SCIM, audit log, an Owner role) are out of scope.
 
-**Accounts** (`users`): people (`kind: "person"`, with a unique email) and agents (`kind: "agent"`, no email). Everyone has a unique `username` (lowercase `a-z 0-9 . _ -`, 2–32 characters, starting with a letter or digit; `me` is reserved) and a display `name`. The API names people and agents by username; responses carry `UserRef = { username, name, kind }`. No passwords.
+**Accounts** (`users`): people (`kind: "person"`) and agents (`kind: "agent"`). The username is the identity; a person's email is optional contact info, never verified (there's no mail) and never used to find an account, so claiming someone's email gains nothing. Everyone has a unique `username` (lowercase `a-z 0-9 . _ -`, 2–32 characters, starting with a letter or digit; `me` is reserved) and a display `name`. The API names people and agents by username; responses carry `UserRef = { username, name, kind }`. No passwords.
 
-**Workspaces** (`workspace_members`): each membership has a role, `admin`, `member` or `agent` (agents work in teams but manage nothing), and may be suspended. You see only workspaces where you're an active member; anything in another workspace answers 404, as if it didn't exist. Any person can create a workspace and becomes its admin. Admins rename the workspace, invite people, change roles, suspend and reinstate members, send a member a sign-in link, and add, re-token and remove agents. The last active admin can't be suspended or demoted (409 "Add another admin first").
+**Workspaces** (`workspace_members`): each membership has a role, `admin`, `member` or `agent` (agents work in teams but manage nothing), and may be suspended. You see only workspaces where you're an active member; anything in another workspace answers 404, as if it didn't exist. Any person can create a workspace and becomes its admin. Admins rename the workspace, create invite links, change roles, suspend and reinstate members, send a member a sign-in link, and add, re-token and remove agents. The last active admin can't be suspended or demoted (409 "Add another admin first").
 
 **Suspend** (`PATCH …/members/:username { suspended: true }`) ends the membership's access at once. If it was the user's last active membership, all their sessions are deleted and API keys revoked. They stay listed, greyed, so history keeps their name. Reinstating (`suspended: false`) restores access (they may need a new sign-in link). Removing an agent is suspending it and revoking its token; a new token reinstates it.
 
 **Credentials.** Secrets are random and stored only as SHA-256 hashes.
-- **Session**: the web UI's cookie `docket_session` (32 random bytes as hex; HttpOnly, SameSite=Lax, Secure over HTTPS, 30 days). Idle for 30 days (by `last_seen_at`, touched at most once a minute) and it's gone. Account settings list sessions (device, IP, last seen), revoke one, or sign out everywhere else.
-- **API key**: `Authorization: Bearer dk_<64 hex>`, for scripts, MCP clients and agents; it acts as its owner. People make their own (named, scope `read` or `write`) and revoke them. A read key gets 403 on anything but GET (REST) and on tools that change something (MCP), including making another key. An agent's token is an API key it owns.
-- **One-time codes**: 10 symbols of `A–Z 2–9` without `I O 0 1` (50 bits), shown as `XXXXX-XXXXX`, single-use, 15 minutes. A link is `<origin>/login#<code>`: the fragment never reaches the server or its logs, and the page removes it from the address bar at once. Invites (for an email, workspace and role) and sign-in links (for a person) are codes. Sign-in links come from an admin (for a member), from yourself (to sign in on another device), or from the server's shell (`bun run sign-in-link <username>`, for when nobody can sign in).
+- **Session**: the web UI's cookie `docket_session` (32 random bytes as hex; HttpOnly, SameSite=Lax, Secure over HTTPS, 30 days, re-sent while in use). Idle for 30 days (by `last_seen_at`, touched at most once a minute) and it's gone. Account settings list sessions (device, IP, last seen), revoke one, or sign out everywhere else.
+- **API key**: `Authorization: Bearer dk_<64 hex>`, for scripts, MCP clients and agents; it acts as its owner. People make their own (named, scope `read` or `write`) and revoke them. A read key gets 403 on anything but GET (REST) and on tools that change something (MCP). An agent's token is an API key it owns.
+- **Managing access needs a session**: making API keys, sign-in links and invites, revoking sessions, changing your profile, changing members and adding or re-tokening agents answer 403 to an API key, so a leaked key can't mint credentials that outlive it. Revoking a key with a key is fine.
+- **One-time codes**: 10 symbols of `A–Z 2–9` without `I O 0 1` (50 bits), shown as `XXXXX-XXXXX`, single-use, 15 minutes. A link is `<origin>/login#<code>`: the fragment never reaches the server or its logs, and the page removes it from the address bar at once.
+  - **Invites** (a workspace and role) are handed over by the admin, not tied to anyone: redeemed while signed in, one adds you to the workspace; signed out, it creates a new account (name, username, optional email).
+  - **Sign-in links** open one person's account: from yourself (to sign in on another device), from an admin who administers every workspace that person is in (else 403), or from the server's shell (`bun run sign-in-link <username>`, for when nobody can sign in). Suspension from your last workspace deletes your unused codes.
 - **Setup code**: while there are no users, the server prints one at startup (`DOCKET_SETUP_CODE` fixes it, e.g. for tests and dev). `POST /api/setup` with it creates the first person, signed in, as admin of a new workspace. A wrong code is 403; once any user exists, 409.
 
-**Rules for every request** (`auth.ts`): `/api/*` accepts a session cookie or an API key; `/mcp` only an API key; `/ws` either, but a cookie only with a same-origin `Origin` header. No or bad credentials: 401 (a 401 caused by a stale cookie also clears it). Signed in but not allowed (not an admin, read-only key, someone else's comment): 403. Outside your workspaces: 404. Request bodies must be `Content-Type: application/json`, compared exactly on the media type before any `;` (so `text/plain;charset=application/json` is refused), else 415: browsers can't send that cross-origin without a CORS preflight, which Docket never allows, so this is the CSRF defence. Host check (DNS rebinding): `/api/*`, `/mcp` and `/ws` answer 403 unless the `Host` header's hostname (port ignored, case-insensitive) is `localhost`, `127.0.0.1`, `[::1]` or listed in `DOCKET_HOSTS`. Setup and code attempts are rate-limited per client IP: after 10 failures (401/403) in a minute, 429 until the minute ends (behind a proxy, all clients share the proxy's IP). The app shell, manifest, service worker and icons stay public; they hold no data.
+**Rules for every request** (`auth.ts`): `/api/*` accepts a session cookie or an API key; `/mcp` only an API key; `/ws` either. Cookies ride along on same-site requests (a sibling subdomain, another localhost port), so a cookie-authed WebSocket or non-GET request needs our own `Origin` (403 otherwise), and an invite only joins the signed-in user when it does. No or bad credentials: 401 (a 401 caused by a stale cookie also clears it). Signed in but not allowed (not an admin, read-only key, someone else's comment): 403. Outside your workspaces: 404. Request bodies must be `Content-Type: application/json`, compared exactly on the media type before any `;` (so `text/plain;charset=application/json` is refused), else 415: browsers can't send that cross-origin without a CORS preflight, which Docket never allows, so this is the CSRF defence. Host check (DNS rebinding): `/api/*`, `/mcp` and `/ws` answer 403 unless the `Host` header's hostname (port ignored, case-insensitive) is `localhost`, `127.0.0.1`, `[::1]` or listed in `DOCKET_HOSTS`. Setup and code attempts are rate-limited per client IP: after 10 failures (401/403) in a minute, 429 until the minute ends (behind a proxy, all clients share the proxy's IP). The app shell, manifest, service worker and icons stay public; they hold no data.
 
 **Authors** are never sent by clients: every write is attributed to the signed-in user or agent. Only a comment's author can edit or delete it (403 otherwise, with no admin override).
 
@@ -49,9 +52,9 @@ Linear's model: sign-in is always required, accounts are global, each workspace 
 | Method | Path | Body | Returns |
 |---|---|---|---|
 | GET | /api/setup | | `{ needed }` |
-| POST | /api/setup | `SetupInput` `{ code, email, name, username, workspace: { name, key? } }` | 201 `{ user, workspace }` + session cookie |
-| POST | /api/auth/peek | `{ code }` | `CodeInfo` `{ kind, email, workspace, needsProfile }` (doesn't use the code) |
-| POST | /api/auth/redeem | `{ code, name?, username? }` | `{ user }` + session cookie; an invite adds the membership (and, for a new email, needs name and username) |
+| POST | /api/setup | `SetupInput` `{ code, name, username, email?, workspace: { name, key? } }` | 201 `{ user, workspace }` + session cookie |
+| POST | /api/auth/peek | `{ code }` | `CodeInfo` `{ kind, workspace, username, needsProfile }` (doesn't use the code) |
+| POST | /api/auth/redeem | `{ code, name?, username?, email? }` | `{ user }` + session cookie; an invite adds the membership (signed out, it needs name and username for the new account) |
 | POST | /api/logout | `{}` | ends this cookie's session and clears it |
 
 **Account and workspace routes** (signed in):
@@ -68,8 +71,8 @@ Linear's model: sign-in is always required, accounts are global, each workspace 
 | PATCH | /api/workspaces/:key | `{ name }` | (admin) |
 | GET | /api/workspaces/:key/members | | `WorkspaceMember[]` (people, then agents) |
 | PATCH | /api/workspaces/:key/members/:username | `{ role?, suspended? }` | (admin) |
-| POST | /api/workspaces/:key/members/:username/sign-in-links | | (admin, people) 201 `CodeLink` |
-| POST | /api/workspaces/:key/invites | `{ email, role? }` | (admin) 201 `CodeLink` |
+| POST | /api/workspaces/:key/members/:username/sign-in-links | | (admin of all their workspaces; people) 201 `CodeLink` |
+| POST | /api/workspaces/:key/invites | `{ role? }` | (admin) 201 `CodeLink` |
 | POST | /api/workspaces/:key/agents | `{ name, username }` | (admin) 201 `{ agent, token }` |
 | POST | /api/workspaces/:key/agents/:username/token | | (admin) `{ token }`: the old one dies; reinstates a removed agent |
 | DELETE | /api/workspaces/:key/agents/:username | | (admin) removes it |
@@ -101,7 +104,7 @@ Plus the Access routes above. Lists only ever include your workspaces.
 |---|---|---|---|
 | GET | /api/teams | `?workspace` | `Team[]` |
 | POST | /api/teams | `TeamInput` (workspace required) | 201 `Team` |
-| PATCH | /api/teams/:key | `{ name?, description?, workspace? }` (moving needs membership in both, and no assignees, delegates or links to other teams) | `Team` |
+| PATCH | /api/teams/:key | `{ name?, description? }` (teams never change workspace: 400) | `Team` |
 | GET | /api/issues | `?workspace&team&status=a,b&label&assignee&delegate&parent&q` | `IssueSummary[]` |
 | POST | /api/issues | `IssueInput` | 201 `Issue` |
 | GET / PATCH / DELETE | /api/issues/:id | `IssuePatch` | `Issue` / `{ ok: true }` |
@@ -130,7 +133,7 @@ Tools return short markdown text (one line per issue: `BRD-3 · todo · high · 
 | list_members | workspace? | `@username · name · role`, marking you; assignees are people, delegates agents |
 | list_teams | workspace? | with workspace and open-issue counts |
 | create_team | key, name, workspace?, description? | workspace required when you're in more than one |
-| update_team | key, name?, description?, workspace? | |
+| update_team | key, name?, description? | |
 | list_labels | workspace? | `label · N open`, so agents reuse existing labels |
 | list_issues | workspace?, team?, status?[], label?, assignee?, delegate?, parent?, query?, limit? (default 50) | excludes done/canceled unless `status` given |
 | get_issue | id | full issue with description, creator, sub-issues, blockers, docs, comments |
@@ -148,17 +151,17 @@ Tool descriptions must explain the conventions (workspace → team → issue/doc
 Light theme only, neutral and modern, in the spirit of Linear, Vercel, Resend. Geist + Geist Mono (Google Fonts). White canvas, `#fafafa` sidebar, 1px `#ebebeb` borders, `#171717` text, `#737373` muted, black primary buttons, 6px radii, shadows only on popovers/modals. Small SVG status icons (Linear-like: dashed circle backlog, circle todo, half-filled in progress, three-quarter in review, check done, x canceled) and priority bars. Tight 13–14px type, generous whitespace, fast 120ms transitions. `dir="auto"` on all user text (content may be Arabic).
 
 - **Boot**: `/setup` and `/login` render without a session. Everything else loads `GET /api/me` first; any 401, then or later, goes to `/login`.
-- **Setup** (`/setup`): setup code, email, name, username (suggested from the name), workspace name.
-- **Sign in** (`/login`): paste a sign-in link or code, or open a link (`/login#CODE`, which signs in straight away). An invite for a new email asks for name and username first ("Join <workspace>"). If Docket isn't set up yet, it goes to `/setup`.
+- **Setup** (`/setup`): setup code, name, username (suggested from the name), optional email, workspace name.
+- **Sign in** (`/login`): paste a sign-in link or code, or open a link (`/login#CODE`, which signs in straight away). An invite opened while signed out asks for name and username first ("Join <workspace>"); opened while signed in, it just adds you. If Docket isn't set up yet, it goes to `/setup`.
 - **Sidebar**: workspace switcher (your workspaces plus "New workspace"), "New issue" (shortcut `C`), "All issues", "All docs", teams with open counts. Everything in it is scoped to the current workspace. Footer: you, with a menu of Settings, Workspace settings (admins) and Sign out.
-- **Settings** (`/settings/account`, `/settings/workspace`): account: profile, "Sign in on another device" (a sign-in link), sessions, API keys (token and MCP command shown once). Workspace (admins; others see the member list): members (role, suspend or reinstate, sign-in link), invite by email and role (link shown once), agents (add: token and `claude mcp add … --header "Authorization: Bearer <token>"` shown once; new token; remove).
+- **Settings** (`/settings/account`, `/settings/workspace`): account: profile, "Sign in on another device" (a sign-in link), sessions, API keys (token and MCP command shown once). Workspace (admins; others see the member list): members (role, suspend or reinstate, sign-in link), invite links by role (shown once), agents (add: token and `claude mcp add … --header "Authorization: Bearer <token>"` shown once; new token; remove).
 - **List view** (default): issues grouped by status with sticky headers and counts; Done and Canceled collapsed by default. Row: priority, identifier (mono, muted), status icon, title, labels, assignee and delegate, relative updated time.
 - **Board view**: columns by status (no Canceled), cards, drag between columns or use the card's status picker (touch, keyboard) to change status.
 - **Toolbar**: search (`/` to focus), a "Mine" chip, label, assignee and delegate filters, List/Board toggle. People in pickers list you first, marked "(you)".
 - **Issue page** (`/issue/BRD-12`): "Claim" in the header on an open issue whose slot (assignee for people) no other active member holds; inline-editable title; markdown description saved with `baseUpdatedAt`: on a 409 it refetches, and if only something else changed (e.g. a comment) it saves again on top; if the description itself changed, a banner shows their current text with "Use theirs" or "Keep mine". Properties panel (status, priority, assignee, delegate, labels, team, parent, blocked by) editable via small popovers; sub-issues; comments thread with composer (`⌘↵` to send). Your own comments show Edit and Delete.
 - **New issue modal**: team, title, description, status, priority, labels, assignee, delegate, parent. `⌘↵` creates, `Esc` closes.
 - **Workspaces**: the current workspace is remembered in localStorage (`docket.workspace`), falling back to the first. `/` and `/docs` show only its content; pickers and filters list only its teams, members and labels. Opening `/t/:key`, `/issue/:id` or `/doc/:slug` of another of your workspaces switches to it.
-- **Team settings**: a button next to the team title opens a dialog to edit the description, move the team to another workspace, and rename the workspace.
+- **Team settings**: a button next to the team title opens a dialog to edit the description (and, for admins, rename the workspace).
 - Client routing with `history.pushState`: `/`, `/t/:key`, `/issue/:id`, `/docs`, `/t/:key/docs`, `/doc/:slug`, `/settings/*`, `/login`, `/setup`. The server returns index.html for these paths.
 - Service worker: never caches non-OK responses; clears cached `/api/*` on a 401 and after a successful setup, redeem or logout, with a generation counter so a GET in flight across the switch can't re-cache the old session's data.
 - Works on a phone: the sidebar collapses below 768px.

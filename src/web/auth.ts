@@ -47,7 +47,7 @@ export const auth = {
     request<WorkspaceMember>("PATCH", `${ws(workspace)}/members/${enc(username)}`, patch),
   memberSignInLink: (workspace: string, username: string) =>
     request<CodeLink>("POST", `${ws(workspace)}/members/${enc(username)}/sign-in-links`),
-  invite: (workspace: string, email: string, role: "admin" | "member") => request<CodeLink>("POST", `${ws(workspace)}/invites`, { email, role }),
+  invite: (workspace: string, role: "admin" | "member") => request<CodeLink>("POST", `${ws(workspace)}/invites`, { role }),
   createAgent: (workspace: string, name: string, username: string) =>
     request<{ agent: UserRef; token: string }>("POST", `${ws(workspace)}/agents`, { name, username }),
   rotateAgentToken: (workspace: string, username: string) => request<{ token: string }>("POST", `${ws(workspace)}/agents/${enc(username)}/token`),

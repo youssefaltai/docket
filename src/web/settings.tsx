@@ -428,33 +428,23 @@ function Members({ workspace, members, reload, readOnly }: { workspace: string; 
   );
 }
 
+/** An invite is a one-time link you hand over yourself: whoever opens it joins (there's no email to check). */
 function Invite({ workspace }: { workspace: string }) {
-  const [email, setEmail] = useState("");
   const [role, setRole] = useState<"admin" | "member">("member");
   const [shown, setShown] = useState<Shown | null>(null);
   const { busy, run } = useRun();
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    if (!email.trim()) return;
     run(async () => {
-      const link = await auth.invite(workspace, email.trim(), role);
-      setShown(linkSecret(link, "Send this to them. It works once and expires in 15 minutes.", <>Invite for {email.trim()}.</>));
-      setEmail("");
+      const link = await auth.invite(workspace, role);
+      const lead = <>Invite link for a new {role === "admin" ? "admin" : "member"}.</>;
+      setShown(linkSecret(link, "Send it to one person. Whoever opens it joins; it works once and expires in 15 minutes.", lead));
     });
   };
   return (
     <Section title="Invite">
       {shown && <Secret {...shown} onDone={() => setShown(null)} />}
       <form className="settings-inline" onSubmit={submit}>
-        <input
-          className="input grow"
-          type="email"
-          aria-label="Email"
-          placeholder="name@example.com"
-          autoCapitalize="off"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-        />
         <Choice
           label="Role"
           value={role}
@@ -464,8 +454,8 @@ function Invite({ workspace }: { workspace: string }) {
           ]}
           onChange={setRole}
         />
-        <button className="btn btn-primary" disabled={!email.trim() || busy}>
-          Invite
+        <button className="btn btn-primary" disabled={busy}>
+          Create invite link
         </button>
       </form>
     </Section>

@@ -71,17 +71,17 @@ export function Setup() {
   const [code, setCode] = useState("");
   const [email, setEmail] = useState("");
   const [workspace, setWorkspace] = useState("");
-  const profile = useProfile(email);
+  const profile = useProfile("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const ready = !!(code.trim() && email.trim() && profile.name && profile.username && workspace.trim()) && !busy;
+  const ready = !!(code.trim() && profile.name && profile.username && workspace.trim()) && !busy;
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!ready) return;
     setBusy(true);
     auth
-      .setup({ code, email, name: profile.name, username: profile.username, workspace: { name: workspace.trim() } })
+      .setup({ code, email: email.trim() || undefined, name: profile.name, username: profile.username, workspace: { name: workspace.trim() } })
       .then(enter, (err) => {
         setError(err instanceof HttpError && err.status === 409 ? "Docket is already set up. Sign in instead." : message(err));
         setBusy(false);
@@ -96,10 +96,10 @@ export function Setup() {
       <Field label="Setup code">
         <input className="input mono" autoFocus autoComplete="off" placeholder="XXXXX-XXXXX" value={code} onChange={(e) => setCode(e.target.value)} />
       </Field>
-      <Field label="Email">
+      {profile.fields}
+      <Field label="Email (optional)">
         <input className="input" type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} />
       </Field>
-      {profile.fields}
       <Field label="Workspace name">
         <input className="input" dir="auto" placeholder="Acme" value={workspace} onChange={(e) => setWorkspace(e.target.value)} />
       </Field>
@@ -186,7 +186,7 @@ export function Login() {
 
 /** Accepting an invite as someone new: pick a name and username, then you're in. */
 function Join({ code, info, onError }: { code: string; info: CodeInfo; onError: (err: unknown) => void }) {
-  const profile = useProfile(info.email ?? "");
+  const profile = useProfile("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const ready = !!(profile.name && profile.username) && !busy;
@@ -206,9 +206,7 @@ function Join({ code, info, onError }: { code: string; info: CodeInfo; onError: 
     <form className="empty login auth" onSubmit={submit}>
       <Logo />
       <h2 dir="auto">Join {info.workspace ?? "Docket"}</h2>
-      <p>
-        You're invited as <strong>{info.email}</strong>. Choose how you appear to others.
-      </p>
+      <p>Create your account: choose how you appear to others. Already have one? Sign in first, then open the invite again.</p>
       {profile.fields}
       {error && <small className="login-error">{error}</small>}
       <button className="btn btn-primary" disabled={!ready}>
