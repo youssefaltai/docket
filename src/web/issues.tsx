@@ -1,7 +1,7 @@
 // Issues view: header with search + filters, and the list / board layouts.
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { STATUSES, STATUS_LABELS, type IssuePatch, type IssueSummary, type Status } from "../shared/types";
-import { api } from "./api";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { CLOSED_STATUSES, STATUSES, STATUS_LABELS, type IssuePatch, type IssueSummary, type Status } from "../shared/types";
+import { api, store } from "./api";
 import { AssigneePicker, Picker, PriorityPicker, StatusPicker } from "./pickers";
 import {
   Avatar,
@@ -14,11 +14,10 @@ import {
   LabelChip,
   LabelDot,
   Link,
+  ListHeader,
   ListIcon,
-  MenuButton,
   PlusIcon,
-  ProjectTabs,
-  ProjectTitle,
+  ProjectNotFound,
   SearchIcon,
   StatusIcon,
   TagIcon,
@@ -30,32 +29,20 @@ import {
   timeAgo,
   useApp,
   useDebounced,
-  useLive,
+  useFetch,
 } from "./ui";
 
 type View = "list" | "board";
 type Patch = (id: string, patch: IssuePatch) => void;
 
-function storedView(): View {
-  try {
-    return localStorage.getItem("docket.view") === "board" ? "board" : "list";
-  } catch {
-    return "list";
-  }
-}
-
 export function IssuesView({ projectKey }: { projectKey: string | null }) {
   const app = useApp();
-  const live = useLive();
   const project = projectKey ? app.projects?.find((p) => p.key === projectKey) : undefined;
-  const [view, setView] = useState<View>(storedView);
+  const [view, setView] = useState<View>(() => (store.get("view") === "board" ? "board" : "list"));
   const [search, setSearch] = useState("");
   const [label, setLabel] = useState("");
   const [assignee, setAssignee] = useState("");
-  const [issues, setIssues] = useState<IssueSummary[] | null>(null);
-  const [tick, setTick] = useState(0);
   const q = useDebounced(search.trim(), 150);
-  const seq = useRef(0);
   const filtered = !!(q || label || assignee);
 
   useEffect(() => {
@@ -65,34 +52,29 @@ export function IssuesView({ projectKey }: { projectKey: string | null }) {
 
   // "All issues" is the current workspace's; wait until it's known.
   const workspace = projectKey ? undefined : app.workspace?.key;
-  useEffect(() => {
-    if (!projectKey && !workspace) return;
-    const n = ++seq.current;
-    api
-      .issues({ project: projectKey ?? undefined, workspace, q, label, assignee })
-      .then((list) => n === seq.current && setIssues(list))
-      .catch((e) => {
-        if (n !== seq.current) return;
-        errorToast(e);
-        setIssues((cur) => cur ?? []);
-      });
-  }, [projectKey, workspace, q, label, assignee, live, tick]);
+  const {
+    data: issues,
+    setData: setIssues,
+    reload,
+    invalidate,
+  } = useFetch(
+    projectKey || workspace ? () => api.issues({ project: projectKey ?? undefined, workspace, q, label, assignee }) : null,
+    [projectKey, workspace, q, label, assignee],
+  );
 
   const patch: Patch = (id, p) => {
-    ++seq.current; // drop any in-flight fetch that predates this change
+    invalidate(); // drop any in-flight fetch that predates this change
     const now = new Date().toISOString();
     setIssues((list) => list?.map((i) => (i.id === id ? { ...i, ...p, updatedAt: now } : i)) ?? null);
     api.updateIssue(id, p).catch((e) => {
       errorToast(e);
-      setTick((t) => t + 1);
+      reload();
     });
   };
 
   const changeView = (v: View) => {
     setView(v);
-    try {
-      localStorage.setItem("docket.view", v);
-    } catch {}
+    store.set("view", v);
   };
   const clearFilters = () => {
     setSearch("");
@@ -116,11 +98,7 @@ export function IssuesView({ projectKey }: { projectKey: string | null }) {
       </EmptyState>
     );
   } else if (projectKey && app.projects && !project) {
-    body = (
-      <EmptyState title="Project not found" action={<Link className="btn" to="/">All issues</Link>}>
-        There’s no project with the key {projectKey}.
-      </EmptyState>
-    );
+    body = <ProjectNotFound projectKey={projectKey} back="/" backLabel="All issues" />;
   } else if (!issues) {
     body = null;
   } else if (issues.length === 0) {
@@ -157,60 +135,30 @@ export function IssuesView({ projectKey }: { projectKey: string | null }) {
 
   return (
     <>
-      <header className="header">
-        <MenuButton />
-        <div className="header-title">
-          {project ? (
-            <ProjectTitle project={project} />
-          ) : (
-            <span>{projectKey ?? "All issues"}</span>
-          )}
-          {issues && issues.length > 0 && <span className="header-count">{issues.length}</span>}
+      <ListHeader
+        project={project}
+        title={projectKey ?? "All issues"}
+        count={issues?.length ?? 0}
+        view="issues"
+        onNew={() => app.newIssue()}
+        search={search}
+        onSearch={setSearch}
+      >
+        <Filters label={label} setLabel={setLabel} assignee={assignee} setAssignee={setAssignee} />
+        {filtered && (
+          <button className="btn btn-ghost btn-sm" onClick={clearFilters}>
+            Clear
+          </button>
+        )}
+        <div className="segmented" role="group" aria-label="Layout">
+          <button className={cls(view === "list" && "on")} onClick={() => changeView("list")} aria-pressed={view === "list"} title="List">
+            <ListIcon />
+          </button>
+          <button className={cls(view === "board" && "on")} onClick={() => changeView("board")} aria-pressed={view === "board"} title="Board">
+            <BoardIcon />
+          </button>
         </div>
-        {project && <ProjectTabs project={project.key} view="issues" />}
-        <button className="icon-btn mobile-only" onClick={() => app.newIssue()} aria-label="New issue">
-          <PlusIcon />
-        </button>
-        <div className="controls">
-          <label className="search">
-            <SearchIcon />
-            <input
-              id="search"
-              type="search"
-              placeholder="Search"
-              value={search}
-              autoComplete="off"
-              dir="auto"
-              onChange={(e) => setSearch(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") {
-                  e.preventDefault();
-                  if (search) setSearch("");
-                  else e.currentTarget.blur();
-                } else if (e.key === "ArrowDown" || e.key === "Enter") {
-                  e.preventDefault();
-                  document.querySelector<HTMLElement>("[data-nav]")?.focus();
-                }
-              }}
-            />
-            {!search && <Kbd>/</Kbd>}
-          </label>
-          <Filters label={label} setLabel={setLabel} assignee={assignee} setAssignee={setAssignee} />
-          {filtered && (
-            <button className="btn btn-ghost btn-sm" onClick={clearFilters}>
-              Clear
-            </button>
-          )}
-          <div className="segmented" role="group" aria-label="Layout">
-            <button className={cls(view === "list" && "on")} onClick={() => changeView("list")} aria-pressed={view === "list"} title="List">
-              <ListIcon />
-            </button>
-            <button className={cls(view === "board" && "on")} onClick={() => changeView("board")} aria-pressed={view === "board"} title="Board">
-              <BoardIcon />
-            </button>
-          </div>
-        </div>
-      </header>
+      </ListHeader>
       <div className={cls("content", view === "board" && !!issues?.length && "content-board")}>{body}</div>
     </>
   );
@@ -256,8 +204,7 @@ function Filters(props: { label: string; setLabel: (v: string) => void; assignee
 // ---------- List ----------
 
 function IssueList({ issues, onPatch }: { issues: IssueSummary[]; onPatch: Patch }) {
-  const app = useApp();
-  const [collapsed, setCollapsed] = useState<Set<Status>>(() => new Set(["done", "canceled"]));
+  const [collapsed, setCollapsed] = useState(() => new Set(CLOSED_STATUSES));
   const sorted = useMemo(() => sortIssues(issues), [issues]);
   const toggle = (s: Status) =>
     setCollapsed((cur) => {
@@ -280,20 +227,36 @@ function IssueList({ issues, onPatch }: { issues: IssueSummary[]; onPatch: Patch
                 <StatusIconLabel status={status} />
                 <span className="count">{items.length}</span>
               </button>
-              <button
-                className="icon-btn sm"
-                onClick={() => app.newIssue({ status })}
-                aria-label={`New ${STATUS_LABELS[status]} issue`}
-                title="New issue"
-              >
-                <PlusIcon />
-              </button>
+              <NewInStatus status={status} />
             </div>
             {open && items.map((i) => <IssueRow key={i.id} issue={i} onPatch={onPatch} />)}
           </section>
         );
       })}
     </div>
+  );
+}
+
+function NewInStatus({ status }: { status: Status }) {
+  const { newIssue } = useApp();
+  return (
+    <button
+      className="icon-btn sm"
+      onClick={() => newIssue({ status })}
+      aria-label={`New ${STATUS_LABELS[status]} issue`}
+      title="New issue"
+    >
+      <PlusIcon />
+    </button>
+  );
+}
+
+function Blocked({ by }: { by: string[] }) {
+  if (!by.length) return null;
+  return (
+    <span className="blocked" title={`Blocked by ${by.join(", ")}`}>
+      <BlockedIcon />
+    </span>
   );
 }
 
@@ -316,11 +279,7 @@ function IssueRow({ issue, onPatch }: { issue: IssueSummary; onPatch: Patch }) {
       <Link to={`/issue/${issue.id}`} className="row-title" data-nav dir="auto">
         {issue.title}
       </Link>
-      {issue.blockedBy.length > 0 && (
-        <span className="blocked" title={`Blocked by ${issue.blockedBy.join(", ")}`}>
-          <BlockedIcon />
-        </span>
-      )}
+      <Blocked by={issue.blockedBy} />
       <span className="grow" />
       <Labels labels={issue.labels} max={3} />
       <AssigneePicker value={issue.assignee} onChange={(assignee) => set({ assignee })} className="row-btn" align="end" />
@@ -353,7 +312,6 @@ function Labels({ labels, max }: { labels: string[]; max: number }) {
 const BOARD_STATUSES = STATUSES.filter((s) => s !== "canceled");
 
 function Board({ issues, onPatch }: { issues: IssueSummary[]; onPatch: Patch }) {
-  const app = useApp();
   const [dragging, setDragging] = useState<string | null>(null);
   const [over, setOver] = useState<Status | null>(null);
   const sorted = useMemo(() => sortIssues(issues), [issues]);
@@ -391,14 +349,7 @@ function Board({ issues, onPatch }: { issues: IssueSummary[]; onPatch: Patch }) 
               <StatusIconLabel status={status} />
               <span className="count">{items.length}</span>
               <span className="grow" />
-              <button
-                className="icon-btn sm"
-                onClick={() => app.newIssue({ status })}
-                aria-label={`New ${STATUS_LABELS[status]} issue`}
-                title="New issue"
-              >
-                <PlusIcon />
-              </button>
+              <NewInStatus status={status} />
             </div>
             <div className="column-body">
               {items.map((i) => (
@@ -458,11 +409,7 @@ function Card({
       </Link>
       <div className="card-meta">
         <PriorityPicker value={issue.priority} onChange={(priority) => set({ priority })} className="row-btn chip-icon" />
-        {issue.blockedBy.length > 0 && (
-          <span className="blocked" title={`Blocked by ${issue.blockedBy.join(", ")}`}>
-            <BlockedIcon />
-          </span>
-        )}
+        <Blocked by={issue.blockedBy} />
         <Labels labels={issue.labels} max={2} />
       </div>
     </div>

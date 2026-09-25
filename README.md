@@ -107,11 +107,11 @@ claude mcp add --transport http --scope user docket https://docket.example.com/m
 | `PORT` | `7100` |
 | `DATABASE_PATH` | `$XDG_DATA_HOME/docket/docket.db` |
 | `DOCKET_TOKEN` | unset (open) |
-| `DOCKET_HOSTS` | unset — extra hostnames (comma-separated) allowed in the `Host` header, besides `localhost`. Needed when serving over Tailscale or another hostname. |
+| `DOCKET_HOSTS` | unset — extra hostnames (comma-separated) allowed in the `Host` header, besides `localhost`, e.g. `docket.example.com,vps.tailnet.ts.net`. Needed when serving over Tailscale or another hostname. |
 
 In Docker, set these in a `.env` file next to `docker-compose.yml` (see `.env.example`). `PORT` there only changes the host-side port mapping; the container always listens on `7100` internally.
 
-You can also use an optional config file at `$XDG_CONFIG_HOME/docket/config` or `$XDG_CONFIG_DIRS/docket/config`, with `KEY=VALUE` lines. Real env vars win. Keep it `chmod 600` if it holds the token.
+You can also use an optional config file at `$XDG_CONFIG_HOME/docket/config` or `$XDG_CONFIG_DIRS/docket/config`, with `KEY=VALUE` lines (`#` starts a comment line; an unquoted value drops a trailing ` # comment`; surrounding quotes are stripped). Real env vars win over the file, unless a var is set but empty — e.g. docker-compose's `${DOCKET_TOKEN:-}` — which counts as unset. Keep it `chmod 600` if it holds the token.
 
 </details>
 

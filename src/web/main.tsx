@@ -1,8 +1,8 @@
 // App shell: sidebar, routing, live updates, global shortcuts.
-import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
+import { StrictMode, useCallback, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { IssueInput, Project, Workspace } from "../shared/types";
-import { HttpError, api, getName, setName, setOnUnauthorized, subscribe } from "./api";
+import { HttpError, api, getName, setName, setOnUnauthorized, store, subscribe } from "./api";
 import { DocPage, DocsView } from "./docs";
 import { IssuePage } from "./issue";
 import { IssuesView } from "./issues";
@@ -31,6 +31,7 @@ import {
   parseRoute,
   setIssueIndex,
   useApp,
+  useKeydown,
   usePath,
   type AppState,
   type Route,
@@ -47,20 +48,12 @@ function defaultPeople(name: string): string[] {
   return [...new Set([name, "claude"])];
 }
 
-function storedWorkspace(): string | null {
-  try {
-    return localStorage.getItem("docket.workspace");
-  } catch {
-    return null;
-  }
-}
-
 function App({ name, onChangeName }: { name: string; onChangeName: () => void }) {
   const path = usePath();
   const route = parseRoute(path);
   const [live, setLive] = useState(0);
   const [workspaces, setWorkspaces] = useState<Workspace[] | null>(null);
-  const [workspaceKey, setWorkspaceKey] = useState(storedWorkspace);
+  const [workspaceKey, setWorkspaceKey] = useState(() => store.get("workspace"));
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [projectsTick, setProjectsTick] = useState(0);
   const [labels, setLabels] = useState<string[]>([]);
@@ -128,9 +121,7 @@ function App({ name, onChangeName }: { name: string; onChangeName: () => void })
   const workspaceProjects = projects && workspace ? projects.filter((p) => p.workspace === workspace.key) : null;
   const setWorkspace = useCallback((key: string) => {
     setWorkspaceKey(key);
-    try {
-      localStorage.setItem("docket.workspace", key);
-    } catch {}
+    store.set("workspace", key);
   }, []);
   const switchWorkspace = (key: string) => {
     setWorkspace(key);
@@ -176,9 +167,8 @@ function App({ name, onChangeName }: { name: string; onChangeName: () => void })
     openNav: () => setNavOpen(true),
   };
 
-  // Global shortcuts. Read the latest state through a ref so the listener is registered once.
-  const onKey = useRef<(e: KeyboardEvent) => void>(() => {});
-  onKey.current = (e) => {
+  // Global shortcuts.
+  useKeydown((e) => {
     if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey || modal || isEditable(e.target)) return;
     if (document.querySelector(".pop")) return;
     const key = e.key;
@@ -196,12 +186,7 @@ function App({ name, onChangeName }: { name: string; onChangeName: () => void })
     } else if ((route.view === "issues" || route.view === "docs") && (key === "j" || key === "k" || key === "ArrowDown" || key === "ArrowUp")) {
       if (moveFocus(key === "j" || key === "ArrowDown" ? 1 : -1)) e.preventDefault();
     }
-  };
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => onKey.current(e);
-    addEventListener("keydown", handler);
-    return () => removeEventListener("keydown", handler);
-  }, []);
+  });
 
   return (
     <AppContext.Provider value={app}>
@@ -248,7 +233,7 @@ function routeProject(route: Route, docProject: string | null): string | null {
 function Sidebar({ route, active, onSwitch }: { route: Route; active: string | null; onSwitch: (key: string) => void }) {
   const { workspaces, workspace, workspaceProjects: projects, newIssue, newProject, newWorkspace, name, changeName } = useApp();
   const total = projects?.reduce((n, p) => n + openCount(p), 0) ?? 0;
-  const docs = projects?.reduce((n, p) => n + (p.docCount ?? 0), 0) ?? 0;
+  const docs = projects?.reduce((n, p) => n + p.docCount, 0) ?? 0;
   const options = [
     ...(workspaces ?? []).map((w) => ({ value: w.key, label: w.name, icon: <ProjectMark id={w.name.toUpperCase()} /> })),
     { value: "", label: "New workspace", icon: <PlusIcon /> },

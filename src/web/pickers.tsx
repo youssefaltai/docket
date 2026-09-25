@@ -25,7 +25,7 @@ import {
   useApp,
 } from "./ui";
 
-export interface Option {
+interface Option {
   value: string;
   label: string;
   icon?: ReactNode;
@@ -210,6 +210,7 @@ export function Picker({ label, options, selected, onPick, multi, create, onOpen
 
 type Trigger = { className?: string; children?: ReactNode; align?: "start" | "end" };
 const uniq = (xs: string[]) => [...new Set(xs)];
+const toggle = (xs: string[], x: string) => (xs.includes(x) ? xs.filter((y) => y !== x) : [...xs, x]);
 
 const STATUS_OPTIONS: Option[] = STATUSES.map((s) => ({ value: s, label: STATUS_LABELS[s], icon: <StatusIcon status={s} /> }));
 const PRIORITY_OPTIONS: Option[] = PRIORITIES.map((p) => ({
@@ -294,7 +295,7 @@ export function LabelsPicker({
       multi
       options={options}
       selected={value}
-      onPick={(v) => onChange(value.includes(v) ? value.filter((x) => x !== v) : [...value, v])}
+      onPick={(v) => onChange(toggle(value, v))}
       onOpen={loadDirectory}
       {...rest}
     >
@@ -366,7 +367,7 @@ export function BlockedByPicker({
       multi
       options={options}
       selected={value}
-      onPick={(v) => onChange(value.includes(v) ? value.filter((x) => x !== v) : [...value, v])}
+      onPick={(v) => onChange(toggle(value, v))}
       onOpen={load}
       {...rest}
     >
