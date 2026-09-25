@@ -621,6 +621,7 @@ kbd {
 .crumb-id {
   font: 500 12.5px var(--mono);
   color: var(--text);
+  white-space: nowrap;
 }
 
 .content {
@@ -2267,12 +2268,23 @@ textarea.input {
   .nav-item,
   .tab,
   .pop-item,
-  .doc-meta-btn {
+  .doc-meta-btn,
+  .segmented button,
+  .group-toggle,
+  .inline-input,
+  .desc-empty,
+  .search {
     min-height: 44px;
   }
   .icon-btn,
-  .row-btn {
+  .row-btn,
+  .segmented button {
     min-width: 44px;
+  }
+  .crumbs a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
   }
   .row {
     height: 52px;
