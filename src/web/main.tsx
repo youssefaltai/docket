@@ -2,10 +2,11 @@
 import { StrictMode, useCallback, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { IssueInput, Project, Workspace } from "../shared/types";
-import { HttpError, api, getName, setName, setOnUnauthorized, store, subscribe } from "./api";
+import { HttpError, api, getMe, getName, loadMe, setName, setOnUnauthorized, store, subscribe } from "./api";
 import { DocPage, DocsView } from "./docs";
 import { IssuePage } from "./issue";
 import { IssuesView } from "./issues";
+import { MembersModal } from "./members";
 import { NewDocModal, NewIssueModal, NewProjectModal, NewWorkspaceModal, ProjectSettingsModal } from "./modals";
 import { Picker } from "./pickers";
 import {
@@ -43,13 +44,14 @@ type ModalState =
   | { kind: "project" }
   | { kind: "workspace" }
   | { kind: "settings"; project: string }
+  | { kind: "members" }
   | null;
 
 function defaultPeople(name: string): string[] {
   return [...new Set([name, "claude"])];
 }
 
-function App({ name, onChangeName }: { name: string; onChangeName: () => void }) {
+function App({ name, onChangeName }: { name: string; onChangeName?: () => void }) {
   const path = usePath();
   const route = parseRoute(path);
   const [live, setLive] = useState(0);
@@ -106,15 +108,19 @@ function App({ name, onChangeName }: { name: string; onChangeName: () => void })
 
   const workspace = workspaces?.find((w) => w.key === workspaceKey) ?? workspaces?.[0] ?? null;
 
-  // Labels and assignees for pickers and filters, scoped to the current workspace.
-  // There's no people endpoint, so assignees come from its issues.
+  // Labels and assignees for pickers and filters, scoped to the current workspace. Once members
+  // exist, only they can be assigned; before that, assignees come from the workspace's issues.
   const workspaceKeyForDirectory = workspace?.key;
   const loadDirectory = useCallback(() => {
     api.labels(workspaceKeyForDirectory).then(setLabels, () => {});
-    api.issues(workspaceKeyForDirectory ? { workspace: workspaceKeyForDirectory } : {}).then(
-      (list) => {
-        const names = list.map((i) => i.assignee).filter((a): a is string => !!a);
-        setPeople([...new Set([...defaultPeople(name), ...names])].sort((a, b) => a.localeCompare(b)));
+    Promise.all([
+      api.members().catch(() => []),
+      api.issues(workspaceKeyForDirectory ? { workspace: workspaceKeyForDirectory } : {}),
+    ]).then(
+      ([members, list]) => {
+        const active = members.filter((m) => !m.revokedAt).map((m) => m.name);
+        const names = active.length ? active : [...defaultPeople(name), ...list.map((i) => i.assignee).filter((a): a is string => !!a)];
+        setPeople([...new Set(names)].sort((a, b) => a.localeCompare(b)));
       },
       () => {},
     );
@@ -194,7 +200,7 @@ function App({ name, onChangeName }: { name: string; onChangeName: () => void })
     <AppContext.Provider value={app}>
       <LiveContext.Provider value={live}>
         <div className={cls("app", navOpen && "nav-open")}>
-          <Sidebar route={route} active={currentProject} onSwitch={switchWorkspace} />
+          <Sidebar route={route} active={currentProject} onSwitch={switchWorkspace} onMembers={() => setModal({ kind: "members" })} />
           <div className="nav-backdrop" onClick={() => setNavOpen(false)} />
           <main className="main">
             {route.view === "issue" ? (
@@ -212,6 +218,7 @@ function App({ name, onChangeName }: { name: string; onChangeName: () => void })
         {modal?.kind === "doc" && <NewDocModal project={modal.project} onClose={() => setModal(null)} />}
         {modal?.kind === "project" && <NewProjectModal onClose={() => setModal(null)} />}
         {modal?.kind === "settings" && <ProjectSettingsModal projectKey={modal.project} onClose={() => setModal(null)} />}
+        {modal?.kind === "members" && <MembersModal onClose={() => setModal(null)} />}
         {modal?.kind === "workspace" && (
           <NewWorkspaceModal
             onCreate={(w) => {
@@ -233,7 +240,17 @@ function routeProject(route: Route, docProject: string | null): string | null {
   return route.project;
 }
 
-function Sidebar({ route, active, onSwitch }: { route: Route; active: string | null; onSwitch: (key: string) => void }) {
+function Sidebar({
+  route,
+  active,
+  onSwitch,
+  onMembers,
+}: {
+  route: Route;
+  active: string | null;
+  onSwitch: (key: string) => void;
+  onMembers: () => void;
+}) {
   const { workspaces, workspace, workspaceProjects: projects, newIssue, newProject, newWorkspace, name, changeName } = useApp();
   const total = projects?.reduce((n, p) => n + openCount(p), 0) ?? 0;
   const docs = projects?.reduce((n, p) => n + p.docCount, 0) ?? 0;
@@ -294,13 +311,38 @@ function Sidebar({ route, active, onSwitch }: { route: Route; active: string | n
           </button>
         )}
       </nav>
-      <button className="whoami" onClick={changeName} title="Change name">
-        <Avatar name={name} />
-        <span className="nav-label" dir="auto">
-          {name}
-        </span>
-      </button>
+      <AccountMenu name={name} changeName={changeName} onMembers={onMembers} />
     </aside>
+  );
+}
+
+/** The sidebar footer: who you are, and name, members and sign out as they apply. */
+function AccountMenu({ name, changeName, onMembers }: { name: string; changeName?: () => void; onMembers: () => void }) {
+  const me = getMe();
+  const options = [
+    ...(changeName ? [{ value: "name", label: "Change name" }] : []),
+    ...(me.admin ? [{ value: "members", label: "Members" }] : []),
+    // In open mode only a member cookie can be signed out of; root has nothing to leave.
+    ...(me.member || !me.open ? [{ value: "signout", label: "Sign out" }] : []),
+  ];
+  const pick = (value: string) => {
+    if (value === "name") changeName?.();
+    else if (value === "members") onMembers();
+    else api.logout().then(() => location.reload(), errorToast);
+  };
+  const who = (
+    <>
+      <Avatar name={name} />
+      <span className="nav-label" dir="auto">
+        {name}
+      </span>
+    </>
+  );
+  if (!options.length) return <div className="whoami">{who}</div>;
+  return (
+    <Picker label="Account" options={options} selected={[]} onPick={pick} className="whoami">
+      {who}
+    </Picker>
   );
 }
 
@@ -322,22 +364,54 @@ function moveFocus(delta: number): boolean {
   return true;
 }
 
+/** A `#login=<token>` link signs in once. The token leaves the address bar before anything else runs. */
+function takeLoginLink(): string | null {
+  const match = /^#login=([^&]+)/.exec(location.hash);
+  if (!match) return null;
+  history.replaceState(null, "", location.pathname + location.search);
+  return decodeURIComponent(match[1]!);
+}
+const loginLink = takeLoginLink();
+// Pasting a login link into a tab already on Docket only changes the hash: reload to use it.
+addEventListener("hashchange", () => location.hash.startsWith("#login=") && location.reload());
+
 /**
- * Shows the login screen once the server answers 401 (DOCKET_TOKEN is set),
- * else the name screen until this browser has a display name.
+ * Signs in from a login link, then asks who we are. The login screen shows on any 401;
+ * a member goes straight in; otherwise the name screen shows until this browser has a name.
  */
 function Root() {
   const [locked, setLocked] = useState(false);
+  const [linkError, setLinkError] = useState("");
+  const [ready, setReady] = useState(false);
   const [name, setNameState] = useState(getName);
-  useEffect(() => void setOnUnauthorized(() => setLocked(true)), []);
-  if (locked) return <Login />;
+  useEffect(() => {
+    setOnUnauthorized(() => setLocked(true));
+    if (loginLink) {
+      api.login(loginLink).then(
+        () => location.reload(),
+        () => {
+          setLinkError("This sign-in link is invalid or was revoked.");
+          setLocked(true);
+        },
+      );
+      return;
+    }
+    // Offline with nothing cached, carry on as root: this browser's name, as before members existed.
+    loadMe()
+      .catch(() => {})
+      .finally(() => setReady(true));
+  }, []);
+  if (locked) return <Login initialError={linkError} />;
+  if (!ready) return null;
+  const member = getMe().member;
+  if (member) return <App name={member.name} />;
   if (!name) return <NameScreen onDone={setNameState} />;
   return <App name={name} onChangeName={() => setNameState(null)} />;
 }
 
-function Login() {
+function Login({ initialError }: { initialError: string }) {
   const [token, setToken] = useState("");
-  const [error, setError] = useState("");
+  const [error, setError] = useState(initialError);
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     api.login(token.trim()).then(
@@ -349,7 +423,7 @@ function Login() {
     <form className="empty login" onSubmit={submit}>
       <Logo />
       <h2>Docket</h2>
-      <p>Enter the access token (DOCKET_TOKEN) for this server.</p>
+      <p>Enter your access token: your own, or the server’s DOCKET_TOKEN.</p>
       <input
         className="input"
         type="password"
