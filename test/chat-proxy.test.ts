@@ -7,6 +7,10 @@ import { startServer, type TestServer } from "./server.ts";
 let release = () => {};
 let upstreamAborted = false;
 const escaped: string[] = []; // anything that reached the service outside /chat
+// What a confirm did with the key it was given: Docket's URL is set once the server under test is up.
+let docketUrl = "";
+const confirms: { token: string; me: number; credential: string; wrote: number }[] = [];
+let holdConfirm: Promise<void> | null = null;
 const upstream = Bun.serve({
   port: 0,
   fetch: (req) => {
@@ -14,7 +18,33 @@ const upstream = Bun.serve({
     return Response.json({ escaped: true });
   },
   routes: {
-    "/chat/*": (req) => Response.json({ path: new URL(req.url).pathname }),
+    // Tries a write with whatever key it got: only a confirm's key may succeed.
+    "/chat/*": async (req) => {
+      const bearer = req.headers.get("authorization") ?? "";
+      const wrote = docketUrl
+        ? (await fetch(`${docketUrl}/api/issues`, { method: "POST", headers: { Authorization: bearer, "Content-Type": "application/json" }, body: JSON.stringify({ team: "CHT", title: "Not confirmed" }) })).status
+        : 0;
+      return Response.json({ path: new URL(req.url).pathname, wrote });
+    },
+    // Like docket-chat's confirm: runs the stored change with the bearer it was given, then answers in a stream.
+    "/chat/actions/:id/confirm": async (req) => {
+      const token = req.headers.get("authorization")!.replace("Bearer ", "");
+      const as = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+      const me = await fetch(`${docketUrl}/api/me`, { headers: as });
+      const credential = me.ok ? ((await me.json()) as { credential: string }).credential : "";
+      const wrote = (await fetch(`${docketUrl}/api/issues`, { method: "POST", headers: as, body: JSON.stringify({ team: "CHT", title: "Confirmed change" }) })).status;
+      confirms.push({ token, me: me.status, credential, wrote });
+      const held = holdConfirm;
+      const body = new ReadableStream({
+        async start(c) {
+          c.enqueue(new TextEncoder().encode(`event: tool\ndata: {"status":"done"}\n\n`));
+          if (held) await held;
+          c.enqueue(new TextEncoder().encode(`event: done\ndata: {}\n\n`));
+          c.close();
+        },
+      });
+      return new Response(body, { headers: { "Content-Type": "text/event-stream" } });
+    },
     "/chat/echo": async (req) =>
       Response.json({
         method: req.method,
@@ -72,9 +102,71 @@ describe("with CHAT_URL", () => {
   let s: TestServer;
   beforeAll(async () => {
     s = await startServer({ env: { CHAT_URL: `${upstream.url.origin}/` } });
+    docketUrl = s.url.replace(/\/$/, "");
     await s.api("POST", "/api/teams", { key: "CHT", workspace: s.workspace, name: "Chat" });
   });
   afterAll(() => s.stop());
+
+  test("a confirm writes with a key made for it alone, gone once the answer ends", async () => {
+    confirms.length = 0;
+    const res = await s.api("POST", "/api/chat/actions/a1/confirm", {});
+    expect(res.status).toBe(200);
+    const [c] = confirms;
+    expect(c).toMatchObject({ me: 200, credential: "chat", wrote: 201 });
+    expect(c!.token).not.toBe(await chatToken(s));
+    expect((await s.with({ token: c!.token }).api("GET", "/api/me")).status).toBe(401);
+    expect(((await s.api("GET", "/api/issues?team=CHT")).body as { title: string }[]).map((i) => i.title)).toContain("Confirmed change");
+
+    // Each confirm gets its own.
+    await s.api("POST", "/api/chat/actions/a2/confirm", {});
+    expect(confirms[1]!.token).not.toBe(c!.token);
+  });
+
+  test("anything but POST …/actions/:id/confirm reads only", async () => {
+    confirms.length = 0;
+    await s.api("GET", "/api/chat/actions/a3/confirm");
+    await s.api("PATCH", "/api/chat/actions/a3/confirm", {});
+    expect(confirms.map((c) => c.wrote)).toEqual([403, 403]);
+    for (const path of [
+      "/api/chat/actions/a3/confirm/more",
+      "/api/chat/actions/a3/confirmx",
+      "/api/chat/actions/a3/cancel",
+      "/api/chat/actions//confirm",
+      "/api/chat/xactions/a3/confirm",
+      "/api/chat/actions/a3/b/confirm",
+    ]) {
+      const seen = (await s.api("POST", path, {})).body;
+      expect([path, seen?.wrote ?? 0]).toEqual([path, seen?.wrote === 403 ? 403 : 0]);
+    }
+    expect(((await s.api("GET", "/api/issues?team=CHT")).body as { title: string }[]).map((i) => i.title)).not.toContain("Not confirmed");
+    expect(confirms.map((c) => c.wrote)).toEqual([403, 403]); // nothing else reached the confirm
+  });
+
+  test("Stop during a confirm deletes its write key too", async () => {
+    confirms.length = 0;
+    let letGo = () => {};
+    holdConfirm = new Promise((resolve) => (letGo = resolve));
+    const stop = new AbortController();
+    const res = await fetch(new URL("/api/chat/actions/a4/confirm", s.url), {
+      method: "POST",
+      headers: { Cookie: s.admin.cookie!, Origin: new URL(s.url).origin, "Content-Type": "application/json" },
+      body: "{}",
+      signal: stop.signal,
+    });
+    await res.body!.getReader().read();
+    const token = confirms[0]!.token;
+    // Still live mid-answer, and never in the person's key list.
+    expect((await s.with({ token }).api("GET", "/api/me")).status).toBe(200);
+    expect(JSON.stringify((await s.api("GET", "/api/api-keys")).body)).not.toContain("Chat (automatic)");
+    const socket = s.with({ token }).ws();
+    expect(await socket.opened).toBeTrue();
+    stop.abort();
+    expect(await socket.closed).toBe(4401); // a socket opened with it goes too
+    for (let i = 0; i < 100 && (await s.with({ token }).api("GET", "/api/me")).status !== 401; i++) await Bun.sleep(20);
+    expect((await s.with({ token }).api("GET", "/api/me")).status).toBe(401);
+    letGo();
+    holdConfirm = null;
+  });
 
   test("/api/me says the assistant is there", async () => {
     expect((await s.api("GET", "/api/me")).body.chat).toBeTrue();
