@@ -116,7 +116,7 @@ Linear-style docs inside projects. Markdown is the source of truth (agents write
 
 `DocumentPatch.baseUpdatedAt` (optional) is the document's `updatedAt` the client started editing from: if present and different from the current `updatedAt`, the PATCH answers 409 `{ "error": "Document changed since you started editing" }` and changes nothing. The web editor sends it with every save; MCP `update_document` accepts it too. `edits` errors (400) name the failing edit and whether `oldText` matched 0 or many times (overlapping occurrences count: `aa` matches `aaa` twice); nothing is applied unless every edit applies. `GET /api/issues/:id` now includes `docs` (documents mentioning it). `Project` includes `docCount`. Mutations publish `{ type: "changed", entity: "document", id: slug }`.
 
-**MCP tools** (added to the existing 7)
+**MCP tools** (added to the 9 above)
 
 | Tool | Input | Notes |
 |---|---|---|
@@ -150,7 +150,7 @@ Migration 4 (additive): adds `projects.next_number INTEGER NOT NULL DEFAULT 1`, 
 
 ## Deploy
 
-`Dockerfile` (oven/bun image) + `docker-compose.yml`: volume `./data:/app/data`, port `127.0.0.1:7100:7100`, `restart: unless-stopped`, `DOCKET_TOKEN` passed through from the environment or `.env`. HTTPS and exposure are the operator's choice (reverse proxy, tunnel, VPN).
+`Dockerfile` (oven/bun image) + `docker-compose.yml`: volume `./data:/app/data`, port `127.0.0.1:7100:7100`, `restart: unless-stopped`, `DOCKET_TOKEN` passed through from the environment or `.env`. HTTPS and exposure are the operator's choice (reverse proxy, tunnel, VPN). Anything reached by a hostname other than localhost needs that hostname in `DOCKET_HOSTS` (see Auth), or data routes answer 403.
 
 ## Auth
 
