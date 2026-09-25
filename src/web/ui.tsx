@@ -89,6 +89,10 @@ export interface AppState {
   workspaceProjects: Project[] | null;
   labels: string[];
   people: string[];
+  /** This browser's display name (used as `author` on writes). */
+  name: string;
+  /** Reopens the name screen so the user can change it. */
+  changeName: () => void;
   /** Refresh labels + known assignees (called when a picker opens). */
   loadDirectory: () => void;
   /** Refetch projects and workspaces now, without waiting for the live update. */

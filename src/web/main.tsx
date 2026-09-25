@@ -2,7 +2,7 @@
 import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { IssueInput, Project, Workspace } from "../shared/types";
-import { HttpError, api, setOnUnauthorized, subscribe } from "./api";
+import { HttpError, api, getName, setName, setOnUnauthorized, subscribe } from "./api";
 import { DocPage, DocsView } from "./docs";
 import { IssuePage } from "./issue";
 import { IssuesView } from "./issues";
@@ -10,6 +10,7 @@ import { NewDocModal, NewIssueModal, NewProjectModal, NewWorkspaceModal } from "
 import { Picker } from "./pickers";
 import {
   AppContext,
+  Avatar,
   ChevronDownIcon,
   ComposeIcon,
   DocIcon,
@@ -42,7 +43,9 @@ type ModalState =
   | { kind: "workspace" }
   | null;
 
-const DEFAULT_PEOPLE = ["anonymous", "claude"];
+function defaultPeople(name: string): string[] {
+  return [...new Set([name, "claude"])];
+}
 
 function storedWorkspace(): string | null {
   try {
@@ -52,7 +55,7 @@ function storedWorkspace(): string | null {
   }
 }
 
-function App() {
+function App({ name, onChangeName }: { name: string; onChangeName: () => void }) {
   const path = usePath();
   const route = parseRoute(path);
   const [live, setLive] = useState(0);
@@ -61,7 +64,7 @@ function App() {
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [projectsTick, setProjectsTick] = useState(0);
   const [labels, setLabels] = useState<string[]>([]);
-  const [people, setPeople] = useState<string[]>(DEFAULT_PEOPLE);
+  const [people, setPeople] = useState<string[]>(() => defaultPeople(name));
   const [modal, setModal] = useState<ModalState>(null);
   const [navOpen, setNavOpen] = useState(false);
   const [docProject, setDocProject] = useState<string | null>(null);
@@ -100,11 +103,11 @@ function App() {
     api.issues().then(
       (list) => {
         const names = list.map((i) => i.assignee).filter((a): a is string => !!a);
-        setPeople([...new Set([...DEFAULT_PEOPLE, ...names])].sort((a, b) => a.localeCompare(b)));
+        setPeople([...new Set([...defaultPeople(name), ...names])].sort((a, b) => a.localeCompare(b)));
       },
       () => {},
     );
-  }, []);
+  }, [name]);
 
   const workspace = workspaces?.find((w) => w.key === workspaceKey) ?? workspaces?.[0] ?? null;
   const workspaceProjects = projects && workspace ? projects.filter((p) => p.workspace === workspace.key) : null;
@@ -138,6 +141,8 @@ function App() {
     workspaceProjects,
     labels,
     people,
+    name,
+    changeName: onChangeName,
     loadDirectory,
     reloadProjects: () => setProjectsTick((t) => t + 1),
     newIssue: (defaults = {}) => {
@@ -226,7 +231,7 @@ function routeProject(route: Route, docProject: string | null): string | null {
 }
 
 function Sidebar({ route, active, onSwitch }: { route: Route; active: string | null; onSwitch: (key: string) => void }) {
-  const { workspaces, workspace, workspaceProjects: projects, newIssue, newProject, newWorkspace } = useApp();
+  const { workspaces, workspace, workspaceProjects: projects, newIssue, newProject, newWorkspace, name, changeName } = useApp();
   const total = projects?.reduce((n, p) => n + openCount(p), 0) ?? 0;
   const docs = projects?.reduce((n, p) => n + (p.docCount ?? 0), 0) ?? 0;
   const options = [
@@ -286,6 +291,12 @@ function Sidebar({ route, active, onSwitch }: { route: Route; active: string | n
           </button>
         )}
       </nav>
+      <button className="whoami" onClick={changeName} title="Change name">
+        <Avatar name={name} />
+        <span className="nav-label" dir="auto">
+          {name}
+        </span>
+      </button>
     </aside>
   );
 }
@@ -308,11 +319,17 @@ function moveFocus(delta: number): boolean {
   return true;
 }
 
-/** Shows the login screen once the server answers 401 (DOCKET_TOKEN is set). */
+/**
+ * Shows the login screen once the server answers 401 (DOCKET_TOKEN is set),
+ * else the name screen until this browser has a display name.
+ */
 function Root() {
   const [locked, setLocked] = useState(false);
+  const [name, setNameState] = useState(getName);
   useEffect(() => void setOnUnauthorized(() => setLocked(true)), []);
-  return locked ? <Login /> : <App />;
+  if (locked) return <Login />;
+  if (!name) return <NameScreen onDone={setNameState} />;
+  return <App name={name} onChangeName={() => setNameState(null)} />;
 }
 
 function Login() {
@@ -342,6 +359,35 @@ function Login() {
       {error && <small className="login-error">{error}</small>}
       <button className="btn btn-primary" disabled={!token.trim()}>
         Sign in
+      </button>
+    </form>
+  );
+}
+
+function NameScreen({ onDone }: { onDone: (name: string) => void }) {
+  const [value, setValue] = useState("");
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const name = value.trim();
+    if (!name) return;
+    setName(name);
+    onDone(name);
+  };
+  return (
+    <form className="empty login" onSubmit={submit}>
+      <Logo />
+      <h2>What should we call you?</h2>
+      <p>Your name is shown on comments and edits you make here.</p>
+      <input
+        className="input"
+        type="text"
+        autoFocus
+        placeholder="Your name"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+      />
+      <button className="btn btn-primary" disabled={!value.trim()}>
+        Continue
       </button>
     </form>
   );
