@@ -5,6 +5,7 @@ import { HttpError, api } from "./api";
 import { AssigneePicker, BlockedByPicker, DelegatePicker, LabelsPicker, ParentPicker, PriorityPicker, StatusPicker } from "./pickers";
 import {
   Avatar,
+  ask,
   ago,
   ChevronRightIcon,
   Comments,
@@ -14,6 +15,7 @@ import {
   Kbd,
   LabelChip,
   Link,
+  LoadFailed,
   MOD,
   Markdown,
   MenuButton,
@@ -27,6 +29,7 @@ import {
   TitleEditor,
   TrashIcon,
   copyText,
+  cls,
   errorToast,
   fullDate,
   isMe,
@@ -40,11 +43,12 @@ import {
   useAutosize,
   useFetch,
   type CommentActions,
+  useResolved,
 } from "./ui";
 
 export function IssuePage({ id }: { id: string }) {
   const app = useApp();
-  const { data: issue, setData: setIssue, missing, reload, invalidate, isLatest } = useFetch(() => api.issue(id), [id]);
+  const { data: issue, setData: setIssue, missing, failed, reload, invalidate, isLatest } = useFetch(() => api.issue(id), [id]);
 
   useEffect(() => {
     document.title = `${issue ? `${issue.id} ${issue.title}` : id} · Docket`;
@@ -79,7 +83,17 @@ export function IssuePage({ id }: { id: string }) {
         </div>
       </>
     );
-  if (!issue) return header();
+  if (!issue)
+    return failed ? (
+      <>
+        {header()}
+        <div className="content">
+          <LoadFailed message={failed} retry={reload} />
+        </div>
+      </>
+    ) : (
+      header()
+    );
 
   // Functional updaters so a patch always applies on top of the latest state, not a
   // stale closure. Each response merges only its own slice (top-level fields for `patch`,
@@ -178,7 +192,7 @@ export function IssuePage({ id }: { id: string }) {
   };
 
   const remove = async () => {
-    if (!confirm(`Delete ${issue.id}? This can’t be undone.`)) return;
+    if (!(await ask(`Delete ${issue.id}? This can’t be undone.`, "Delete"))) return;
     try {
       await api.deleteIssue(issue.id);
       toast(`Deleted ${issue.id}`);
@@ -451,11 +465,17 @@ function Prop({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
-function Relations({ ids, children }: { ids: string[]; children?: ReactNode }) {
+/** Identifier chips; a relation whose blocker is resolved is struck through, since it no longer blocks. */
+function Relations({ ids, resolved, children }: { ids: string[]; resolved?: (id: string) => boolean; children?: ReactNode }) {
   return (
     <div className="rels">
       {ids.map((id) => (
-        <Link key={id} to={`/issue/${id}`} className="rel">
+        <Link
+          key={id}
+          to={`/issue/${id}`}
+          className={cls("rel", resolved?.(id) && "rel-resolved")}
+          title={resolved?.(id) ? "Resolved: no longer blocking" : undefined}
+        >
           {id}
         </Link>
       ))}
@@ -468,6 +488,7 @@ function Properties({ issue, patch }: { issue: Issue; patch: (p: IssueChange) =>
   const app = useApp();
   const team = app.teams?.find((t) => t.key === issue.team);
   const none = <span className="muted">None</span>;
+  const resolved = useResolved();
   return (
     <>
       <Prop label="Status">
@@ -519,7 +540,7 @@ function Properties({ issue, patch }: { issue: Issue; patch: (p: IssueChange) =>
         </Relations>
       </Prop>
       <Prop label="Blocked by">
-        <Relations ids={issue.blockedBy}>
+        <Relations ids={issue.blockedBy} resolved={resolved}>
           <BlockedByPicker
             value={issue.blockedBy}
             onChange={(blockedBy) => patch({ blockedBy })}
@@ -532,7 +553,7 @@ function Properties({ issue, patch }: { issue: Issue; patch: (p: IssueChange) =>
       </Prop>
       {issue.blocks.length > 0 && (
         <Prop label="Blocks">
-          <Relations ids={issue.blocks} />
+          <Relations ids={issue.blocks} resolved={() => CLOSED_STATUSES.includes(issue.status)} />
         </Prop>
       )}
       <div className="props-meta">

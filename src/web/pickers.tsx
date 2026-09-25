@@ -44,6 +44,8 @@ interface PickerProps {
   /** Offer "<create> “query”" when the query matches nothing exactly. */
   create?: string;
   onOpen?: () => void;
+  /** The current value in words, for screen readers: the trigger often shows only an icon. */
+  valueText?: string;
   className?: string;
   align?: "start" | "end";
   children: ReactNode;
@@ -51,7 +53,7 @@ interface PickerProps {
 
 const coarse = matchMedia("(pointer: coarse)");
 
-export function Picker({ label, options, selected, onPick, multi, create, onOpen, className, align, children }: PickerProps) {
+export function Picker({ label, options, selected, onPick, multi, create, onOpen, valueText, className, align, children }: PickerProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
@@ -62,8 +64,11 @@ export function Picker({ label, options, selected, onPick, multi, create, onOpen
 
   const q = query.trim();
   const lq = q.toLowerCase();
+  // An exact match comes first, so "ENG-1" + Enter picks ENG-1, not ENG-10.
+  const exact = (o: Option) => o.value.toLowerCase() === lq || o.label.toLowerCase() === lq;
   const items: (Option & { create?: true })[] = options
     .filter((o) => !lq || o.label.toLowerCase().includes(lq) || o.value.toLowerCase().includes(lq))
+    .sort((a, b) => (lq ? Number(exact(b)) - Number(exact(a)) : 0))
     .slice(0, 100);
   if (create && q && !options.some((o) => o.value.toLowerCase() === lq))
     items.push({ value: q, label: `${create} “${q}”`, icon: <PlusIcon />, create: true });
@@ -129,7 +134,7 @@ export function Picker({ label, options, selected, onPick, multi, create, onOpen
         ref={trigger}
         type="button"
         className={className}
-        aria-label={label}
+        aria-label={valueText ? `${label}: ${valueText}` : label}
         title={label}
         aria-haspopup="listbox"
         aria-expanded={open}
@@ -241,6 +246,7 @@ export function StatusPicker({ value, onChange, children, ...rest }: Trigger & {
   return (
     <Picker
       label="Change status"
+      valueText={STATUS_LABELS[value]}
       options={STATUS_OPTIONS}
       selected={[value]}
       onPick={(v) => v !== value && onChange(v as Status)}
@@ -260,6 +266,7 @@ export function PriorityPicker({
   return (
     <Picker
       label="Set priority"
+      valueText={PRIORITY_LABELS[value]}
       options={PRIORITY_OPTIONS}
       selected={[String(value)]}
       onPick={(v) => Number(v) !== value && onChange(Number(v) as Priority)}
@@ -280,6 +287,7 @@ function UserPicker({ kind, label, none, value, onChange, children, ...rest }: U
   return (
     <Picker
       label={label}
+      valueText={value?.name ?? none}
       options={[{ value: "", label: none, icon: <Avatar user={null} /> }, ...users.map(userOption)]}
       selected={[value?.username ?? ""]}
       onPick={(v) => v !== (value?.username ?? "") && onChange(users.find((u) => u.username === v) ?? null)}

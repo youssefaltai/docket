@@ -150,11 +150,22 @@ function takeCode(): string {
 /** Accepts a whole link or just its code. */
 const codeFrom = (input: string) => input.trim().split("#").pop()!.trim();
 
+/** Set when a signed-in tab was sent here by a 401, so the sign-in screen can say why. */
+function takeSignedOut(): string {
+  try {
+    const was = sessionStorage.getItem("docket.signedOut");
+    sessionStorage.removeItem("docket.signedOut");
+    return was ? "You were signed out, or lost access to your workspace. Sign in again to continue." : "";
+  } catch {
+    return "";
+  }
+}
+
 export function Login() {
   const [code, setCode] = useState(takeCode);
   const [input, setInput] = useState("");
   const [info, setInfo] = useState<CodeInfo | null>(null);
-  const [error, setError] = useState("");
+  const [error, setError] = useState(takeSignedOut);
   const [busy, setBusy] = useState(false);
 
   // A sign-in link goes straight in. An invite always stops first: a new account needs a profile, and

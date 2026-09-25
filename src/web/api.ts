@@ -35,6 +35,30 @@ export class HttpError extends Error {
 let onUnauthorized = () => {};
 export const setOnUnauthorized = (fn: () => void) => (onUnauthorized = fn);
 
+/** Called when the server closes the socket because this user lost access (suspended, signed out elsewhere). */
+let onAccessLost = () => {};
+export const setOnAccessLost = (fn: () => void) => (onAccessLost = fn);
+
+// ---------- Connection ----------
+
+/** "reconnecting": the live connection dropped and the retry hasn't landed yet. */
+export type Connection = "online" | "offline" | "reconnecting";
+let connection: Connection = navigator.onLine ? "online" : "offline";
+const connectionListeners = new Set<() => void>();
+function setConnection(c: Connection) {
+  if (c === connection) return;
+  connection = c;
+  connectionListeners.forEach((l) => l());
+}
+export const connectionStore = {
+  subscribe: (l: () => void) => (connectionListeners.add(l), () => void connectionListeners.delete(l)),
+  get: () => connection,
+};
+
+/** A network failure says so in words, instead of the browser's "Failed to fetch". */
+const unreachable = () =>
+  new HttpError(navigator.onLine ? "Can’t reach Docket. Check your connection and try again." : "You’re offline.", 0);
+
 /** Per-browser preferences; storage can be unavailable (private mode, blocked site data). */
 export const store = {
   get(key: string): string | null {
@@ -63,7 +87,9 @@ export async function request<T>(method: string, path: string, body?: unknown): 
   const headers: Record<string, string> = {};
   if (body !== undefined) headers["content-type"] = "application/json";
   if (signedInAs) headers["x-docket-user"] = signedInAs;
-  const res = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+  const res = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) }).catch(() => {
+    throw unreachable();
+  });
   const data: unknown = await res.json().catch(() => null);
   if (res.status === 401 && (data as { switched?: boolean } | null)?.switched) location.reload();
   else if (res.status === 401) onUnauthorized();
@@ -83,6 +109,19 @@ function query(filter: IssueFilter | DocumentFilter): string {
 
 export const enc = encodeURIComponent;
 
+/**
+ * One request per issue at a time, in the order they were made. Each edit sends whole fields (all its
+ * labels, say), so two in flight could land out of order and the older one would win.
+ */
+const queues = new Map<string, Promise<unknown>>();
+function inOrder<T>(key: string, send: () => Promise<T>): Promise<T> {
+  const next = (queues.get(key) ?? Promise.resolve()).catch(() => {}).then(send);
+  queues.set(key, next);
+  const done = () => void (queues.get(key) === next && queues.delete(key));
+  next.then(done, done);
+  return next;
+}
+
 export const api = {
   workspaces: () => request<Workspace[]>("GET", "/api/workspaces"),
   createWorkspace: (input: WorkspaceInput) => request<Workspace>("POST", "/api/workspaces", input),
@@ -98,8 +137,8 @@ export const api = {
   issues: (filter: IssueFilter = {}) => request<IssueSummary[]>("GET", `/api/issues${query(filter)}`),
   issue: (id: string) => request<Issue>("GET", `/api/issues/${enc(id)}`),
   createIssue: (input: IssueInput) => request<Issue>("POST", "/api/issues", input),
-  updateIssue: (id: string, patch: IssuePatch) => request<Issue>("PATCH", `/api/issues/${enc(id)}`, patch),
-  claimIssue: (id: string) => request<Issue>("POST", `/api/issues/${enc(id)}/claim`, {}),
+  updateIssue: (id: string, patch: IssuePatch) => inOrder(id, () => request<Issue>("PATCH", `/api/issues/${enc(id)}`, patch)),
+  claimIssue: (id: string) => inOrder(id, () => request<Issue>("POST", `/api/issues/${enc(id)}/claim`, {})),
   deleteIssue: (id: string) => request<{ ok: true }>("DELETE", `/api/issues/${enc(id)}`),
   comment: (id: string, body: string) => request<Issue>("POST", `/api/issues/${enc(id)}/comments`, { body }),
   editComment: (id: string, cid: number, body: string) =>
@@ -141,6 +180,7 @@ export function subscribe(onEvent: (event: ServerEvent | null) => void): () => v
     ws.onopen = () => {
       if (attempt > 0) onEvent(null);
       attempt = 0;
+      setConnection("online");
     };
     ws.onmessage = (e) => {
       try {
@@ -149,16 +189,33 @@ export function subscribe(onEvent: (event: ServerEvent | null) => void): () => v
         onEvent(null);
       }
     };
-    ws.onclose = () => {
+    ws.onclose = (e) => {
       if (stopped) return;
+      if (e.code === 4401) onAccessLost();
+      // A single quick reconnect isn't worth a banner; say so once a retry has failed.
+      if (!navigator.onLine) setConnection("offline");
+      else if (attempt > 0) setConnection("reconnecting");
       timer = setTimeout(connect, Math.min(10_000, 500 * 2 ** attempt++));
     };
   };
+
+  // Back online: retry now rather than after the backoff.
+  const online = () => {
+    if (ws?.readyState === WebSocket.OPEN) return setConnection("online");
+    setConnection("reconnecting");
+    clearTimeout(timer);
+    connect();
+  };
+  const offline = () => setConnection("offline");
+  addEventListener("online", online);
+  addEventListener("offline", offline);
 
   connect();
   return () => {
     stopped = true;
     clearTimeout(timer);
+    removeEventListener("online", online);
+    removeEventListener("offline", offline);
     ws?.close();
   };
 }

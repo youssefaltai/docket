@@ -198,7 +198,7 @@ export function NewDocModal({ team: initial, onClose }: { team: string; onClose:
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+            if (e.key === "Enter") {
               e.preventDefault();
               submit();
             }

@@ -13,6 +13,7 @@ import {
   HistoryIcon,
   Kbd,
   Link,
+  LoadFailed,
   ListHeader,
   Markdown,
   MenuButton,
@@ -25,6 +26,7 @@ import {
   TitleEditor,
   TrashIcon,
   ago,
+  ask,
   cls,
   errorToast,
   fullDate,
@@ -53,7 +55,7 @@ export function DocsView({ teamKey }: { teamKey: string | null }) {
 
   // "All docs" is the current workspace's; wait until it's known.
   const workspace = teamKey ? undefined : app.workspace?.key;
-  const { data: docs } = useFetch(
+  const { data: docs, failed, reload } = useFetch(
     teamKey || workspace ? () => api.documents({ team: teamKey ?? undefined, workspace, q: q || undefined }) : null,
     [teamKey, workspace, q],
   );
@@ -67,7 +69,7 @@ export function DocsView({ teamKey }: { teamKey: string | null }) {
   if (teamKey && app.teams && !team) {
     body = <TeamNotFound teamKey={teamKey} back="/docs" backLabel="All docs" />;
   } else if (!docs) {
-    body = null;
+    body = failed ? <LoadFailed message={failed} retry={reload} /> : null;
   } else if (docs.length === 0) {
     body = q ? (
       <EmptyState
@@ -169,7 +171,7 @@ const SAVE_LABELS: Record<SaveState, string> = { idle: "", saving: "Saving…", 
 
 export function DocPage({ slug }: { slug: string }) {
   const app = useApp();
-  const { data: doc, setData: setDoc, missing, reload, invalidate, isLatest } = useFetch(() => api.document(slug), [slug]);
+  const { data: doc, setData: setDoc, missing, failed, reload, invalidate, isLatest } = useFetch(() => api.document(slug), [slug]);
   const [editing, setEditing] = useState(() => nav.editDoc === slug);
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [history, setHistory] = useState(false);
@@ -205,8 +207,8 @@ export function DocPage({ slug }: { slug: string }) {
     setHistory(false);
     setEditing(true);
   };
-  const stopEdit = () => {
-    if (unsaved.current && !confirm("Discard your unsaved changes?")) return false;
+  const stopEdit = async () => {
+    if (unsaved.current && !(await ask("Discard your unsaved changes?", "Discard"))) return false;
     setEditing(false);
     setSaveState("idle");
     return true;
@@ -266,7 +268,7 @@ export function DocPage({ slug }: { slug: string }) {
           )}
           <button
             className="icon-btn"
-            onClick={() => (history ? closeHistory() : stopEdit() && setHistory(true))}
+            onClick={() => (history ? closeHistory() : stopEdit().then((ok) => ok && setHistory(true)))}
             aria-label="Version history"
             aria-expanded={history}
             title="Version history"
@@ -292,7 +294,17 @@ export function DocPage({ slug }: { slug: string }) {
         </div>
       </>
     );
-  if (!doc) return header;
+  if (!doc)
+    return failed ? (
+      <>
+        {header}
+        <div className="content">
+          <LoadFailed message={failed} retry={reload} />
+        </div>
+      </>
+    ) : (
+      header
+    );
 
   const apply = (fresh: Document) => {
     invalidate(); // drop any in-flight fetch that predates this change
@@ -348,7 +360,7 @@ export function DocPage({ slug }: { slug: string }) {
                 {doc.versionCount > 0 && (
                   <>
                     <span aria-hidden="true">·</span>
-                    <button className="doc-meta-btn" onClick={() => stopEdit() && setHistory(true)}>
+                    <button className="doc-meta-btn" onClick={() => stopEdit().then((ok) => ok && setHistory(true))}>
                       {doc.versionCount} {doc.versionCount === 1 ? "version" : "versions"}
                     </button>
                   </>
@@ -459,7 +471,7 @@ export function DocPage({ slug }: { slug: string }) {
 }
 
 async function remove(doc: Document) {
-  if (!confirm(`Delete “${doc.title}”? Its history and comments go with it.`)) return;
+  if (!(await ask(`Delete “${doc.title}”? Its history and comments go with it.`, "Delete"))) return;
   try {
     await api.deleteDocument(doc.slug);
     toast(`Deleted “${doc.title}”`);

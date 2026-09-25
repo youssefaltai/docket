@@ -1,8 +1,8 @@
 // App shell: boot, sidebar, routing, live updates, global shortcuts.
-import { StrictMode, useCallback, useEffect, useState } from "react";
+import { StrictMode, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import type { IssueInput, Team, Workspace, WorkspaceMember } from "../shared/types";
-import { api, setOnUnauthorized, store, subscribe } from "./api";
+import { api, connectionStore, setOnAccessLost, setOnUnauthorized, store, subscribe } from "./api";
 import { auth, getMe, loadMe } from "./auth";
 import { DocPage, DocsView } from "./docs";
 import { IssuePage } from "./issue";
@@ -26,6 +26,7 @@ import {
   PlusIcon,
   TeamMark,
   Toaster,
+  Confirm,
   cls,
   errorToast,
   isEditable,
@@ -34,6 +35,7 @@ import {
   openCount,
   parseRoute,
   setIssueIndex,
+  toast,
   useApp,
   useKeydown,
   usePath,
@@ -125,6 +127,26 @@ function App() {
     navigate(route.view === "settings" ? path : route.view === "docs" || route.view === "doc" ? "/docs" : "/");
   };
 
+  // Access changed under us (the socket closed with 4401): ask who we are now. A 401 goes to the sign-in
+  // screen; losing just this workspace moves to another one and says why, instead of showing "not found".
+  const current = useRef(workspace);
+  current.current = workspace;
+  useEffect(() => {
+    setOnAccessLost(() =>
+      loadMe().then((me) => {
+        const lost = current.current;
+        if (lost && !me.workspaces.some((w) => w.key === lost.key)) {
+          toast(`You no longer have access to ${lost.name}`);
+          if (me.workspaces[0]) setWorkspace(me.workspaces[0].key);
+          navigate("/");
+        }
+        setLive((v) => v + 1);
+      }, () => {}),
+    );
+  }, [setWorkspace]);
+
+  const connection = useSyncExternalStore(connectionStore.subscribe, connectionStore.get);
+
   const currentTeam = routeTeam(route, docTeam);
 
   // Opening a team, issue or doc from another workspace switches to that workspace.
@@ -165,7 +187,7 @@ function App() {
   // Global shortcuts.
   useKeydown((e) => {
     if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey || modal || isEditable(e.target)) return;
-    if (document.querySelector(".pop")) return;
+    if (document.querySelector(".pop, .backdrop")) return;
     const key = e.key;
     if (key === "c" || key === "C") {
       e.preventDefault();
@@ -205,7 +227,14 @@ function App() {
         <div className={cls("app", navOpen && "nav-open")}>
           <Sidebar route={route} active={currentTeam} onSwitch={switchWorkspace} />
           <div className="nav-backdrop" onClick={() => setNavOpen(false)} />
-          <main className="main">{page}</main>
+          <main className="main">
+            {connection !== "online" && (
+              <div className="connection" role="status">
+                {connection === "offline" ? "You’re offline. Changes won’t save until you reconnect." : "Reconnecting…"}
+              </div>
+            )}
+            {page}
+          </main>
         </div>
         {modal?.kind === "issue" && <NewIssueModal defaults={modal.defaults} onClose={() => setModal(null)} />}
         {modal?.kind === "doc" && <NewDocModal team={modal.team} onClose={() => setModal(null)} />}
@@ -221,6 +250,7 @@ function App() {
           />
         )}
         <Toaster />
+        <Confirm />
       </LiveContext.Provider>
     </AppContext.Provider>
   );
@@ -356,7 +386,12 @@ function Root() {
   const signedOut = path === "/setup" || path === "/login";
   useEffect(() => {
     if (signedOut) return;
-    setOnUnauthorized(() => location.replace("/login"));
+    setOnUnauthorized(() => {
+      try {
+        sessionStorage.setItem("docket.signedOut", "1");
+      } catch {}
+      location.replace("/login");
+    });
     loadMe().then(
       () => setState("ready"),
       () => setState((s) => (s === "loading" ? "offline" : s)),
