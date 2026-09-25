@@ -72,7 +72,19 @@ function details(issue: Issue): string {
 }
 
 function commentsSection(comments: Comment[]): string {
-  return `## Comments\n${comments.map((c) => `**${c.author}** · ${c.createdAt}\n${c.body}`).join("\n\n")}`;
+  const header = (c: Comment) => [`**${c.author}**`, `#${c.id}`, c.createdAt, c.editedAt && "edited"].filter(Boolean).join(" · ");
+  return `## Comments\n${comments.map((c) => `${header(c)}\n${c.body}`).join("\n\n")}`;
+}
+
+/** Routes a comment tool to its issue or its document; exactly one must be given. */
+function commentOn<T>(
+  { issue, document }: { issue?: string; document?: string },
+  onIssue: (id: string) => T,
+  onDocument: (slug: string) => T,
+): T {
+  if (issue && !document) return onIssue(issue);
+  if (document && !issue) return onDocument(document);
+  throw new db.AppError("Pass exactly one of issue or document");
 }
 
 function ago(iso: string): string {
@@ -239,6 +251,20 @@ function createServer(): McpServer {
       const lines = issues.map(line);
       if (all.length > limit) lines.push(`…and ${all.length - limit} more (raise limit or narrow the filters)`);
       return result(lines.join("\n") || "No matching issues.", { issues, total: all.length });
+    },
+  );
+
+  server.registerTool(
+    "list_labels",
+    {
+      description:
+        "List the labels in use, one line each: label · open issue count. Check it before labeling an issue and reuse an existing label rather than inventing a near-duplicate.",
+      inputSchema: { workspace: workspaceKey.optional().describe("Only labels on this workspace's issues") },
+      annotations: { readOnlyHint: true },
+    },
+    ({ workspace }) => {
+      const labels = db.listLabels({ workspace });
+      return result(labels.map((l) => `${l.label} · ${l.open} open`).join("\n") || "No labels yet.", { labels });
     },
   );
 
@@ -419,6 +445,54 @@ function createServer(): McpServer {
       const document = db.addDocumentComment(slug, body, author);
       return result(`Commented on document ${document.slug}`, docMeta(document));
     },
+  );
+
+  const commentTarget = {
+    issue: identifier.optional().describe("The issue the comment is on; pass this or document"),
+    document: slug.optional().describe("The document the comment is on; pass this or issue"),
+    comment: z.number().int().describe("Comment id, shown as #12 in get_issue / get_document"),
+  };
+
+  server.registerTool(
+    "update_comment",
+    {
+      description:
+        "Edit one of your own comments (the author must match) on an issue or a document, e.g. to fix a typo or an outdated note. It shows as edited. For new information, add a new comment instead.",
+      inputSchema: { ...commentTarget, body: z.string().describe("Markdown, replaces the whole comment"), author },
+    },
+    ({ comment, body, author = "claude", ...target }) =>
+      commentOn(
+        target,
+        (id) => {
+          const issue = db.updateIssueComment(id, comment, body, author);
+          return result(`Edited comment #${comment} on ${issue.id}`, { issue });
+        },
+        (slug) => {
+          const document = db.updateDocumentComment(slug, comment, body, author);
+          return result(`Edited comment #${comment} on document ${document.slug}`, docMeta(document));
+        },
+      ),
+  );
+
+  server.registerTool(
+    "delete_comment",
+    {
+      description: "Delete one of your own comments (the author must match) on an issue or a document. Only for comments posted by mistake.",
+      inputSchema: { ...commentTarget, author },
+      annotations: { destructiveHint: true },
+    },
+    ({ comment, author = "claude", ...target }) =>
+      commentOn(
+        target,
+        (id) => {
+          const issue = db.deleteIssueComment(id, comment, author);
+          return result(`Deleted comment #${comment} on ${issue.id}`, { issue });
+        },
+        (slug) => {
+          const document = db.deleteDocumentComment(slug, comment, author);
+          return result(`Deleted comment #${comment} on document ${document.slug}`, docMeta(document));
+        },
+      ),
   );
 
   server.registerTool(
