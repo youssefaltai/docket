@@ -4,8 +4,18 @@ services:
     ports:
       - "127.0.0.1:${PORT:-7100}:7100"
     environment:
-      DOCKET_HOSTS: ${DOCKET_HOSTS:-}
+      # "docket" is how the assistant (docket-chat) reaches it on the network below.
+      DOCKET_HOSTS: docket,${DOCKET_HOSTS:-}
       DOCKET_URL: ${DOCKET_URL:-}
+      CHAT_URL: ${CHAT_URL:-}
     volumes:
       - ./data:/app/data
+    networks:
+      - docket
     restart: unless-stopped
+
+# Docket's own network; docket-chat joins it. A second Docket on the same host (a test instance) sets
+# DOCKET_NETWORK so the two never share it.
+networks:
+  docket:
+    name: ${DOCKET_NETWORK:-docket}

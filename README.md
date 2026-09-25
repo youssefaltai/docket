@@ -66,7 +66,29 @@ Try: *"Create a team called Website in Docket and file issues for everything in 
 
 The container listens on `127.0.0.1:7100` only. Put it behind whatever you already use for HTTPS: a reverse proxy (Caddy, nginx, Traefik), a tunnel, or a private network like Tailscale or WireGuard.
 
-Back up with `./backup.sh`. Run it from a nightly cron: it writes a consistent snapshot into `data/backups/` and keeps 14 days. With the assistant, back up docket-chat's database the same way: `./backup.sh /opt/apps/docket-chat docket-chat /data/chat.db` (its compose folder, service and database path).
+Back up with `./backup.sh`. Run it from a nightly cron: it writes a consistent snapshot into `data/backups/` and keeps 14 days.
+
+</details>
+
+<details>
+<summary><b>Add the assistant</b></summary>
+
+The assistant is a separate service, docket-chat, next to Docket on the same host. Docket's compose creates a Docker network, `docket`, and docket-chat joins it. Docket reaches it at `http://docket-chat:7110`, and it reaches Docket at `http://docket:7100`. Both stay published on `127.0.0.1` only.
+
+```sh
+cd /opt/apps/docket
+echo 'CHAT_URL=http://docket-chat:7110' >> .env
+docker compose up -d                       # Docket first: it creates the network
+cd /opt/apps/docket-chat                   # then docket-chat (see its README)
+mkdir -p data && sudo chown -R 1000:1000 data
+docker compose up -d --build
+```
+
+Back up its conversations nightly with Docket's script:
+
+```
+19 3 * * * /opt/apps/docket/backup.sh /opt/apps/docket-chat docket-chat /data/chat.db >> $HOME/docket-backup.log 2>&1
+```
 
 </details>
 
@@ -109,7 +131,8 @@ Serve it over HTTPS anywhere but localhost. Give each Docket its own hostname: b
 | `DOCKET_SETUP_CODE` | random, printed at startup while there are no users; set it to fix the code (tests, automation) |
 | `DOCKET_URL` | `http://localhost:$PORT`; the public address `sign-in-link` puts in links |
 | `DOCKET_HOSTS` | unset — extra hostnames (comma-separated) allowed in the `Host` header, besides `localhost`, e.g. `docket.example.com,vps.tailnet.ts.net`. Needed when serving over Tailscale or another hostname. |
-| `CHAT_URL` | unset — the docket-chat assistant's address, e.g. `http://127.0.0.1:7120`. Set, the web app shows the assistant and proxies `/api/chat/*` to it; unset, both are off. |
+| `CHAT_URL` | unset — the docket-chat assistant's address: `http://docket-chat:7110` in Docker (see Add the assistant). Set, the web app shows the assistant and proxies `/api/chat/*` to it; unset, both are off. |
+| `DOCKET_NETWORK` | `docket` — the Docker network docket-chat joins. Give a second Docket on the same host (a test instance) its own. |
 
 In Docker, set these in a `.env` file next to `docker-compose.yml` (see `.env.example`). `PORT` there only changes the host-side port mapping; the container always listens on `7100` internally.
 
