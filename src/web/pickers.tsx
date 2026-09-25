@@ -1,5 +1,5 @@
 // Popover pickers for issue properties. All share one keyboard-friendly <Picker>.
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
   PRIORITIES,
@@ -54,6 +54,8 @@ export function Picker({ label, options, selected, onPick, multi, create, onOpen
   const [active, setActive] = useState(0);
   const trigger = useRef<HTMLButtonElement>(null);
   const pop = useRef<HTMLDivElement>(null);
+  const listId = useId();
+  const optionId = (i: number) => `${listId}-${i}`;
 
   const q = query.trim();
   const lq = q.toLowerCase();
@@ -142,6 +144,10 @@ export function Picker({ label, options, selected, onPick, multi, create, onOpen
           <div ref={pop} className="pop" role="dialog" aria-label={label} onClick={(e) => e.stopPropagation()}>
             <input
               className="pop-search"
+              role="combobox"
+              aria-expanded={open}
+              aria-controls={listId}
+              aria-activedescendant={items[current] ? optionId(current) : undefined}
               autoFocus={!coarse.matches}
               value={query}
               placeholder={`${label}…`}
@@ -168,12 +174,13 @@ export function Picker({ label, options, selected, onPick, multi, create, onOpen
                 } else if (e.key === "Tab") close(false);
               }}
             />
-            <div className="pop-list" role="listbox" aria-multiselectable={multi}>
+            <div className="pop-list" id={listId} role="listbox" aria-multiselectable={multi}>
               {items.map((o, i) => {
                 const on = !o.create && selected.includes(o.value);
                 return (
                   <div
                     key={o.create ? "\0create" : o.value}
+                    id={optionId(i)}
                     data-i={i}
                     role="option"
                     aria-selected={on}
