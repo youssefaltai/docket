@@ -1,27 +1,30 @@
-// App shell: sidebar, routing, live updates, global shortcuts.
+// App shell: boot, sidebar, routing, live updates, global shortcuts.
 import { StrictMode, useCallback, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import type { IssueInput, Project, Workspace } from "../shared/types";
-import { HttpError, api, getMe, getName, loadMe, setName, setOnUnauthorized, store, subscribe } from "./api";
+import type { IssueInput, Team, Workspace, WorkspaceMember } from "../shared/types";
+import { api, setOnUnauthorized, store, subscribe } from "./api";
+import { auth, getMe, loadMe } from "./auth";
 import { DocPage, DocsView } from "./docs";
 import { IssuePage } from "./issue";
 import { IssuesView } from "./issues";
-import { MembersModal } from "./members";
-import { NewDocModal, NewIssueModal, NewProjectModal, NewWorkspaceModal, ProjectSettingsModal } from "./modals";
+import { Login, Setup } from "./login";
+import { NewDocModal, NewIssueModal, NewTeamModal, NewWorkspaceModal, TeamSettingsModal } from "./modals";
 import { Picker } from "./pickers";
+import { SettingsPage } from "./settings";
 import {
   AppContext,
   Avatar,
   ChevronDownIcon,
   ComposeIcon,
   DocIcon,
+  EmptyState,
   IssuesIcon,
   Kbd,
   Link,
   LiveContext,
   Logo,
   PlusIcon,
-  ProjectMark,
+  TeamMark,
   Toaster,
   cls,
   errorToast,
@@ -40,34 +43,31 @@ import {
 
 type ModalState =
   | { kind: "issue"; defaults: Partial<IssueInput> }
-  | { kind: "doc"; project: string }
-  | { kind: "project" }
+  | { kind: "doc"; team: string }
+  | { kind: "team" }
   | { kind: "workspace" }
-  | { kind: "settings"; project: string }
-  | { kind: "members" }
+  | { kind: "team-settings"; team: string }
   | null;
 
-function defaultPeople(name: string): string[] {
-  return [...new Set([name, "claude"])];
-}
+const settingsRoute = (path: string) => /^\/settings\/(account|workspace)\/?$/.exec(path)?.[1] as "account" | "workspace" | undefined;
 
-function App({ name, onChangeName }: { name: string; onChangeName?: () => void }) {
+function App() {
   const path = usePath();
   const route = parseRoute(path);
+  const settings = settingsRoute(path);
   const [live, setLive] = useState(0);
   const [workspaces, setWorkspaces] = useState<Workspace[] | null>(null);
   const [workspaceKey, setWorkspaceKey] = useState(() => store.get("workspace"));
-  const [projects, setProjects] = useState<Project[] | null>(null);
-  const [projectsTick, setProjectsTick] = useState(0);
+  const [teams, setTeams] = useState<Team[] | null>(null);
+  const [teamsTick, setTeamsTick] = useState(0);
   const [labels, setLabels] = useState<string[]>([]);
-  const [people, setPeople] = useState<string[]>(() => defaultPeople(name));
-  const [members, setMembers] = useState<string[]>([]);
+  const [members, setMembers] = useState<WorkspaceMember[]>([]);
   const [modal, setModal] = useState<ModalState>(null);
   const [navOpen, setNavOpen] = useState(false);
-  const [docProject, setDocProject] = useState<string | null>(null);
+  const [docTeam, setDocTeam] = useState<string | null>(null);
 
   // Live updates: coalesce bursts of server events into one refetch. The issue index
-  // (statuses for identifier chips) only changes with issue and project events.
+  // (statuses for identifier chips) only changes with issue and team events.
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let stale = true;
@@ -102,81 +102,66 @@ function App({ name, onChangeName }: { name: string; onChangeName?: () => void }
 
   useEffect(() => {
     api.workspaces().then(setWorkspaces, errorToast);
-    api.projects().then(setProjects, errorToast);
-    api.members().then((list) => setMembers(list.filter((m) => !m.revokedAt).map((m) => m.name)), () => {});
-  }, [live, projectsTick]);
+    api.teams().then(setTeams, errorToast);
+  }, [live, teamsTick]);
 
   useEffect(() => setNavOpen(false), [path]);
 
   const workspace = workspaces?.find((w) => w.key === workspaceKey) ?? workspaces?.[0] ?? null;
 
-  // Labels and assignees for pickers and filters, scoped to the current workspace. Once members
-  // exist, only they can be assigned; before that, assignees come from the workspace's issues.
-  const workspaceKeyForDirectory = workspace?.key;
+  // Labels and members (assignees are people, delegates agents) of the current workspace, for pickers and filters.
+  const currentKey = workspace?.key;
   const loadDirectory = useCallback(() => {
-    api.labels(workspaceKeyForDirectory).then(setLabels, () => {});
-    Promise.all([
-      api.members().catch(() => []),
-      api.issues(workspaceKeyForDirectory ? { workspace: workspaceKeyForDirectory } : {}),
-    ]).then(
-      ([members, list]) => {
-        const active = members.filter((m) => !m.revokedAt).map((m) => m.name);
-        const names = active.length ? active : [...defaultPeople(name), ...list.map((i) => i.assignee).filter((a): a is string => !!a)];
-        // You first, then everyone else alphabetically.
-        const others = [...new Set(names)].filter((n) => n !== name).sort((a, b) => a.localeCompare(b));
-        setPeople(names.includes(name) || !active.length ? [name, ...others] : others);
-      },
-      () => {},
-    );
-  }, [name, workspaceKeyForDirectory]);
-  const workspaceProjects = projects && workspace ? projects.filter((p) => p.workspace === workspace.key) : null;
+    if (!currentKey) return;
+    api.labels(currentKey).then(setLabels, () => {});
+    api.members(currentKey).then(setMembers, () => {});
+  }, [currentKey]);
+  useEffect(loadDirectory, [loadDirectory, live]);
+
+  const workspaceTeams = teams && workspace ? teams.filter((t) => t.workspace === workspace.key) : null;
   const setWorkspace = useCallback((key: string) => {
     setWorkspaceKey(key);
     store.set("workspace", key);
   }, []);
   const switchWorkspace = (key: string) => {
     setWorkspace(key);
-    navigate(route.view === "docs" || route.view === "doc" ? "/docs" : "/");
+    navigate(settings ? path : route.view === "docs" || route.view === "doc" ? "/docs" : "/");
   };
 
-  const currentProject = routeProject(route, docProject);
+  const currentTeam = settings ? null : routeTeam(route, docTeam);
 
-  // Opening a project, issue or doc from another workspace switches to that workspace.
-  const owner = projects?.find((p) => p.key === currentProject)?.workspace;
+  // Opening a team, issue or doc from another workspace switches to that workspace.
+  const owner = teams?.find((t) => t.key === currentTeam)?.workspace;
   useEffect(() => {
     if (owner) setWorkspace(owner);
   }, [owner, setWorkspace]);
 
-  const known = (key: string | null | undefined) =>
-    key && workspaceProjects?.some((p) => p.key === key) ? key : undefined;
-  const pickProject = (key?: string | null) => known(key) ?? known(currentProject) ?? workspaceProjects?.[0]?.key;
+  const known = (key: string | null | undefined) => (key && workspaceTeams?.some((t) => t.key === key) ? key : undefined);
+  const pickTeam = (key?: string | null) => known(key) ?? known(currentTeam) ?? workspaceTeams?.[0]?.key;
 
   const app: AppState = {
     workspaces,
     workspace,
-    projects,
-    workspaceProjects,
+    teams,
+    workspaceTeams,
     labels,
-    people,
     members,
-    name,
-    changeName: onChangeName,
     loadDirectory,
-    reloadProjects: () => setProjectsTick((t) => t + 1),
+    reloadTeams: () => setTeamsTick((t) => t + 1),
     newIssue: (defaults = {}) => {
-      const project = pickProject(defaults.project);
-      if (!project) return setModal({ kind: "project" });
+      const team = pickTeam(defaults.team);
+      if (!team) return setModal({ kind: "team" });
       loadDirectory();
-      setModal({ kind: "issue", defaults: { ...defaults, project } });
+      setModal({ kind: "issue", defaults: { ...defaults, team } });
     },
     newDoc: (key) => {
-      const project = pickProject(key);
-      setModal(project ? { kind: "doc", project } : { kind: "project" });
+      const team = pickTeam(key);
+      setModal(team ? { kind: "doc", team } : { kind: "team" });
     },
-    newProject: () => setModal({ kind: "project" }),
+    newTeam: () => setModal({ kind: "team" }),
     newWorkspace: () => setModal({ kind: "workspace" }),
-    projectSettings: (project) => setModal({ kind: "settings", project }),
-    setDocProject,
+    teamSettings: (team) => setModal({ kind: "team-settings", team }),
+    setDocTeam,
     openNav: () => setNavOpen(true),
   };
 
@@ -196,34 +181,39 @@ function App({ name, onChangeName }: { name: string; onChangeName?: () => void }
       else if (route.view === "issue") navigate(nav.lastList);
       else if (route.view === "doc") navigate(nav.lastDocs);
       else (document.activeElement as HTMLElement | null)?.blur?.();
-    } else if ((route.view === "issues" || route.view === "docs") && (key === "j" || key === "k" || key === "ArrowDown" || key === "ArrowUp")) {
+    } else if (!settings && (route.view === "issues" || route.view === "docs") && (key === "j" || key === "k" || key === "ArrowDown" || key === "ArrowUp")) {
       if (moveFocus(key === "j" || key === "ArrowDown" ? 1 : -1)) e.preventDefault();
     }
   });
+
+  const page = settings ? (
+    <SettingsPage section={settings} workspace={workspace?.key ?? null} />
+  ) : workspaces?.length === 0 ? (
+    <EmptyState title="No workspace yet" action={<button className="btn btn-primary" onClick={app.newWorkspace}>Create a workspace</button>}>
+      Create one to start, or ask an admin to invite you to theirs.
+    </EmptyState>
+  ) : route.view === "issue" ? (
+    <IssuePage key={route.id} id={route.id} />
+  ) : route.view === "doc" ? (
+    <DocPage key={route.slug} slug={route.slug} />
+  ) : route.view === "docs" ? (
+    <DocsView key={route.team ?? ""} teamKey={route.team} />
+  ) : (
+    <IssuesView key={route.team ?? ""} teamKey={route.team} />
+  );
 
   return (
     <AppContext.Provider value={app}>
       <LiveContext.Provider value={live}>
         <div className={cls("app", navOpen && "nav-open")}>
-          <Sidebar route={route} active={currentProject} onSwitch={switchWorkspace} onMembers={() => setModal({ kind: "members" })} />
+          <Sidebar route={route} settings={!!settings} active={currentTeam} onSwitch={switchWorkspace} />
           <div className="nav-backdrop" onClick={() => setNavOpen(false)} />
-          <main className="main">
-            {route.view === "issue" ? (
-              <IssuePage key={route.id} id={route.id} />
-            ) : route.view === "doc" ? (
-              <DocPage key={route.slug} slug={route.slug} />
-            ) : route.view === "docs" ? (
-              <DocsView key={route.project ?? ""} projectKey={route.project} />
-            ) : (
-              <IssuesView key={route.project ?? ""} projectKey={route.project} />
-            )}
-          </main>
+          <main className="main">{page}</main>
         </div>
         {modal?.kind === "issue" && <NewIssueModal defaults={modal.defaults} onClose={() => setModal(null)} />}
-        {modal?.kind === "doc" && <NewDocModal project={modal.project} onClose={() => setModal(null)} />}
-        {modal?.kind === "project" && <NewProjectModal onClose={() => setModal(null)} />}
-        {modal?.kind === "settings" && <ProjectSettingsModal projectKey={modal.project} onClose={() => setModal(null)} />}
-        {modal?.kind === "members" && <MembersModal onClose={() => setModal(null)} />}
+        {modal?.kind === "doc" && <NewDocModal team={modal.team} onClose={() => setModal(null)} />}
+        {modal?.kind === "team" && <NewTeamModal onClose={() => setModal(null)} />}
+        {modal?.kind === "team-settings" && <TeamSettingsModal teamKey={modal.team} onClose={() => setModal(null)} />}
         {modal?.kind === "workspace" && (
           <NewWorkspaceModal
             onCreate={(w) => {
@@ -239,30 +229,31 @@ function App({ name, onChangeName }: { name: string; onChangeName?: () => void }
   );
 }
 
-function routeProject(route: Route, docProject: string | null): string | null {
+function routeTeam(route: Route, docTeam: string | null): string | null {
   if (route.view === "issue") return route.id.replace(/-\d+$/, "");
-  if (route.view === "doc") return docProject;
-  return route.project;
+  if (route.view === "doc") return docTeam;
+  return route.team;
 }
 
 function Sidebar({
   route,
+  settings,
   active,
   onSwitch,
-  onMembers,
 }: {
   route: Route;
+  settings: boolean;
   active: string | null;
   onSwitch: (key: string) => void;
-  onMembers: () => void;
 }) {
-  const { workspaces, workspace, workspaceProjects: projects, newIssue, newProject, newWorkspace, name, changeName } = useApp();
-  const total = projects?.reduce((n, p) => n + openCount(p), 0) ?? 0;
-  const docs = projects?.reduce((n, p) => n + p.docCount, 0) ?? 0;
+  const { workspaces, workspace, workspaceTeams: teams, newIssue, newTeam, newWorkspace } = useApp();
+  const total = teams?.reduce((n, t) => n + openCount(t), 0) ?? 0;
+  const docs = teams?.reduce((n, t) => n + t.docCount, 0) ?? 0;
   const options = [
-    ...(workspaces ?? []).map((w) => ({ value: w.key, label: w.name, icon: <ProjectMark id={w.name.toUpperCase()} /> })),
+    ...(workspaces ?? []).map((w) => ({ value: w.key, label: w.name, icon: <TeamMark id={w.name.toUpperCase()} /> })),
     { value: "", label: "New workspace", icon: <PlusIcon /> },
   ];
+  const on = (view: string) => !settings && route.view === view && !("team" in route && route.team);
   return (
     <aside className="sidebar">
       <Picker
@@ -284,69 +275,60 @@ function Sidebar({
         <Kbd>C</Kbd>
       </button>
       <nav className="nav">
-        <Link to="/" className={cls("nav-item", route.view === "issues" && !route.project && "active")}>
+        <Link to="/" className={cls("nav-item", on("issues") && "active")}>
           <IssuesIcon />
           <span className="nav-label">All issues</span>
           {total > 0 && <span className="nav-count">{total}</span>}
         </Link>
-        <Link to="/docs" className={cls("nav-item", route.view === "docs" && !route.project && "active")}>
+        <Link to="/docs" className={cls("nav-item", on("docs") && "active")}>
           <DocIcon />
           <span className="nav-label">All docs</span>
           {docs > 0 && <span className="nav-count">{docs}</span>}
         </Link>
         <div className="nav-section">
-          <span>Projects</span>
-          <button className="icon-btn xs" onClick={newProject} aria-label="New project" title="New project">
+          <span>Teams</span>
+          <button className="icon-btn xs" onClick={newTeam} aria-label="New team" title="New team">
             <PlusIcon />
           </button>
         </div>
-        {projects?.map((p) => (
-          <Link key={p.key} to={`/p/${p.key}`} className={cls("nav-item", active === p.key && "active")}>
-            <ProjectMark id={p.key} />
+        {teams?.map((t) => (
+          <Link key={t.key} to={`/t/${t.key}`} className={cls("nav-item", active === t.key && "active")}>
+            <TeamMark id={t.key} />
             <span className="nav-label" dir="auto">
-              {p.name}
+              {t.name}
             </span>
-            {openCount(p) > 0 && <span className="nav-count">{openCount(p)}</span>}
+            {openCount(t) > 0 && <span className="nav-count">{openCount(t)}</span>}
           </Link>
         ))}
-        {projects?.length === 0 && (
-          <button className="nav-item nav-muted" onClick={newProject}>
+        {teams?.length === 0 && (
+          <button className="nav-item nav-muted" onClick={newTeam}>
             <PlusIcon />
-            <span className="nav-label">Create a project</span>
+            <span className="nav-label">Create a team</span>
           </button>
         )}
       </nav>
-      <AccountMenu name={name} changeName={changeName} onMembers={onMembers} />
+      <AccountMenu />
     </aside>
   );
 }
 
-/** The sidebar footer: who you are, and name, members and sign out as they apply. */
-function AccountMenu({ name, changeName, onMembers }: { name: string; changeName?: () => void; onMembers: () => void }) {
-  const me = getMe();
+/** The sidebar footer: who you are, with settings and sign-out. */
+function AccountMenu() {
+  const { workspace } = useApp();
+  const { user } = getMe();
   const options = [
-    ...(changeName ? [{ value: "name", label: "Change name" }] : []),
-    ...(me.admin ? [{ value: "members", label: "Members" }] : []),
-    // In open mode only a member cookie can be signed out of; root has nothing to leave.
-    ...(me.member || !me.open ? [{ value: "signout", label: "Sign out" }] : []),
+    { value: "/settings/account", label: "Settings" },
+    ...(workspace?.role === "admin" ? [{ value: "/settings/workspace", label: "Workspace settings" }] : []),
+    { value: "signout", label: "Sign out" },
   ];
-  const pick = (value: string) => {
-    if (value === "name") changeName?.();
-    else if (value === "members") onMembers();
-    else api.logout().then(() => location.reload(), errorToast);
-  };
-  const who = (
-    <>
-      <Avatar name={name} />
-      <span className="nav-label" dir="auto">
-        {name}
-      </span>
-    </>
-  );
-  if (!options.length) return <div className="whoami">{who}</div>;
+  const pick = (value: string) =>
+    value === "signout" ? auth.logout().then(() => location.replace("/login"), errorToast) : navigate(value);
   return (
     <Picker label="Account" options={options} selected={[]} onPick={pick} className="whoami">
-      {who}
+      <Avatar name={user.name} />
+      <span className="nav-label" dir="auto">
+        {user.name}
+      </span>
     </Picker>
   );
 }
@@ -369,116 +351,39 @@ function moveFocus(delta: number): boolean {
   return true;
 }
 
-/** A `#login=<token>` link signs in once. The token leaves the address bar before anything else runs. */
-function takeLoginLink(): string | null {
-  const match = /^#login=([^&]+)/.exec(location.hash);
-  if (!match) return null;
-  history.replaceState(null, "", location.pathname + location.search);
-  try {
-    return decodeURIComponent(match[1]!);
-  } catch {
-    return null; // a mangled link is no link
-  }
-}
-const loginLink = takeLoginLink();
-// Pasting a login link into a tab already on Docket only changes the hash: reload to use it.
-addEventListener("hashchange", () => location.hash.startsWith("#login=") && location.reload());
+// Pasting a sign-in link into a tab already on /login only changes the hash: reload to use it.
+addEventListener("hashchange", () => location.pathname === "/login" && location.hash && location.reload());
 
 /**
- * Signs in from a login link, then asks who we are. The login screen shows on any 401;
- * a member goes straight in; otherwise the name screen shows until this browser has a name.
+ * Setup and sign-in live outside the app. Everything else needs a session: ask who we are,
+ * and send any 401 (now or later, say a revoked session) to the sign-in screen.
  */
 function Root() {
-  const [locked, setLocked] = useState(false);
-  const [linkError, setLinkError] = useState("");
-  const [ready, setReady] = useState(false);
-  const [name, setNameState] = useState(getName);
+  const [state, setState] = useState<"loading" | "ready" | "offline">("loading");
+  const path = location.pathname;
+  const signedOut = path === "/setup" || path === "/login";
   useEffect(() => {
-    setOnUnauthorized(() => setLocked(true));
-    if (loginLink) {
-      api.login(loginLink).then(
-        () => location.reload(),
-        (err) => {
-          const revoked = err instanceof HttpError && err.status === 401;
-          setLinkError(revoked ? "This sign-in link is invalid or was revoked." : String(err.message));
-          setLocked(true);
-        },
-      );
-      return;
-    }
-    // Offline with nothing cached, carry on as root: this browser's name, as before members existed.
-    loadMe()
-      .catch(() => {})
-      .finally(() => setReady(true));
-  }, []);
-  if (locked) return <Login initialError={linkError} />;
-  if (!ready) return null;
-  const member = getMe().member;
-  if (member) return <App name={member.name} />;
-  if (!name) return <NameScreen onDone={setNameState} />;
-  return <App name={name} onChangeName={() => setNameState(null)} />;
-}
-
-function Login({ initialError }: { initialError: string }) {
-  const [token, setToken] = useState("");
-  const [error, setError] = useState(initialError);
-  const submit = (e: React.FormEvent) => {
-    e.preventDefault();
-    api.login(token.trim()).then(
-      () => location.reload(),
-      (err) => setError(err instanceof HttpError && err.status === 401 ? "Wrong token" : String(err.message)),
+    if (signedOut) return;
+    setOnUnauthorized(() => location.replace("/login"));
+    loadMe().then(
+      () => setState("ready"),
+      () => setState((s) => (s === "loading" ? "offline" : s)),
     );
-  };
-  return (
-    <form className="empty login" onSubmit={submit}>
-      <Logo />
-      <h2>Docket</h2>
-      <p>Enter your access token: your own, or the server’s DOCKET_TOKEN.</p>
-      <input
-        className="input"
-        type="password"
-        autoFocus
-        autoComplete="current-password"
-        placeholder="Token"
-        value={token}
-        onChange={(e) => setToken(e.target.value)}
-      />
-      {error && <small className="login-error">{error}</small>}
-      <button className="btn btn-primary" disabled={!token.trim()}>
-        Sign in
-      </button>
-    </form>
-  );
-}
-
-function NameScreen({ onDone }: { onDone: (name: string) => void }) {
-  const [value, setValue] = useState(() => getName() ?? "");
-  const submit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const name = value.trim();
-    if (!name) return;
-    setName(name);
-    onDone(name);
-  };
-  return (
-    <form className="empty login" onSubmit={submit}>
-      <Logo />
-      <h2>What should we call you?</h2>
-      <p>Your name is shown on comments and edits you make here.</p>
-      <input
-        className="input"
-        type="text"
-        autoFocus
-        autoComplete="name"
-        placeholder="Your name"
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-      />
-      <button className="btn btn-primary" disabled={!value.trim()}>
-        Continue
-      </button>
-    </form>
-  );
+  }, []);
+  if (path === "/setup") return <Setup />;
+  if (path === "/login") return <Login />;
+  if (state === "offline")
+    return (
+      <div className="empty login">
+        <Logo />
+        <h2>Can't reach Docket</h2>
+        <p>Check your connection and try again.</p>
+        <button className="btn btn-primary" onClick={() => location.reload()}>
+          Retry
+        </button>
+      </div>
+    );
+  return state === "ready" ? <App /> : null;
 }
 
 createRoot(document.getElementById("root")!).render(
