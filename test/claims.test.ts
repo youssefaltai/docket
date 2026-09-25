@@ -119,9 +119,11 @@ test("creating an issue bumps and publishes its parent and blockers", async () =
   await new Promise((resolve) => (ws.onopen = resolve));
   ws.onmessage = (e) => events.push(JSON.parse(String(e.data)).id);
   const child = (await s.api("POST", "/api/issues", { project: "CLM", title: "Child", parent: parent.id, blockedBy: [blocker.id] })).body;
-  await Bun.sleep(50);
+  // Wait for the events rather than a fixed time, so a busy machine can't make this flaky.
+  const want = [child.id, parent.id, blocker.id];
+  for (let t = 0; t < 200 && !want.every((id) => events.includes(id)); t++) await Bun.sleep(10);
   ws.close();
-  expect(events).toEqual(expect.arrayContaining([child.id, parent.id, blocker.id]));
+  expect(events).toEqual(expect.arrayContaining(want));
   expect((await s.api("GET", `/api/issues/${parent.id}`)).body.updatedAt > parent.updatedAt).toBeTrue();
   expect((await s.api("GET", `/api/issues/${blocker.id}`)).body.updatedAt > blocker.updatedAt).toBeTrue();
 });
