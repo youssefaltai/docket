@@ -40,6 +40,7 @@ describe("signed in", () => {
     s = await startServer();
     await s.api("POST", "/api/teams", { key: "AUT", workspace: s.workspace, name: "Auth" });
     await s.user("ana");
+    await s.user("sid");
   });
   afterAll(() => s.stop());
 
@@ -98,7 +99,7 @@ describe("signed in", () => {
   test("sessions can be listed and signed out, one or all but this one", async () => {
     const sessions = [];
     for (let i = 0; i < 3; i++) {
-      const code = (await s.as("ana").api("POST", "/api/sign-in-links")).body.code;
+      const code = (await s.as("sid").api("POST", "/api/sign-in-links")).body.code;
       sessions.push(s.with({ cookie: sessionCookie((await s.anon.api("POST", "/api/auth/redeem", { code })).headers) }, "cookie"));
     }
     const [mine, other, third] = sessions as [typeof sessions[0], typeof sessions[0], typeof sessions[0]];
@@ -113,7 +114,7 @@ describe("signed in", () => {
     expect((await third.api("GET", "/api/me")).status).toBe(401);
     expect((await mine.api("GET", "/api/me")).status).toBe(200);
     // Signing out of every session leaves API keys alone.
-    expect((await s.as("ana").api("GET", "/api/me")).status).toBe(200);
+    expect((await s.as("sid").api("GET", "/api/me")).status).toBe(200);
 
     expect((await mine.api("POST", "/api/logout")).status).toBeLessThan(300);
     expect((await mine.api("GET", "/api/me")).status).toBe(401);

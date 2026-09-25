@@ -19,9 +19,9 @@ const patch = (username: string, body: object, by = s.admin) => by.api("PATCH", 
 
 test("/api/me says who you are and where you belong", async () => {
   const me = (await s.api("GET", "/api/me")).body;
-  expect(me.user).toEqual({ username: "admin", name: "Admin", kind: "person" });
+  expect(me.user).toMatchObject({ username: "admin", name: "Admin", kind: "person", email: "admin@example.com" });
   expect(me.workspaces).toEqual([{ key: ws, name: "Acme", role: "admin" }]);
-  expect((await s.as("bot").api("GET", "/api/me")).body.user).toEqual({ username: "bot", name: "Bot", kind: "agent" });
+  expect((await s.as("bot").api("GET", "/api/me")).body.user).toMatchObject({ username: "bot", name: "Bot", kind: "agent" });
 });
 
 test("members lists people and agents with their roles", async () => {
@@ -51,8 +51,9 @@ test("usernames are validated and globally unique", async () => {
     const { code } = (await s.api("POST", `/api/workspaces/${ws}/invites`, { email: `${Math.random()}@example.com`, role: "member" })).body;
     return (await s.anon.api("POST", "/api/auth/redeem", { code, name: "N", username })).status;
   };
-  for (const bad of ["A", "Ana2", "has space", "x", "a".repeat(33), "ümlaut"]) expect([bad, await redeem(bad)]).toEqual([bad, 400]);
+  for (const bad of ["A", "has space", "x", "a".repeat(33), "ümlaut"]) expect([bad, await redeem(bad)]).toEqual([bad, 400]);
   expect(await redeem("ana")).toBe(409);
+  expect(await redeem("ANA")).toBe(409); // usernames fold to lowercase
   expect(await redeem("bot")).toBe(409);
   expect((await s.api("POST", `/api/workspaces/${ws}/agents`, { name: "Dup", username: "ana" })).status).toBe(409);
 });
@@ -104,7 +105,7 @@ test("events only reach members of the event's workspace", async () => {
   admin.close();
 });
 
-test("suspending shuts every door, and unsuspending reopens them", async () => {
+test("suspending from your last workspace signs you out everywhere; reinstating lets you sign in again", async () => {
   const sam = await s.user("sam");
   const cookie = s.as("sam", "cookie");
   const socket = sam.ws();
@@ -127,7 +128,8 @@ test("suspending shuts every door, and unsuspending reopens them", async () => {
   other.close();
 
   expect((await patch("sam", { suspended: false })).status).toBe(200);
-  expect((await sam.api("GET", "/api/me")).status).toBe(200);
+  expect((await sam.api("GET", "/api/me")).status).toBe(401);
+  expect((await (await s.signIn("sam")).api("GET", "/api/me")).status).toBe(200);
 });
 
 test("an agent's token rotates and its sockets close; deleting suspends it and kills its keys", async () => {
@@ -165,6 +167,7 @@ test("the last active admin can't be suspended or demoted", async () => {
   expect((await patch("admin", { role: "member" })).status).toBe(409);
   // With a second active admin it's allowed, and the new last admin is then protected.
   await patch("eve", { suspended: false });
+  await s.signIn("eve");
   expect((await patch("admin", { role: "member" })).status).toBe(200);
   expect((await patch("eve", { role: "member" }, s.as("eve"))).status).toBe(409);
   expect((await patch("eve", { suspended: true }, s.as("eve"))).status).toBe(409);
