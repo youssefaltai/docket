@@ -359,7 +359,7 @@ export function NewWorkspaceModal({ onCreate, onClose }: { onCreate: (w: Workspa
       >
         <label className="field">
           <span>Name</span>
-          <input className="input" autoFocus dir="auto" placeholder="Default" value={name} onChange={(e) => setName(e.target.value)} />
+          <input className="input" autoFocus dir="auto" placeholder="Acme" value={name} onChange={(e) => setName(e.target.value)} />
           <small>A workspace groups related projects, with their issues and docs.</small>
         </label>
         <button type="submit" hidden />

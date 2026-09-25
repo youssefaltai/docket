@@ -14,7 +14,7 @@ import {
 import * as db from "./db.ts";
 
 const INSTRUCTIONS = `Docket is a small issue tracker shared by a human and agents.
-- Workspace → project → issues and docs. A workspace (e.g. "default") groups related projects; call list_projects to see which workspace each project is in, and pass \`workspace\` to list_issues or list_documents to stay inside one.
+- Workspace → project → issues and docs. A workspace (e.g. "acme") groups related projects; call list_projects to see which workspace each project is in, and pass \`workspace\` to list_issues or list_documents to stay inside one.
 - Projects have a 2–5 letter key (e.g. BRD), unique across all workspaces. Issues are identified as KEY-number, e.g. BRD-12.
 - Statuses: backlog, todo, in_progress, in_review, done, canceled.
 - Priority: 0 none, 1 urgent, 2 high, 3 medium, 4 low.
@@ -23,7 +23,7 @@ const INSTRUCTIONS = `Docket is a small issue tracker shared by a human and agen
 
 const identifier = z.string().describe('Issue identifier: project key + number, e.g. "BRD-12" (case-insensitive)');
 const projectKey = z.string().describe('Project key, e.g. "BRD"');
-const workspaceKey = z.string().describe('Workspace key, e.g. "default" (see list_workspaces)');
+const workspaceKey = z.string().describe('Workspace key, e.g. "acme" (see list_workspaces)');
 const status = z.enum(STATUSES).describe("backlog | todo | in_progress | in_review | done | canceled");
 const priority = z.literal(PRIORITIES).describe("0 none, 1 urgent, 2 high, 3 medium, 4 low");
 const labels = z.array(z.string()).describe('Label names, e.g. ["bug", "ui"]');
@@ -131,7 +131,7 @@ function createServer(): McpServer {
       description:
         "Create a workspace to group a separate body of work's projects. Check list_workspaces first; only create one when asked to.",
       inputSchema: {
-        key: z.string().optional().describe('URL-safe id (a-z, 0-9, dashes), e.g. "default"; default derived from the name'),
+        key: z.string().optional().describe('URL-safe id (a-z, 0-9, dashes), e.g. "acme"; default derived from the name'),
         name: z.string(),
       },
     },
@@ -236,7 +236,7 @@ function createServer(): McpServer {
         status: status.optional().describe("Default todo"),
         priority: priority.optional().describe("0 none (default), 1 urgent, 2 high, 3 medium, 4 low"),
         labels: labels.optional(),
-        assignee: z.string().optional().describe("Who owns it, e.g. alice or claude"),
+        assignee: z.string().optional().describe("Who owns it: a person's name, or \"claude\" for an agent"),
         parent: identifier.optional().describe("Parent issue identifier, making this a sub-issue"),
         blockedBy: blockedBy.optional(),
       },
