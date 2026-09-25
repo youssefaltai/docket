@@ -83,14 +83,16 @@ test("each credential has its own rate limit: a burst, then 429 with Retry-After
   const quiet = await s.agent("quiet");
   const statuses: number[] = [];
   let retryAfter: string | null = null;
-  for (let round = 0; round < 8 && !statuses.includes(429); round++) {
-    const batch = await Promise.all(Array.from({ length: 150 }, () => noisy.api("GET", "/api/me")));
+  // Small batches: enough to outrun the refill (20/s), without opening hundreds of sockets on a busy machine.
+  for (let round = 0; round < 60 && !statuses.includes(429); round++) {
+    const batch = await Promise.all(Array.from({ length: 20 }, () => noisy.api("GET", "/api/me")));
     for (const r of batch) {
       statuses.push(r.status);
       if (r.status === 429) retryAfter = r.headers.get("retry-after");
     }
   }
   expect(statuses).toContain(429);
+  expect(statuses.every((x) => x === 200 || x === 429)).toBeTrue();
   expect(statuses.filter((x) => x === 200).length).toBeGreaterThanOrEqual(500); // a generous burst
   expect(Number(retryAfter)).toBeGreaterThanOrEqual(1);
   // Someone else isn't slowed down.
