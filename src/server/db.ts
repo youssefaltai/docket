@@ -938,7 +938,8 @@ export function updateDocument(slug: string, patch: DocumentPatch): Document {
   }
   if (Object.keys(cols).length === 0) return getDocument(row.slug);
 
-  const time = now();
+  // updated_at is the version token for baseUpdatedAt, so it moves forward on every save, even within a millisecond.
+  const time = new Date(Math.max(Date.now(), Date.parse(row.updated_at) + 1)).toISOString();
   const next = { ...row, ...cols, updated_at: time, updated_by: author };
   db.transaction(() => {
     const names = Object.keys(cols).concat("updated_at", "updated_by");
