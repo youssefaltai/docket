@@ -74,7 +74,19 @@ function App({ name, onChangeName }: { name: string; onChangeName: () => void })
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let stale = true;
-    const loadIndex = () => api.issues().then(setIssueIndex, () => {});
+    let warned = false; // surface a failure once, not on every retry
+    const loadIndex = () =>
+      api.issues().then(
+        (list) => {
+          warned = false;
+          setIssueIndex(list);
+        },
+        (e) => {
+          if (warned) return;
+          warned = true;
+          errorToast(e);
+        },
+      );
     loadIndex();
     const stop = subscribe((event) => {
       if (event?.entity !== "document") stale = true;
@@ -98,18 +110,21 @@ function App({ name, onChangeName }: { name: string; onChangeName: () => void })
 
   useEffect(() => setNavOpen(false), [path]);
 
+  const workspace = workspaces?.find((w) => w.key === workspaceKey) ?? workspaces?.[0] ?? null;
+
+  // Labels and assignees for pickers/filters: scoped to the current workspace, derived
+  // from its issues (the /api/labels endpoint isn't workspace-scoped server-side).
+  const workspaceKeyForDirectory = workspace?.key;
   const loadDirectory = useCallback(() => {
-    api.labels().then(setLabels, () => {});
-    api.issues().then(
+    api.issues(workspaceKeyForDirectory ? { workspace: workspaceKeyForDirectory } : {}).then(
       (list) => {
         const names = list.map((i) => i.assignee).filter((a): a is string => !!a);
         setPeople([...new Set([...defaultPeople(name), ...names])].sort((a, b) => a.localeCompare(b)));
+        setLabels([...new Set(list.flatMap((i) => i.labels))].sort((a, b) => a.localeCompare(b)));
       },
       () => {},
     );
-  }, [name]);
-
-  const workspace = workspaces?.find((w) => w.key === workspaceKey) ?? workspaces?.[0] ?? null;
+  }, [name, workspaceKeyForDirectory]);
   const workspaceProjects = projects && workspace ? projects.filter((p) => p.workspace === workspace.key) : null;
   const setWorkspace = useCallback((key: string) => {
     setWorkspaceKey(key);

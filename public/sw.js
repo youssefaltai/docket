@@ -13,11 +13,19 @@ self.addEventListener("activate", (event) => {
   );
 });
 
+// A 401 means the session is no longer valid: drop any /api/* responses cached while it
+// was, so a later offline fallback can't serve another session's data.
+async function clearApiCache(cache) {
+  const keys = await cache.keys();
+  await Promise.all(keys.filter((k) => new URL(k.url).pathname.startsWith("/api/")).map((k) => cache.delete(k)));
+}
+
 async function networkFirst(request, fallbackUrl) {
   const cache = await caches.open(CACHE);
   try {
     const response = await fetch(request);
     if (response.ok) cache.put(fallbackUrl ?? request, response.clone());
+    else if (response.status === 401 && new URL(request.url).pathname.startsWith("/api/")) await clearApiCache(cache);
     return response;
   } catch (err) {
     const cached = await cache.match(fallbackUrl ?? request);

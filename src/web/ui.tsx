@@ -629,6 +629,7 @@ export function Modal({
   onSubmit?: () => void;
   children: ReactNode;
 }) {
+  const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const prev = document.activeElement as HTMLElement | null;
     return () => prev?.focus?.({ preventScroll: true });
@@ -641,6 +642,7 @@ export function Modal({
       }}
     >
       <div
+        ref={ref}
         className={cls("modal", className)}
         role="dialog"
         aria-modal="true"
@@ -653,6 +655,20 @@ export function Modal({
           } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
             e.preventDefault();
             onSubmit?.();
+          } else if (e.key === "Tab") {
+            // Trap focus: cycle from the last focusable back to the first, and vice versa.
+            const focusable = [
+              ...ref.current!.querySelectorAll<HTMLElement>(
+                'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+              ),
+            ].filter((el) => el.offsetParent !== null);
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+            if (!first || !last) return;
+            if (e.shiftKey ? document.activeElement === first : document.activeElement === last) {
+              e.preventDefault();
+              (e.shiftKey ? last : first).focus();
+            }
           }
         }}
       >
