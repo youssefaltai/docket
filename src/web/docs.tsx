@@ -1,26 +1,28 @@
 // Documents: the docs list, the doc page (reading, editing, outline, history) and its editor.
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
-import type { Document, DocumentSummary, DocumentVersion, DocumentVersionSummary } from "../shared/types";
+import type { Document, DocumentPatch, DocumentSummary, DocumentVersion, DocumentVersionSummary } from "../shared/types";
 import { HttpError, api } from "./api";
-import { Comments, TitleEditor } from "./issue";
 import { ProjectPicker } from "./pickers";
 import {
   Avatar,
   ChevronRightIcon,
   CloseIcon,
+  Comments,
   DocIcon,
   EmptyState,
   HistoryIcon,
   Kbd,
   Link,
+  ListHeader,
   Markdown,
   MenuButton,
   PlusIcon,
   ProjectMark,
-  ProjectTabs,
-  ProjectTitle,
+  ProjectNotFound,
   SearchIcon,
+  Section,
   StatusIcon,
+  TitleEditor,
   TrashIcon,
   ago,
   cls,
@@ -32,19 +34,17 @@ import {
   toast,
   useApp,
   useDebounced,
-  useLive,
+  useFetch,
+  useKeydown,
 } from "./ui";
 
 // ---------- Docs list ----------
 
 export function DocsView({ projectKey }: { projectKey: string | null }) {
   const app = useApp();
-  const live = useLive();
   const project = projectKey ? app.projects?.find((p) => p.key === projectKey) : undefined;
   const [search, setSearch] = useState("");
-  const [docs, setDocs] = useState<DocumentSummary[] | null>(null);
   const q = useDebounced(search.trim(), 150);
-  const seq = useRef(0);
 
   useEffect(() => {
     nav.lastDocs = location.pathname;
@@ -53,18 +53,11 @@ export function DocsView({ projectKey }: { projectKey: string | null }) {
 
   // "All docs" is the current workspace's; wait until it's known.
   const workspace = projectKey ? undefined : app.workspace?.key;
-  useEffect(() => {
-    if (!projectKey && !workspace) return;
-    const n = ++seq.current;
-    api
-      .documents({ project: projectKey ?? undefined, workspace, q: q || undefined })
-      .then((list) => n === seq.current && setDocs(list))
-      .catch((e) => {
-        if (n !== seq.current) return;
-        errorToast(e);
-        setDocs((cur) => cur ?? []);
-      });
-  }, [projectKey, workspace, q, live]);
+  const { data: docs } = useFetch(
+    projectKey || workspace ? () => api.documents({ project: projectKey ?? undefined, workspace, q: q || undefined }) : null,
+    [projectKey, workspace, q],
+  );
+  const newDoc = () => app.newDoc(projectKey ?? undefined);
 
   // Server order is project key, then position; keep it while grouping.
   const groups = new Map<string, DocumentSummary[]>();
@@ -72,11 +65,7 @@ export function DocsView({ projectKey }: { projectKey: string | null }) {
 
   let body;
   if (projectKey && app.projects && !project) {
-    body = (
-      <EmptyState title="Project not found" action={<Link className="btn" to="/docs">All docs</Link>}>
-        There’s no project with the key {projectKey}.
-      </EmptyState>
-    );
+    body = <ProjectNotFound projectKey={projectKey} back="/docs" backLabel="All docs" />;
   } else if (!docs) {
     body = null;
   } else if (docs.length === 0) {
@@ -97,7 +86,7 @@ export function DocsView({ projectKey }: { projectKey: string | null }) {
         icon={<DocIcon />}
         title="No docs yet"
         action={
-          <button className="btn btn-primary" onClick={() => app.newDoc(projectKey ?? undefined)}>
+          <button className="btn btn-primary" onClick={newDoc}>
             New doc
           </button>
         }
@@ -135,45 +124,20 @@ export function DocsView({ projectKey }: { projectKey: string | null }) {
 
   return (
     <>
-      <header className="header">
-        <MenuButton />
-        <div className="header-title">
-          {project ? <ProjectTitle project={project} /> : <span>{projectKey ?? "All docs"}</span>}
-          {docs && docs.length > 0 && <span className="header-count">{docs.length}</span>}
-        </div>
-        {project && <ProjectTabs project={project.key} view="docs" />}
-        <button className="icon-btn mobile-only" onClick={() => app.newDoc(projectKey ?? undefined)} aria-label="New doc">
-          <PlusIcon />
+      <ListHeader
+        project={project}
+        title={projectKey ?? "All docs"}
+        count={docs?.length ?? 0}
+        view="docs"
+        onNew={newDoc}
+        search={search}
+        onSearch={setSearch}
+        placeholder="Search docs"
+      >
+        <button className="btn btn-sm desktop-only" onClick={newDoc}>
+          <PlusIcon /> New doc
         </button>
-        <div className="controls">
-          <label className="search">
-            <SearchIcon />
-            <input
-              id="search"
-              type="search"
-              placeholder="Search docs"
-              value={search}
-              autoComplete="off"
-              dir="auto"
-              onChange={(e) => setSearch(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") {
-                  e.preventDefault();
-                  if (search) setSearch("");
-                  else e.currentTarget.blur();
-                } else if (e.key === "ArrowDown" || e.key === "Enter") {
-                  e.preventDefault();
-                  document.querySelector<HTMLElement>("[data-nav]")?.focus();
-                }
-              }}
-            />
-            {!search && <Kbd>/</Kbd>}
-          </label>
-          <button className="btn btn-sm desktop-only" onClick={() => app.newDoc(projectKey ?? undefined)}>
-            <PlusIcon /> New doc
-          </button>
-        </div>
-      </header>
+      </ListHeader>
       <div className="content">{body}</div>
     </>
   );
@@ -205,15 +169,11 @@ const SAVE_LABELS: Record<SaveState, string> = { idle: "", saving: "Saving…", 
 
 export function DocPage({ slug }: { slug: string }) {
   const app = useApp();
-  const live = useLive();
-  const [doc, setDoc] = useState<Document | null>(null);
-  const [missing, setMissing] = useState(false);
-  const [tick, setTick] = useState(0);
+  const { data: doc, setData: setDoc, missing, reload, invalidate, isLatest } = useFetch(() => api.document(slug), [slug]);
   const [editing, setEditing] = useState(() => nav.editDoc === slug);
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [history, setHistory] = useState(false);
   const [preview, setPreview] = useState<DocumentVersion | null>(null);
-  const seq = useRef(0);
   const scroller = useRef<HTMLDivElement>(null);
   const body = useRef<HTMLDivElement>(null);
   const startAt = useRef(0); // scroll ratio to open the editor at
@@ -223,22 +183,6 @@ export function DocPage({ slug }: { slug: string }) {
   useEffect(() => {
     if (nav.editDoc === slug) nav.editDoc = "";
   }, [slug]);
-
-  useEffect(() => {
-    const n = ++seq.current;
-    api
-      .document(slug)
-      .then((d) => {
-        if (n !== seq.current) return;
-        setDoc(d);
-        setMissing(false);
-      })
-      .catch((e) => {
-        if (n !== seq.current) return;
-        if (e instanceof HttpError && e.status === 404) setMissing(true);
-        else errorToast(e);
-      });
-  }, [slug, live, tick]);
 
   useEffect(() => {
     document.title = `${doc?.title || "Doc"} · Docket`;
@@ -267,9 +211,13 @@ export function DocPage({ slug }: { slug: string }) {
     setSaveState("idle");
     return true;
   };
+  const closeHistory = () => {
+    setHistory(false);
+    setPreview(null);
+  };
 
-  const keys = useRef<(e: KeyboardEvent) => void>(() => {});
-  keys.current = (e) => {
+  // Capture phase: runs before the app's global Escape (which leaves the page).
+  useKeydown((e) => {
     if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey || isEditable(e.target)) return;
     if (document.querySelector(".pop, .backdrop")) return;
     if ((e.key === "e" || e.key === "E") && doc && !editing) {
@@ -281,13 +229,7 @@ export function DocPage({ slug }: { slug: string }) {
       else if (preview) setPreview(null);
       else setHistory(false);
     }
-  };
-  useEffect(() => {
-    // Capture phase: runs before the app's global Escape (which leaves the page).
-    const handler = (e: KeyboardEvent) => keys.current(e);
-    addEventListener("keydown", handler, true);
-    return () => removeEventListener("keydown", handler, true);
-  }, []);
+  }, true);
 
   const outline = useOutline(body, scroller);
 
@@ -324,7 +266,7 @@ export function DocPage({ slug }: { slug: string }) {
           )}
           <button
             className="icon-btn"
-            onClick={() => (history ? (setHistory(false), setPreview(null)) : stopEdit() && setHistory(true))}
+            onClick={() => (history ? closeHistory() : stopEdit() && setHistory(true))}
             aria-label="Version history"
             aria-expanded={history}
             title="Version history"
@@ -353,13 +295,13 @@ export function DocPage({ slug }: { slug: string }) {
   if (!doc) return header;
 
   const apply = (fresh: Document) => {
-    ++seq.current; // drop any in-flight fetch that predates this change
+    invalidate(); // drop any in-flight fetch that predates this change
     setDoc(fresh);
   };
-  const patch = (p: Parameters<typeof api.updateDocument>[1]) =>
+  const patch = (p: DocumentPatch) =>
     api.updateDocument(doc.slug, p).then(apply, (e) => {
       errorToast(e);
-      setTick((t) => t + 1);
+      reload();
     });
 
   const restore = async (v: DocumentVersion) => {
@@ -432,7 +374,7 @@ export function DocPage({ slug }: { slug: string }) {
                   onSaved={apply}
                   onLocal={(content) => setDoc((d) => d && { ...d, content })}
                   onStatus={setSaveState}
-                  onConflict={() => setTick((t) => t + 1)}
+                  onConflict={reload}
                   onExit={stopEdit}
                 />
               ) : shown.trim() ? (
@@ -448,11 +390,7 @@ export function DocPage({ slug }: { slug: string }) {
               {!editing && !preview && (
                 <>
                   {doc.issues.length > 0 && (
-                    <section className="section">
-                      <div className="section-head">
-                        <h3>Issues in this doc</h3>
-                        <span className="count">{doc.issues.length}</span>
-                      </div>
+                    <Section title="Issues in this doc" count={doc.issues.length}>
                       <div className="subs">
                         {doc.issues.map((i) => (
                           <div className="row sub" key={i.id}>
@@ -464,14 +402,14 @@ export function DocPage({ slug }: { slug: string }) {
                           </div>
                         ))}
                       </div>
-                    </section>
+                    </Section>
                   )}
                   <Comments
                     comments={doc.comments}
                     onComment={async (text) => {
-                      const n = ++seq.current;
+                      const n = invalidate();
                       const fresh = await api.commentDocument(doc.slug, text);
-                      if (n === seq.current) setDoc(fresh);
+                      if (isLatest(n)) setDoc(fresh);
                     }}
                   />
                 </>
@@ -506,10 +444,7 @@ export function DocPage({ slug }: { slug: string }) {
               if (current) return setPreview(null);
               api.version(doc.slug, v.id).then(setPreview, errorToast);
             }}
-            onClose={() => {
-              setHistory(false);
-              setPreview(null);
-            }}
+            onClose={closeHistory}
           />
         )}
       </div>

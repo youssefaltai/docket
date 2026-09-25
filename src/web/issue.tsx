@@ -1,12 +1,13 @@
 // Issue page: title, description, sub-issues, comments and the properties panel.
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { PRIORITY_LABELS, STATUS_LABELS, type Comment, type Issue, type IssuePatch } from "../shared/types";
-import { HttpError, api } from "./api";
+import { PRIORITY_LABELS, STATUS_LABELS, type Issue, type IssuePatch } from "../shared/types";
+import { api } from "./api";
 import { AssigneePicker, BlockedByPicker, LabelsPicker, ParentPicker, PriorityPicker, StatusPicker } from "./pickers";
 import {
   Avatar,
   ago,
   ChevronRightIcon,
+  Comments,
   CopyIcon,
   DocIcon,
   EmptyState,
@@ -21,7 +22,9 @@ import {
   PlusIcon,
   PriorityIcon,
   ProjectMark,
+  Section,
   StatusIcon,
+  TitleEditor,
   TrashIcon,
   errorToast,
   fullDate,
@@ -31,33 +34,12 @@ import {
   toast,
   useApp,
   useAutosize,
-  useLive,
+  useFetch,
 } from "./ui";
 
 export function IssuePage({ id }: { id: string }) {
   const app = useApp();
-  const live = useLive();
-  const [issue, setIssue] = useState<Issue | null>(null);
-  const [missing, setMissing] = useState(false);
-  const [tick, setTick] = useState(0);
-  const seq = useRef(0);
-  const reload = () => setTick((t) => t + 1);
-
-  useEffect(() => {
-    const n = ++seq.current;
-    api
-      .issue(id)
-      .then((i) => {
-        if (n !== seq.current) return;
-        setIssue(i);
-        setMissing(false);
-      })
-      .catch((e) => {
-        if (n !== seq.current) return;
-        if (e instanceof HttpError && e.status === 404) setMissing(true);
-        else errorToast(e);
-      });
-  }, [id, live, tick]);
+  const { data: issue, setData: setIssue, missing, reload, invalidate, isLatest } = useFetch(() => api.issue(id), [id]);
 
   useEffect(() => {
     document.title = `${issue ? `${issue.id} ${issue.title}` : id} · Docket`;
@@ -100,13 +82,13 @@ export function IssuePage({ id }: { id: string }) {
   // can't clobber one another's optimistic update; the seq guard only drops a response
   // that's been superseded by another call of the *same* kind.
   const patch = (p: IssuePatch) => {
-    const n = ++seq.current;
+    const n = invalidate();
     const now = new Date().toISOString();
     setIssue((cur) => (cur ? { ...cur, ...p, updatedAt: now } : cur));
     api
       .updateIssue(issue.id, p)
       .then((fresh) => {
-        if (n !== seq.current) return;
+        if (!isLatest(n)) return;
         setIssue((cur) => (cur ? { ...fresh, children: cur.children } : cur));
       })
       .catch((e) => {
@@ -116,14 +98,14 @@ export function IssuePage({ id }: { id: string }) {
   };
 
   const patchChild = (childId: string, p: IssuePatch) => {
-    const n = ++seq.current;
+    const n = invalidate();
     setIssue((cur) =>
       cur ? { ...cur, children: cur.children.map((c) => (c.id === childId ? { ...c, ...p } : c)) } : cur,
     );
     api
       .updateIssue(childId, p)
       .then((fresh) => {
-        if (n !== seq.current) return;
+        if (!isLatest(n)) return;
         setIssue((cur) =>
           cur
             ? {
@@ -142,9 +124,9 @@ export function IssuePage({ id }: { id: string }) {
   };
 
   const comment = async (body: string) => {
-    const n = ++seq.current;
+    const n = invalidate();
     const fresh = await api.comment(issue.id, body);
-    if (n === seq.current) setIssue(fresh);
+    if (isLatest(n)) setIssue(fresh);
   };
 
   const remove = async () => {
@@ -200,55 +182,6 @@ export function IssuePage({ id }: { id: string }) {
         </aside>
       </div>
     </>
-  );
-}
-
-export function TitleEditor({
-  value,
-  onSave,
-  className = "issue-title",
-  placeholder = "Issue title",
-}: {
-  value: string;
-  onSave: (v: string) => void;
-  className?: string;
-  placeholder?: string;
-}) {
-  const [draft, setDraft] = useState(value);
-  const ref = useRef<HTMLTextAreaElement>(null);
-  const skip = useRef(false);
-  useEffect(() => {
-    if (document.activeElement !== ref.current) setDraft(value);
-  }, [value]);
-  useAutosize(ref, draft);
-  return (
-    <textarea
-      ref={ref}
-      className={className}
-      rows={1}
-      dir="auto"
-      aria-label="Title"
-      placeholder={placeholder}
-      value={draft}
-      onChange={(e) => setDraft(e.target.value.replace(/\n/g, " "))}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") {
-          e.preventDefault();
-          e.currentTarget.blur();
-        } else if (e.key === "Escape") {
-          e.preventDefault();
-          skip.current = true;
-          setDraft(value);
-          e.currentTarget.blur();
-        }
-      }}
-      onBlur={() => {
-        const v = draft.trim();
-        if (!skip.current && v && v !== value) onSave(v);
-        else setDraft(value);
-        skip.current = false;
-      }}
-    />
   );
 }
 
@@ -330,22 +263,18 @@ function SubIssues({ issue, onPatch }: { issue: Issue; onPatch: (id: string, p: 
   const children = sortIssues(issue.children);
   const done = children.filter((c) => c.status === "done").length;
   return (
-    <section className="section">
-      <div className="section-head">
-        <h3>Sub-issues</h3>
-        {children.length > 0 && (
-          <span className="count">
-            {done}/{children.length}
-          </span>
-        )}
-        <span className="grow" />
+    <Section
+      title="Sub-issues"
+      count={children.length > 0 ? `${done}/${children.length}` : undefined}
+      action={
         <button
           className="btn btn-ghost btn-sm"
           onClick={() => app.newIssue({ project: issue.project, parent: issue.id, status: "todo" })}
         >
           <PlusIcon /> Add
         </button>
-      </div>
+      }
+    >
       {children.length > 0 && (
         <div className="subs">
           {children.map((c) => (
@@ -362,18 +291,14 @@ function SubIssues({ issue, onPatch }: { issue: Issue; onPatch: (id: string, p: 
           ))}
         </div>
       )}
-    </section>
+    </Section>
   );
 }
 
 function Docs({ issue }: { issue: Issue }) {
-  if (!issue.docs?.length) return null;
+  if (!issue.docs.length) return null;
   return (
-    <section className="section">
-      <div className="section-head">
-        <h3>Docs</h3>
-        <span className="count">{issue.docs.length}</span>
-      </div>
+    <Section title="Docs" count={issue.docs.length}>
       <div className="subs">
         {issue.docs.map((d) => (
           <div className="row sub" key={d.slug}>
@@ -388,7 +313,7 @@ function Docs({ issue }: { issue: Issue }) {
           </div>
         ))}
       </div>
-    </section>
+    </Section>
   );
 }
 
@@ -407,90 +332,6 @@ function Activity({ issue, onComment }: { issue: Issue; onComment: (body: string
         </li>
       )}
     </Comments>
-  );
-}
-
-/** A comment thread with composer, shared by issues and docs. `children` are extra timeline events. */
-export function Comments({
-  title = "Comments",
-  comments,
-  onComment,
-  children,
-}: {
-  title?: string;
-  comments: Comment[];
-  onComment: (body: string) => Promise<void>;
-  children?: ReactNode;
-}) {
-  return (
-    <section className="section">
-      <div className="section-head">
-        <h3>{title}</h3>
-      </div>
-      <ol className="timeline">
-        {children}
-        {comments.map((c) => (
-          <li className="comment" key={c.id}>
-            <div className="comment-head">
-              <Avatar name={c.author} />
-              <span className="comment-author" dir="auto">
-                {c.author}
-              </span>
-              <time title={fullDate(c.createdAt)}>{ago(c.createdAt)}</time>
-            </div>
-            <Markdown text={c.body} />
-          </li>
-        ))}
-      </ol>
-      <Composer onSubmit={onComment} />
-    </section>
-  );
-}
-
-function Composer({ onSubmit }: { onSubmit: (body: string) => Promise<void> }) {
-  const [body, setBody] = useState("");
-  const [busy, setBusy] = useState(false);
-  const ref = useRef<HTMLTextAreaElement>(null);
-  useAutosize(ref, body);
-  const send = async () => {
-    const text = body.trim();
-    if (!text || busy) return;
-    setBusy(true);
-    try {
-      await onSubmit(text);
-      setBody("");
-    } catch (e) {
-      errorToast(e);
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <div className="composer">
-      <textarea
-        ref={ref}
-        rows={2}
-        dir="auto"
-        placeholder="Leave a comment…"
-        aria-label="Comment"
-        value={body}
-        onChange={(e) => setBody(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-            e.preventDefault();
-            send();
-          } else if (e.key === "Escape") {
-            e.preventDefault();
-            e.currentTarget.blur();
-          }
-        }}
-      />
-      <div className="composer-foot">
-        <button className="btn btn-primary btn-sm" disabled={!body.trim() || busy} onClick={send}>
-          Comment <Kbd>{MOD}↵</Kbd>
-        </button>
-      </div>
-    </div>
   );
 }
 

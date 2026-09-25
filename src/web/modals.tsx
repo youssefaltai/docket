@@ -1,13 +1,6 @@
 // New issue, doc, project and workspace dialogs.
-import { useRef, useState } from "react";
-import {
-  PRIORITY_LABELS,
-  STATUS_LABELS,
-  type IssueInput,
-  type Priority,
-  type Status,
-  type Workspace,
-} from "../shared/types";
+import { useRef, useState, type ReactNode } from "react";
+import { PRIORITY_LABELS, STATUS_LABELS, type IssueInput, type Workspace } from "../shared/types";
 import { api } from "./api";
 import { AssigneePicker, LabelsPicker, ParentPicker, PriorityPicker, ProjectPicker, StatusPicker } from "./pickers";
 import {
@@ -31,66 +24,87 @@ import {
   useAutosize,
 } from "./ui";
 
-export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueInput>; onClose: () => void }) {
-  const app = useApp();
-  const [project, setProject] = useState(defaults.project ?? "");
-  const [title, setTitle] = useState(defaults.title ?? "");
-  const [description, setDescription] = useState(defaults.description ?? "");
-  const [status, setStatus] = useState<Status>(defaults.status ?? "todo");
-  const [priority, setPriority] = useState<Priority>(defaults.priority ?? 0);
-  const [labels, setLabels] = useState<string[]>(defaults.labels ?? []);
-  const [assignee, setAssignee] = useState<string | null>(defaults.assignee ?? null);
-  const [parent, setParent] = useState<string | null>(defaults.parent ?? null);
+/** Submits once at a time; a failure is shown and the form stays open to retry. */
+function useSubmit(ready: boolean, action: () => Promise<void>) {
   const [busy, setBusy] = useState(false);
-  const desc = useRef<HTMLTextAreaElement>(null);
-  useAutosize(desc, description);
-
-  const proj = app.projects?.find((p) => p.key === project);
-  const ready = !!title.trim() && !!project && !busy;
-
   const submit = async () => {
-    if (!ready) return;
+    if (!ready || busy) return;
     setBusy(true);
     try {
-      const issue = await api.createIssue({
-        project,
-        title: title.trim(),
-        description: description.trim() || undefined,
-        status,
-        priority,
-        labels,
-        assignee,
-        parent,
-      });
-      toast(`Created ${issue.id}`, `/issue/${issue.id}`);
-      onClose();
+      await action();
     } catch (e) {
       errorToast(e);
       setBusy(false);
     }
   };
+  return { busy, submit };
+}
+
+function ModalHead({ onClose, children }: { onClose: () => void; children: ReactNode }) {
+  return (
+    <div className="modal-head">
+      {children}
+      <span className="grow" />
+      <button className="icon-btn" onClick={onClose} aria-label="Close">
+        <CloseIcon />
+      </button>
+    </div>
+  );
+}
+
+/** "Project ›" in front of a new issue or doc's title. */
+function ProjectCrumb({ value, onChange }: { value: string; onChange: (key: string) => void }) {
+  const { projects } = useApp();
+  const project = projects?.find((p) => p.key === value);
+  return (
+    <>
+      <ProjectPicker value={value} onChange={onChange} className="chip">
+        {project && <ProjectMark id={project.key} />}
+        <span dir="auto">{project?.name ?? "Project"}</span>
+      </ProjectPicker>
+      <ChevronRightIcon className="muted" />
+    </>
+  );
+}
+
+type Draft = Required<Omit<IssueInput, "blockedBy">>;
+
+export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueInput>; onClose: () => void }) {
+  const [draft, setDraft] = useState<Draft>(() => ({
+    project: defaults.project ?? "",
+    title: defaults.title ?? "",
+    description: defaults.description ?? "",
+    status: defaults.status ?? "todo",
+    priority: defaults.priority ?? 0,
+    labels: defaults.labels ?? [],
+    assignee: defaults.assignee ?? null,
+    parent: defaults.parent ?? null,
+  }));
+  const set = <K extends keyof Draft>(key: K) => (value: Draft[K]) => setDraft((d) => ({ ...d, [key]: value }));
+  const { project, title, description, status, priority, labels, assignee, parent } = draft;
+  const desc = useRef<HTMLTextAreaElement>(null);
+  useAutosize(desc, description);
+
+  const { busy, submit } = useSubmit(!!title.trim() && !!project, async () => {
+    const issue = await api.createIssue({
+      ...draft,
+      title: title.trim(),
+      description: description.trim() || undefined,
+    });
+    toast(`Created ${issue.id}`, `/issue/${issue.id}`);
+    onClose();
+  });
 
   return (
     <Modal label="New issue" onClose={onClose} onSubmit={submit}>
-      <div className="modal-head">
-        <ProjectPicker
+      <ModalHead onClose={onClose}>
+        {/* A parent belongs to the old project, so switching projects clears it. */}
+        <ProjectCrumb
           value={project}
-          onChange={(key) => {
-            if (key !== project) setParent(null);
-            setProject(key);
-          }}
-          className="chip"
-        >
-          {proj && <ProjectMark id={proj.key} />}
-          <span dir="auto">{proj?.name ?? "Project"}</span>
-        </ProjectPicker>
-        <ChevronRightIcon className="muted" />
+          onChange={(key) => key !== project && setDraft((d) => ({ ...d, project: key, parent: null }))}
+        />
         <span className="modal-title">New issue</span>
-        <span className="grow" />
-        <button className="icon-btn" onClick={onClose} aria-label="Close">
-          <CloseIcon />
-        </button>
-      </div>
+      </ModalHead>
       <div className="modal-body">
         <input
           className="new-title"
@@ -99,7 +113,7 @@ export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueIn
           placeholder="Issue title"
           aria-label="Title"
           value={title}
-          onChange={(e) => setTitle(e.target.value)}
+          onChange={(e) => set("title")(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.metaKey && !e.ctrlKey) {
               e.preventDefault();
@@ -115,23 +129,23 @@ export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueIn
           placeholder="Add description… (Markdown)"
           aria-label="Description"
           value={description}
-          onChange={(e) => setDescription(e.target.value)}
+          onChange={(e) => set("description")(e.target.value)}
         />
       </div>
       <div className="modal-chips">
-        <StatusPicker value={status} onChange={setStatus} className="chip">
+        <StatusPicker value={status} onChange={set("status")} className="chip">
           <StatusIcon status={status} />
           {STATUS_LABELS[status]}
         </StatusPicker>
-        <PriorityPicker value={priority} onChange={setPriority} className="chip">
+        <PriorityPicker value={priority} onChange={set("priority")} className="chip">
           <PriorityIcon priority={priority} />
           {priority ? PRIORITY_LABELS[priority] : "Priority"}
         </PriorityPicker>
-        <AssigneePicker value={assignee} onChange={setAssignee} className="chip">
+        <AssigneePicker value={assignee} onChange={set("assignee")} className="chip">
           <Avatar name={assignee} />
           <span dir="auto">{assignee ?? "Assignee"}</span>
         </AssigneePicker>
-        <LabelsPicker value={labels} onChange={setLabels} className="chip">
+        <LabelsPicker value={labels} onChange={set("labels")} className="chip">
           {labels.length ? (
             labels.map((l) => (
               <span key={l} className="chip-label" dir="auto">
@@ -147,7 +161,7 @@ export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueIn
           )}
         </LabelsPicker>
         {project && (
-          <ParentPicker value={parent} onChange={setParent} project={project} className="chip">
+          <ParentPicker value={parent} onChange={set("parent")} project={project} className="chip">
             <ParentIcon />
             {parent ? <span className="mono">{parent}</span> : "Parent"}
           </ParentPicker>
@@ -155,7 +169,7 @@ export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueIn
       </div>
       <div className="modal-foot">
         <span className="grow" />
-        <button className="btn btn-primary" disabled={!ready} onClick={submit}>
+        <button className="btn btn-primary" disabled={!title.trim() || !project || busy} onClick={submit}>
           Create issue <Kbd>{MOD}↵</Kbd>
         </button>
       </div>
@@ -164,41 +178,22 @@ export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueIn
 }
 
 export function NewDocModal({ project: initial, onClose }: { project: string; onClose: () => void }) {
-  const app = useApp();
   const [project, setProject] = useState(initial);
   const [title, setTitle] = useState("");
-  const [busy, setBusy] = useState(false);
-  const proj = app.projects?.find((p) => p.key === project);
-  const ready = !!title.trim() && !!project && !busy;
-
-  const submit = async () => {
-    if (!ready) return;
-    setBusy(true);
-    try {
-      const doc = await api.createDocument({ project, title: title.trim() });
-      nav.editDoc = doc.slug; // open straight into edit mode
-      navigate(`/doc/${doc.slug}`);
-      onClose();
-    } catch (e) {
-      errorToast(e);
-      setBusy(false);
-    }
-  };
+  const ready = !!title.trim() && !!project;
+  const { busy, submit } = useSubmit(ready, async () => {
+    const doc = await api.createDocument({ project, title: title.trim() });
+    nav.editDoc = doc.slug; // open straight into edit mode
+    navigate(`/doc/${doc.slug}`);
+    onClose();
+  });
 
   return (
     <Modal label="New doc" className="modal-sm" onClose={onClose} onSubmit={submit}>
-      <div className="modal-head">
-        <ProjectPicker value={project} onChange={setProject} className="chip">
-          {proj && <ProjectMark id={proj.key} />}
-          <span dir="auto">{proj?.name ?? "Project"}</span>
-        </ProjectPicker>
-        <ChevronRightIcon className="muted" />
+      <ModalHead onClose={onClose}>
+        <ProjectCrumb value={project} onChange={setProject} />
         <span className="modal-title">New doc</span>
-        <span className="grow" />
-        <button className="icon-btn" onClick={onClose} aria-label="Close">
-          <CloseIcon />
-        </button>
-      </div>
+      </ModalHead>
       <div className="modal-body modal-body-doc">
         <input
           className="new-title"
@@ -219,8 +214,56 @@ export function NewDocModal({ project: initial, onClose }: { project: string; on
       <div className="modal-foot">
         <span className="hint">Opens in the editor. Markdown, autosaved.</span>
         <span className="grow" />
-        <button className="btn btn-primary" disabled={!ready} onClick={submit}>
+        <button className="btn btn-primary" disabled={!ready || busy} onClick={submit}>
           Create doc <Kbd>↵</Kbd>
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+/** A small dialog with a form of fields, Cancel and a primary button. */
+function FormModal({
+  title,
+  aside,
+  action,
+  ready,
+  onSubmit,
+  onClose,
+  children,
+}: {
+  title: string;
+  aside?: ReactNode;
+  action: string;
+  ready: boolean;
+  onSubmit: () => Promise<void>;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  const { busy, submit } = useSubmit(ready, onSubmit);
+  return (
+    <Modal label={title} className="modal-sm" onClose={onClose} onSubmit={submit}>
+      <ModalHead onClose={onClose}>
+        <span className="modal-title">{title}</span>
+        {aside}
+      </ModalHead>
+      <form
+        className="modal-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          submit();
+        }}
+      >
+        {children}
+        <button type="submit" hidden />
+      </form>
+      <div className="modal-foot">
+        <span className="grow" />
+        <button className="btn" onClick={onClose}>
+          Cancel
+        </button>
+        <button className="btn btn-primary" disabled={!ready || busy} onClick={submit}>
+          {action}
         </button>
       </div>
     </Modal>
@@ -238,141 +281,76 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
   const [name, setName] = useState("");
   const [customKey, setCustomKey] = useState<string | null>(null);
   const [description, setDescription] = useState("");
-  const [busy, setBusy] = useState(false);
   const key = customKey ?? deriveKey(name);
   const workspace = app.workspace;
-  const ready = !!name.trim() && /^[A-Z]{2,5}$/.test(key) && !!workspace && !busy;
-
-  const submit = async () => {
-    if (!ready || !workspace) return;
-    setBusy(true);
-    try {
-      const project = await api.createProject({
-        key,
-        workspace: workspace.key,
-        name: name.trim(),
-        description: description.trim() || undefined,
-      });
-      app.reloadProjects();
-      navigate(`/p/${project.key}`);
-      onClose();
-    } catch (e) {
-      errorToast(e);
-      setBusy(false);
-    }
-  };
 
   return (
-    <Modal label="New project" className="modal-sm" onClose={onClose} onSubmit={submit}>
-      <div className="modal-head">
-        <span className="modal-title">New project</span>
-        {workspace && (
+    <FormModal
+      title="New project"
+      aside={
+        workspace && (
           <span className="muted" dir="auto">
             in {workspace.name}
           </span>
-        )}
-        <span className="grow" />
-        <button className="icon-btn" onClick={onClose} aria-label="Close">
-          <CloseIcon />
-        </button>
-      </div>
-      <form
-        className="modal-form"
-        onSubmit={(e) => {
-          e.preventDefault();
-          submit();
-        }}
-      >
-        <label className="field">
-          <span>Name</span>
-          <input className="input" autoFocus dir="auto" placeholder="Docket" value={name} onChange={(e) => setName(e.target.value)} />
-        </label>
-        <label className="field">
-          <span>Key</span>
-          <input
-            className="input mono"
-            placeholder="DOC"
-            value={key}
-            onChange={(e) => setCustomKey(e.target.value.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 5))}
-          />
-          <small>2–5 letters. Issues are numbered {key || "DOC"}-1, {key || "DOC"}-2, …</small>
-        </label>
-        <label className="field">
-          <span>
-            Description <em>optional</em>
-          </span>
-          <textarea
-            className="input"
-            dir="auto"
-            rows={2}
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-          />
-        </label>
-        <button type="submit" hidden />
-      </form>
-      <div className="modal-foot">
-        <span className="grow" />
-        <button className="btn" onClick={onClose}>
-          Cancel
-        </button>
-        <button className="btn btn-primary" disabled={!ready} onClick={submit}>
-          Create project
-        </button>
-      </div>
-    </Modal>
+        )
+      }
+      action="Create project"
+      ready={!!name.trim() && /^[A-Z]{2,5}$/.test(key) && !!workspace}
+      onSubmit={async () => {
+        const project = await api.createProject({
+          key,
+          workspace: workspace!.key,
+          name: name.trim(),
+          description: description.trim() || undefined,
+        });
+        app.reloadProjects();
+        navigate(`/p/${project.key}`);
+        onClose();
+      }}
+      onClose={onClose}
+    >
+      <label className="field">
+        <span>Name</span>
+        <input className="input" autoFocus dir="auto" placeholder="Docket" value={name} onChange={(e) => setName(e.target.value)} />
+      </label>
+      <label className="field">
+        <span>Key</span>
+        <input
+          className="input mono"
+          placeholder="DOC"
+          value={key}
+          onChange={(e) => setCustomKey(e.target.value.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 5))}
+        />
+        <small>2–5 letters. Issues are numbered {key || "DOC"}-1, {key || "DOC"}-2, …</small>
+      </label>
+      <label className="field">
+        <span>
+          Description <em>optional</em>
+        </span>
+        <textarea className="input" dir="auto" rows={2} value={description} onChange={(e) => setDescription(e.target.value)} />
+      </label>
+    </FormModal>
   );
 }
 
 export function NewWorkspaceModal({ onCreate, onClose }: { onCreate: (w: Workspace) => void; onClose: () => void }) {
   const [name, setName] = useState("");
-  const [busy, setBusy] = useState(false);
-  const ready = !!name.trim() && !busy;
-
-  const submit = async () => {
-    if (!ready) return;
-    setBusy(true);
-    try {
-      onCreate(await api.createWorkspace({ name: name.trim() }));
-      onClose();
-    } catch (e) {
-      errorToast(e);
-      setBusy(false);
-    }
-  };
-
   return (
-    <Modal label="New workspace" className="modal-sm" onClose={onClose} onSubmit={submit}>
-      <div className="modal-head">
-        <span className="modal-title">New workspace</span>
-        <span className="grow" />
-        <button className="icon-btn" onClick={onClose} aria-label="Close">
-          <CloseIcon />
-        </button>
-      </div>
-      <form
-        className="modal-form"
-        onSubmit={(e) => {
-          e.preventDefault();
-          submit();
-        }}
-      >
-        <label className="field">
-          <span>Name</span>
-          <input className="input" autoFocus dir="auto" placeholder="Acme" value={name} onChange={(e) => setName(e.target.value)} />
-          <small>A workspace groups related projects, with their issues and docs.</small>
-        </label>
-        <button type="submit" hidden />
-      </form>
-      <div className="modal-foot">
-        <span className="grow" />
-        <button className="btn" onClick={onClose}>
-          Cancel
-        </button>
-        <button className="btn btn-primary" disabled={!ready} onClick={submit}>
-          Create workspace
-        </button>
-      </div>
-    </Modal>
+    <FormModal
+      title="New workspace"
+      action="Create workspace"
+      ready={!!name.trim()}
+      onSubmit={async () => {
+        onCreate(await api.createWorkspace({ name: name.trim() }));
+        onClose();
+      }}
+      onClose={onClose}
+    >
+      <label className="field">
+        <span>Name</span>
+        <input className="input" autoFocus dir="auto" placeholder="Acme" value={name} onChange={(e) => setName(e.target.value)} />
+        <small>A workspace groups related projects, with their issues and docs.</small>
+      </label>
+    </FormModal>
   );
 }

@@ -1,4 +1,4 @@
-// Shared primitives: routing, app context, toasts, icons, markdown, modal.
+// Shared primitives: routing, app context, hooks, toasts, icons, markdown, modal, comments.
 import {
   createContext,
   useContext,
@@ -10,14 +10,26 @@ import {
   useSyncExternalStore,
   type AnchorHTMLAttributes,
   type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
   type ReactNode,
   type RefObject,
   type SVGProps,
 } from "react";
 import { createPortal } from "react-dom";
 import { Marked } from "marked";
-import { api } from "./api";
-import type { IssueInput, IssueSummary, Priority, Project, Status, Workspace } from "../shared/types";
+import { HttpError, api } from "./api";
+import {
+  OPEN_STATUSES,
+  STATUSES,
+  type Comment,
+  type IssueInput,
+  type IssueSummary,
+  type Priority,
+  type Project,
+  type Status,
+  type Workspace,
+} from "../shared/types";
 
 export const cls = (...xs: (string | false | null | undefined)[]) => xs.filter(Boolean).join(" ");
 export const MOD = /Mac|iPhone|iPad/.test(navigator.userAgent) ? "⌘" : "Ctrl";
@@ -62,6 +74,10 @@ export function usePath() {
   );
 }
 
+/** A left click with no modifier keys, which should route client-side (others open tabs, windows…). */
+const isPlainClick = (e: ReactMouseEvent) =>
+  !e.defaultPrevented && e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey;
+
 export function Link({ to, onClick, ...rest }: { to: string } & AnchorHTMLAttributes<HTMLAnchorElement>) {
   return (
     <a
@@ -69,7 +85,7 @@ export function Link({ to, onClick, ...rest }: { to: string } & AnchorHTMLAttrib
       {...rest}
       onClick={(e) => {
         onClick?.(e);
-        if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+        if (!isPlainClick(e)) return;
         e.preventDefault();
         navigate(to);
       }}
@@ -124,6 +140,54 @@ export function useDebounced<T>(value: T, ms: number): T {
   return v;
 }
 
+/**
+ * Loads data on mount, when `deps` change and on every live update; a `null` loader waits.
+ * Only the latest request lands: `invalidate()` also drops any in flight (call it before
+ * applying a local change) and returns a ticket that `isLatest` checks later.
+ */
+export function useFetch<T>(load: (() => Promise<T>) | null, deps: unknown[]) {
+  const live = useLive();
+  const [data, setData] = useState<T | null>(null);
+  const [missing, setMissing] = useState(false);
+  const [tick, setTick] = useState(0);
+  const seq = useRef(0);
+  useEffect(() => {
+    if (!load) return;
+    const n = ++seq.current;
+    load().then(
+      (d) => {
+        if (n !== seq.current) return;
+        setData(d);
+        setMissing(false);
+      },
+      (e) => {
+        if (n !== seq.current) return;
+        if (e instanceof HttpError && e.status === 404) setMissing(true);
+        else errorToast(e);
+      },
+    );
+  }, [...deps, live, tick]);
+  return {
+    data,
+    setData,
+    missing,
+    reload: () => setTick((t) => t + 1),
+    invalidate: () => ++seq.current,
+    isLatest: (n: number) => n === seq.current,
+  };
+}
+
+/** A document keydown listener that always sees the latest `handler`, registered once. */
+export function useKeydown(handler: (e: KeyboardEvent) => void, capture = false) {
+  const latest = useRef(handler);
+  latest.current = handler;
+  useEffect(() => {
+    const listener = (e: KeyboardEvent) => latest.current(e);
+    addEventListener("keydown", listener, capture);
+    return () => removeEventListener("keydown", listener, capture);
+  }, [capture]);
+}
+
 export function useAutosize(ref: RefObject<HTMLTextAreaElement | null>, value: string) {
   useLayoutEffect(() => {
     const el = ref.current;
@@ -136,9 +200,9 @@ export function useAutosize(ref: RefObject<HTMLTextAreaElement | null>, value: s
 export const isEditable = (t: EventTarget | null) =>
   t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
 
-export const openCount = (p: Project) => p.counts.backlog + p.counts.todo + p.counts.in_progress + p.counts.in_review;
+export const openCount = (p: Project) => OPEN_STATUSES.reduce((n, s) => n + p.counts[s], 0);
 
-const statusRank = (s: Status) => ["backlog", "todo", "in_progress", "in_review", "done", "canceled"].indexOf(s);
+const statusRank = (s: Status) => STATUSES.indexOf(s);
 const priorityRank = (p: Priority) => (p === 0 ? 5 : p);
 
 /** Server order: status, priority (1→4, none last), most recently updated. */
@@ -174,7 +238,7 @@ export const fullDate = (iso: string) =>
 // A small set of distinct hues reads calmer than the whole wheel.
 const HUES = [212, 152, 32, 268, 350, 186, 48, 232, 12, 300];
 
-export function hue(s: string): number {
+function hue(s: string): number {
   let h = 2166136261;
   for (const c of s.toLowerCase()) h = Math.imul(h ^ c.codePointAt(0)!, 16777619) >>> 0;
   return HUES[h % HUES.length]!;
@@ -256,7 +320,7 @@ export const CheckIcon = icon("M3.5 8.5l3 3 6-7");
 export const ChevronRightIcon = icon("M6.5 4l4 4-4 4");
 export const ChevronDownIcon = icon("M4 6.5l4 4 4-4");
 export const SearchIcon = icon("M7 12A5 5 0 1 0 7 2a5 5 0 0 0 0 10zM13.5 13.5l-3-3");
-export const MenuIcon = icon("M2.5 4.5h11M2.5 8h11M2.5 11.5h11");
+const MenuIcon = icon("M2.5 4.5h11M2.5 8h11M2.5 11.5h11");
 export const ListIcon = icon("M2.5 4h11M2.5 8h11M2.5 12h11");
 export const BoardIcon = icon("M3 2.5h2.5v11H3zM6.75 2.5h2.5v7h-2.5zM10.5 2.5H13v9h-2.5z");
 export const IssuesIcon = icon("M2.5 6a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1zM4.5 2.75h7");
@@ -443,45 +507,178 @@ export function EmptyState({
   );
 }
 
-/** Single-line text that looks like text until focused. Enter saves, Esc reverts. */
-export function InlineInput({
+/**
+ * A field that looks like text until focused: Enter (or leaving it) saves, Esc reverts.
+ * A remote change to `value` never replaces what's being typed.
+ */
+function useInlineEdit<E extends HTMLInputElement | HTMLTextAreaElement>(value: string, onSave: (v: string) => void) {
+  const ref = useRef<E>(null);
+  const [draft, setDraft] = useState(value);
+  const skip = useRef(false);
+  useEffect(() => {
+    if (document.activeElement !== ref.current) setDraft(value);
+  }, [value]);
+  const props = {
+    ref,
+    value: draft,
+    dir: "auto",
+    onKeyDown: (e: ReactKeyboardEvent<E>) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        e.currentTarget.blur();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        skip.current = true;
+        setDraft(value);
+        e.currentTarget.blur();
+      }
+    },
+    onBlur: () => {
+      const v = draft.trim();
+      if (!skip.current && v && v !== value) onSave(v);
+      else setDraft(value);
+      skip.current = false;
+    },
+  };
+  return { draft, setDraft, props };
+}
+
+function InlineInput({ value, onSave, label }: { value: string; onSave: (v: string) => void; label: string }) {
+  const { draft, setDraft, props } = useInlineEdit<HTMLInputElement>(value, onSave);
+  return (
+    <input
+      {...props}
+      className="inline-input"
+      aria-label={label}
+      size={Math.max(4, [...draft].length)}
+      onChange={(e) => setDraft(e.target.value)}
+    />
+  );
+}
+
+/** A large title that wraps: an issue's or a doc's. */
+export function TitleEditor({
   value,
   onSave,
-  className,
-  label,
+  className = "issue-title",
+  placeholder = "Issue title",
 }: {
   value: string;
   onSave: (v: string) => void;
   className?: string;
-  label: string;
+  placeholder?: string;
 }) {
-  const [draft, setDraft] = useState(value);
-  const skip = useRef(false);
-  useEffect(() => setDraft(value), [value]);
+  const { draft, setDraft, props } = useInlineEdit<HTMLTextAreaElement>(value, onSave);
+  useAutosize(props.ref, draft);
   return (
-    <input
-      className={cls("inline-input", className)}
-      value={draft}
-      dir="auto"
-      aria-label={label}
-      size={Math.max(4, [...draft].length)}
-      onChange={(e) => setDraft(e.target.value)}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") e.currentTarget.blur();
-        if (e.key === "Escape") {
-          e.preventDefault();
-          skip.current = true;
-          setDraft(value);
-          e.currentTarget.blur();
-        }
-      }}
-      onBlur={() => {
-        const v = draft.trim();
-        if (!skip.current && v && v !== value) onSave(v);
-        else setDraft(value);
-        skip.current = false;
-      }}
+    <textarea
+      {...props}
+      className={className}
+      rows={1}
+      aria-label="Title"
+      placeholder={placeholder}
+      onChange={(e) => setDraft(e.target.value.replace(/\n/g, " "))}
     />
+  );
+}
+
+/** Header of the issues and docs lists: title, project tabs, search, then `children` (filters, buttons). */
+export function ListHeader({
+  project,
+  title,
+  count,
+  view,
+  onNew,
+  search,
+  onSearch,
+  placeholder = "Search",
+  children,
+}: {
+  project: Project | undefined;
+  title: string;
+  count: number;
+  view: "issues" | "docs";
+  onNew: () => void;
+  search: string;
+  onSearch: (q: string) => void;
+  placeholder?: string;
+  children?: ReactNode;
+}) {
+  return (
+    <header className="header">
+      <MenuButton />
+      <div className="header-title">
+        {project ? <ProjectTitle project={project} /> : <span>{title}</span>}
+        {count > 0 && <span className="header-count">{count}</span>}
+      </div>
+      {project && <ProjectTabs project={project.key} view={view} />}
+      <button className="icon-btn mobile-only" onClick={onNew} aria-label={view === "docs" ? "New doc" : "New issue"}>
+        <PlusIcon />
+      </button>
+      <div className="controls">
+        <label className="search">
+          <SearchIcon />
+          <input
+            id="search"
+            type="search"
+            placeholder={placeholder}
+            value={search}
+            autoComplete="off"
+            dir="auto"
+            onChange={(e) => onSearch(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.preventDefault();
+                if (search) onSearch("");
+                else e.currentTarget.blur();
+              } else if (e.key === "ArrowDown" || e.key === "Enter") {
+                e.preventDefault();
+                document.querySelector<HTMLElement>("[data-nav]")?.focus();
+              }
+            }}
+          />
+          {!search && <Kbd>/</Kbd>}
+        </label>
+        {children}
+      </div>
+    </header>
+  );
+}
+
+export function ProjectNotFound({ projectKey, back, backLabel }: { projectKey: string; back: string; backLabel: string }) {
+  return (
+    <EmptyState title="Project not found" action={<Link className="btn" to={back}>{backLabel}</Link>}>
+      There’s no project with the key {projectKey}.
+    </EmptyState>
+  );
+}
+
+/** A titled block on the issue and doc pages: sub-issues, docs, comments… */
+export function Section({
+  title,
+  count,
+  action,
+  children,
+}: {
+  title: string;
+  count?: ReactNode;
+  action?: ReactNode;
+  children?: ReactNode;
+}) {
+  return (
+    <section className="section">
+      <div className="section-head">
+        <h3>{title}</h3>
+        {count !== undefined && <span className="count">{count}</span>}
+        {action && (
+          <>
+            <span className="grow" />
+            {action}
+          </>
+        )}
+      </div>
+      {children}
+    </section>
   );
 }
 
@@ -605,8 +802,7 @@ export function Markdown({ text, className }: { text: string; className?: string
       onClick={(e) => {
         // Links to /doc/…, /issue/… etc. route client-side.
         const href = (e.target as Element).closest("a")?.getAttribute("href");
-        if (!href?.startsWith("/") || href.startsWith("//")) return;
-        if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+        if (!href?.startsWith("/") || href.startsWith("//") || !isPlainClick(e)) return;
         e.preventDefault();
         navigate(href);
       }}
@@ -676,5 +872,88 @@ export function Modal({
       </div>
     </div>,
     document.body,
+  );
+}
+
+// ---------- Comments ----------
+
+/** A comment thread with composer, shared by issues and docs. `children` are extra timeline events. */
+export function Comments({
+  title = "Comments",
+  comments,
+  onComment,
+  children,
+}: {
+  title?: string;
+  comments: Comment[];
+  onComment: (body: string) => Promise<void>;
+  children?: ReactNode;
+}) {
+  return (
+    <Section title={title}>
+      <ol className="timeline">
+        {children}
+        {comments.map((c) => (
+          <li className="comment" key={c.id}>
+            <div className="comment-head">
+              <Avatar name={c.author} />
+              <span className="comment-author" dir="auto">
+                {c.author}
+              </span>
+              <time title={fullDate(c.createdAt)}>{ago(c.createdAt)}</time>
+            </div>
+            <Markdown text={c.body} />
+          </li>
+        ))}
+      </ol>
+      <Composer onSubmit={onComment} />
+    </Section>
+  );
+}
+
+function Composer({ onSubmit }: { onSubmit: (body: string) => Promise<void> }) {
+  const [body, setBody] = useState("");
+  const [busy, setBusy] = useState(false);
+  const ref = useRef<HTMLTextAreaElement>(null);
+  useAutosize(ref, body);
+  const send = async () => {
+    const text = body.trim();
+    if (!text || busy) return;
+    setBusy(true);
+    try {
+      await onSubmit(text);
+      setBody("");
+    } catch (e) {
+      errorToast(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="composer">
+      <textarea
+        ref={ref}
+        rows={2}
+        dir="auto"
+        placeholder="Leave a comment…"
+        aria-label="Comment"
+        value={body}
+        onChange={(e) => setBody(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault();
+            send();
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            e.currentTarget.blur();
+          }
+        }}
+      />
+      <div className="composer-foot">
+        <button className="btn btn-primary btn-sm" disabled={!body.trim() || busy} onClick={send}>
+          Comment <Kbd>{MOD}↵</Kbd>
+        </button>
+      </div>
+    </div>
   );
 }

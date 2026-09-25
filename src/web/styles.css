@@ -18,6 +18,9 @@
   --primary-hover: #333;
   --danger: #e5484d;
   --urgent: #f76b15;
+  --wash: rgb(0 0 0 / 0.04);
+  --wash-strong: rgb(0 0 0 / 0.06);
+  --ring: rgb(0 0 0 / 0.04);
 
   --s-backlog: #a3a3a3;
   --s-todo: #8f8f8f;
@@ -109,6 +112,26 @@ svg {
 .status-icon,
 .priority-icon {
   color: var(--text-2);
+}
+
+.brand-name,
+.nav-label,
+.row-title,
+.prop-btn > span:not(.avatar),
+.crumb-doc,
+.version-author,
+.pop-label,
+.crumbs a {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.brand-name,
+.nav-label,
+.row-title,
+.crumb-doc,
+.pop-label {
+  min-width: 0;
 }
 
 kbd {
@@ -227,6 +250,7 @@ kbd {
   font-weight: 500;
   white-space: nowrap;
   transition: background-color var(--t), border-color var(--t), color var(--t);
+  --av: 16px;
 }
 .chip:hover,
 .chip[aria-expanded="true"] {
@@ -238,9 +262,6 @@ kbd {
   width: 14px;
   height: 14px;
   color: var(--muted);
-}
-.chip {
-  --av: 16px;
 }
 .chip > span:not(.avatar) {
   min-width: 0;
@@ -266,7 +287,8 @@ kbd {
   margin-left: 4px;
 }
 
-.segmented {
+.segmented,
+.tabs {
   display: inline-flex;
   gap: 2px;
   padding: 2px;
@@ -286,7 +308,8 @@ kbd {
 .segmented button:hover {
   color: var(--text);
 }
-.segmented button.on {
+.segmented button.on,
+.tab.on {
   background: var(--bg);
   color: var(--text);
   box-shadow: 0 0 0 1px var(--border), 0 1px 2px rgb(0 0 0 / 0.05);
@@ -333,16 +356,10 @@ kbd {
 }
 .brand:hover,
 .brand[aria-expanded="true"] {
-  background: rgb(0 0 0 / 0.04);
+  background: var(--wash);
 }
 .brand > svg {
   flex-shrink: 0;
-}
-.brand-name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .brand-chevron {
   width: 14px;
@@ -397,11 +414,11 @@ kbd {
   color: var(--muted);
 }
 .nav-item:hover {
-  background: rgb(0 0 0 / 0.04);
+  background: var(--wash);
   color: var(--text);
 }
 .nav-item.active {
-  background: rgb(0 0 0 / 0.06);
+  background: var(--wash-strong);
   color: var(--text);
 }
 .nav-muted {
@@ -409,10 +426,6 @@ kbd {
 }
 .nav-label {
   flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   text-align: start;
 }
 .nav-count {
@@ -434,7 +447,7 @@ kbd {
   transition: background-color var(--t), color var(--t);
 }
 .whoami:hover {
-  background: rgb(0 0 0 / 0.04);
+  background: var(--wash);
   color: var(--text);
 }
 .nav-section {
@@ -543,7 +556,7 @@ kbd {
 }
 .search:focus-within {
   border-color: var(--border-strong);
-  box-shadow: 0 0 0 3px rgb(0 0 0 / 0.04);
+  box-shadow: 0 0 0 3px var(--ring);
 }
 .search > svg {
   width: 14px;
@@ -576,9 +589,6 @@ kbd {
   margin: 0 -5px;
   border-radius: 5px;
   color: var(--text-2);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   transition: background-color var(--t), color var(--t);
 }
 .crumbs a:hover {
@@ -702,10 +712,6 @@ kbd {
   white-space: nowrap;
 }
 .row-title {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   font-weight: 500;
   scroll-margin: 44px 0 12px;
 }
@@ -977,7 +983,7 @@ kbd {
   margin-top: 14px;
   border: 1px solid var(--border-strong);
   border-radius: 8px;
-  box-shadow: 0 0 0 3px rgb(0 0 0 / 0.03);
+  box-shadow: 0 0 0 3px var(--ring);
   overflow: hidden;
 }
 .editor-input {
@@ -1080,7 +1086,7 @@ kbd {
 }
 .composer:focus-within {
   border-color: var(--border-strong);
-  box-shadow: 0 0 0 3px rgb(0 0 0 / 0.03);
+  box-shadow: 0 0 0 3px var(--ring);
 }
 .composer textarea {
   display: block;
@@ -1132,11 +1138,6 @@ kbd {
 .prop-btn:hover,
 .prop-btn[aria-expanded="true"] {
   background: var(--bg-hover);
-}
-.prop-btn > span:not(.avatar) {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .prop-btn .muted {
   font-weight: 400;
@@ -1337,13 +1338,7 @@ kbd {
 /* ---------- Project tabs ---------- */
 
 .tabs {
-  display: inline-flex;
-  gap: 2px;
-  padding: 2px;
   margin-left: 4px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg-subtle);
 }
 .tab {
   display: inline-flex;
@@ -1358,11 +1353,6 @@ kbd {
 }
 .tab:hover {
   color: var(--text);
-}
-.tab.on {
-  background: var(--bg);
-  color: var(--text);
-  box-shadow: 0 0 0 1px var(--border), 0 1px 2px rgb(0 0 0 / 0.05);
 }
 
 /* ---------- Docs ---------- */
@@ -1379,10 +1369,6 @@ kbd {
   white-space: nowrap;
 }
 .crumb-doc {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   color: var(--text);
 }
 .save-state {
@@ -1660,9 +1646,6 @@ kbd {
   line-height: 1.35;
 }
 .version-author {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   font-weight: 500;
 }
 .version-text time {
@@ -1740,13 +1723,11 @@ kbd {
   width: 16px;
   flex-shrink: 0;
   color: var(--muted);
+  --av: 16px;
 }
 .pop-icon > svg:not(.status-icon, .priority-icon) {
   width: 14px;
   height: 14px;
-}
-.pop-icon {
-  --av: 16px;
 }
 .pop-prefix {
   flex-shrink: 0;
@@ -1755,10 +1736,6 @@ kbd {
 }
 .pop-label {
   flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   text-align: start;
 }
 .pop-check {
@@ -1911,7 +1888,7 @@ kbd {
 }
 .input:focus {
   border-color: var(--border-strong);
-  box-shadow: 0 0 0 3px rgb(0 0 0 / 0.05);
+  box-shadow: 0 0 0 3px var(--ring);
 }
 textarea.input {
   height: auto;

@@ -18,7 +18,7 @@ src/web/index.html    HTML entry (Bun HTML import, bundled by Bun)
 src/web/*.tsx, *.css  React UI
 ```
 
-Env: `PORT` (default 7100), `DATABASE_PATH` (default `$XDG_DATA_HOME/docket/docket.db`), `DOCKET_TOKEN` (see Auth), `DOCKET_HOSTS` (comma-separated extra hostnames the server answers to, e.g. `docket.example.com,vps.tailnet.ts.net`; see Auth). Optional config file at `$XDG_CONFIG_HOME/docket/config` (or `$XDG_CONFIG_DIRS/docket/config`), `KEY=VALUE` lines (`#` comment lines; unquoted values drop a trailing ` # comment`; quotes are stripped); real env vars win unless empty (a set-but-empty var, as docker-compose's `${DOCKET_TOKEN:-}` passes, counts as unset). Dev: `bun run dev` (uses `./dev.db` unless `DATABASE_PATH` is set). Tests: `bun test`, black-box over HTTP against a temp database. Prod: `bun run start` (sets `NODE_ENV=production`, so Bun serves bundled assets and never shows its dev error page).
+Env vars and the optional XDG config file: see README's Configuration section. Dev: `bun run dev` (uses `./dev.db` unless `DATABASE_PATH` is set). Tests: `bun test`, black-box over HTTP against a temp database. Prod: `bun run start` (sets `NODE_ENV=production`, so Bun serves bundled assets and never shows its dev error page).
 
 ## Data
 
@@ -92,18 +92,18 @@ Light theme only, neutral and modern, in the spirit of Linear, Vercel, Resend. G
 - **Issue page** (`/issue/BRD-12`): inline-editable title; markdown description with edit toggle; properties panel (status, priority, assignee, labels, project, parent, blocked by) editable via small popovers; sub-issues; comments thread with composer (`⌘↵` to send).
 - **New issue modal**: project, title, description, status, priority, labels, assignee, parent. `⌘↵` creates, `Esc` closes.
 - **Workspaces**: the current workspace is remembered in localStorage (`docket.workspace`), falling back to the first. `/` and `/docs` show only its content; the new issue/doc project pickers list only its projects, and assignee/label pickers and filters only its people and labels; a new project is created in it. Opening `/p/:key`, `/issue/:id` or `/doc/:slug` of another workspace's project switches to that workspace. "New workspace" is a name-only modal. Project keys stay globally unique, so identifiers and routes don't change.
-- Client routing with `history.pushState`: `/`, `/p/:key`, `/issue/:id`. The server returns index.html for these paths.
+- Client routing with `history.pushState`: `/`, `/p/:key`, `/issue/:id`, `/docs`, `/p/:key/docs`, `/doc/:slug`. The server returns index.html for these paths.
 - Works on a phone: the sidebar collapses below 768px.
 
 ## Documents
 
 Linear-style docs inside projects. Markdown is the source of truth (agents write via MCP). Types in `src/shared/types.ts`.
 
-**Data** (migration 2, additive only — production already holds real data at `user_version` 1):
+**Data**:
 - **documents**: id, slug (unique), project_key, title, content, position, created_at, updated_at, updated_by.
 - **document_versions**: id, document_id, title, content, author, created_at. A version is written on every title/content change. Autosave-friendly: if the latest version has the same author and was first saved < 10 min ago, overwrite its title and content instead of inserting. Its `created_at` stays the first save's time, so a long session still gets a new version every 10 minutes. The first version (creation) and checkpoints (restores) are never merged into.
 - **document_refs**: document_id, issue_id, ord. Recomputed on every content change from `\b[A-Z]{2,5}-\d+\b` matches that resolve to real issues (first-mention order).
-- Document comments: same `Comment` shape as issues (separate table or a nullable FK — your call; keep it simple).
+- Document comments: same `Comment` shape as issues, stored in a separate `document_comments` table.
 - Slugs are stable: renaming a doc never changes its slug. Deleting a project isn't a thing; deleting a doc deletes its versions, refs and comments.
 - Search (`q`) matches title and content. Like issue search, it's a literal substring match: `%`, `_` and `\` in the query are escaped, not wildcards.
 

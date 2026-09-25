@@ -15,6 +15,7 @@ import type {
   IssueSummary,
   Project,
   ProjectInput,
+  ProjectPatch,
   ServerEvent,
   Workspace,
   WorkspaceInput,
@@ -29,22 +30,28 @@ export class HttpError extends Error {
 }
 
 /** Called on any 401, so the app can show the login screen. */
-export let onUnauthorized = () => {};
+let onUnauthorized = () => {};
 export const setOnUnauthorized = (fn: () => void) => (onUnauthorized = fn);
 
+/** Per-browser preferences; storage can be unavailable (private mode, blocked site data). */
+export const store = {
+  get(key: string): string | null {
+    try {
+      return localStorage.getItem(`docket.${key}`);
+    } catch {
+      return null;
+    }
+  },
+  set(key: string, value: string): void {
+    try {
+      localStorage.setItem(`docket.${key}`, value);
+    } catch {}
+  },
+};
+
 /** Per-browser display name, used as the `author` on writes. */
-export function getName(): string | null {
-  try {
-    return localStorage.getItem("docket.name");
-  } catch {
-    return null;
-  }
-}
-export function setName(name: string): void {
-  try {
-    localStorage.setItem("docket.name", name);
-  } catch {}
-}
+export const getName = () => store.get("name");
+export const setName = (name: string) => store.set("name", name);
 
 /** Stamps a write body with the stored name, unless it already has an author. */
 function withAuthor<T extends object>(body: T & { author?: string }): T & { author?: string } {
@@ -64,7 +71,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   return data as T;
 }
 
-function query(filter: IssueFilter | DocumentFilter | Record<string, string | undefined>): string {
+function query(filter: IssueFilter | DocumentFilter): string {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(filter)) {
     if (value == null || value === "" || (Array.isArray(value) && value.length === 0)) continue;
@@ -84,7 +91,7 @@ export const api = {
 
   projects: () => request<Project[]>("GET", "/api/projects"),
   createProject: (input: ProjectInput) => request<Project>("POST", "/api/projects", input),
-  updateProject: (key: string, patch: { name?: string; description?: string }) =>
+  updateProject: (key: string, patch: ProjectPatch) =>
     request<Project>("PATCH", `/api/projects/${enc(key)}`, patch),
 
   issues: (filter: IssueFilter = {}) => request<IssueSummary[]>("GET", `/api/issues${query(filter)}`),
@@ -92,25 +99,17 @@ export const api = {
   createIssue: (input: IssueInput) => request<Issue>("POST", "/api/issues", input),
   updateIssue: (id: string, patch: IssuePatch) => request<Issue>("PATCH", `/api/issues/${enc(id)}`, patch),
   deleteIssue: (id: string) => request<{ ok: true }>("DELETE", `/api/issues/${enc(id)}`),
-  comment: (id: string, body: string) => {
-    const payload = { body };
-    return request<Issue>("POST", `/api/issues/${enc(id)}/comments`, withAuthor(payload));
-  },
-
-  labels: () => request<string[]>("GET", "/api/labels"),
+  comment: (id: string, body: string) => request<Issue>("POST", `/api/issues/${enc(id)}/comments`, withAuthor({ body })),
 
   documents: (filter: DocumentFilter = {}) =>
     request<DocumentSummary[]>("GET", `/api/documents${query(filter)}`),
   document: (slug: string) => request<Document>("GET", `/api/documents/${enc(slug)}`),
   createDocument: (input: DocumentInput) => request<Document>("POST", "/api/documents", withAuthor(input)),
-  // baseUpdatedAt isn't in the shared type yet (server-side addition); widen it locally.
-  updateDocument: (slug: string, patch: DocumentPatch & { baseUpdatedAt?: string }) =>
+  updateDocument: (slug: string, patch: DocumentPatch) =>
     request<Document>("PATCH", `/api/documents/${enc(slug)}`, withAuthor(patch)),
   deleteDocument: (slug: string) => request<{ ok: true }>("DELETE", `/api/documents/${enc(slug)}`),
-  commentDocument: (slug: string, body: string) => {
-    const payload = { body };
-    return request<Document>("POST", `/api/documents/${enc(slug)}/comments`, withAuthor(payload));
-  },
+  commentDocument: (slug: string, body: string) =>
+    request<Document>("POST", `/api/documents/${enc(slug)}/comments`, withAuthor({ body })),
   versions: (slug: string) => request<DocumentVersionSummary[]>("GET", `/api/documents/${enc(slug)}/versions`),
   version: (slug: string, id: number) => request<DocumentVersion>("GET", `/api/documents/${enc(slug)}/versions/${id}`),
 };
