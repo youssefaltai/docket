@@ -1,4 +1,4 @@
-const CACHE = "docket-v1";
+const CACHE = "docket-v2";
 
 self.addEventListener("install", (event) => {
   self.skipWaiting();
@@ -17,7 +17,7 @@ async function networkFirst(request, fallbackUrl) {
   const cache = await caches.open(CACHE);
   try {
     const response = await fetch(request);
-    cache.put(fallbackUrl ?? request, response.clone());
+    if (response.ok) cache.put(fallbackUrl ?? request, response.clone());
     return response;
   } catch (err) {
     const cached = await cache.match(fallbackUrl ?? request);
@@ -31,7 +31,7 @@ async function staleWhileRevalidate(request) {
   const cached = await cache.match(request);
   const fetchPromise = fetch(request)
     .then((response) => {
-      cache.put(request, response.clone());
+      if (response.ok) cache.put(request, response.clone());
       return response;
     })
     .catch(() => cached);

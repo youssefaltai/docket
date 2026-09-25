@@ -24,6 +24,10 @@ function handle<Path extends string>(fn: (req: BunRequest<Path>) => unknown, sta
 }
 
 async function body(req: Request): Promise<Record<string, unknown>> {
+  // JSON only: browsers can't send it cross-origin without a CORS preflight, which Docket never allows.
+  if (!req.headers.get("content-type")?.includes("application/json")) {
+    throw new db.AppError("Expected Content-Type: application/json", 415);
+  }
   const data = await req.json().catch(() => {
     throw new db.AppError("Invalid JSON body");
   });
