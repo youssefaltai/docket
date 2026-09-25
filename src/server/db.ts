@@ -1,5 +1,5 @@
 import { Database, type SQLQueryBindings } from "bun:sqlite";
-import { existsSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { xdgDataHome } from "./paths.ts";
 import {
@@ -42,11 +42,7 @@ export const OPEN_STATUSES = STATUSES.filter((s) => !CLOSED_STATUSES.includes(s)
 
 // --- Connection and migrations ---
 
-// Local dev continuity: an existing ./data/docket.db keeps being used even though it
-// isn't XDG-compliant, so upgrading never silently "loses" a dev database. Fresh
-// installs (no DATABASE_PATH, no legacy path) get the proper XDG data location.
-const legacyPath = "./data/docket.db";
-const path = process.env.DATABASE_PATH ?? (existsSync(legacyPath) ? legacyPath : join(xdgDataHome(), "docket", "docket.db"));
+const path = process.env.DATABASE_PATH ?? join(xdgDataHome(), "docket", "docket.db");
 mkdirSync(dirname(path), { recursive: true });
 const db = new Database(path, { create: true });
 db.run("PRAGMA journal_mode = WAL");

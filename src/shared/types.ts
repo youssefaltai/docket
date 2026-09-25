@@ -25,7 +25,7 @@ export const PRIORITY_LABELS: Record<Priority, string> = {
 };
 
 export interface Workspace {
-  key: string; // URL-safe lowercase slug, e.g. "default"
+  key: string; // URL-safe lowercase slug, e.g. "acme"
   name: string;
   projectCount: number;
   createdAt: string;
@@ -119,7 +119,7 @@ export interface DocumentInput {
   content?: string;
   slug?: string; // default: slugified title (a-z, 0-9, "-"), deduped with -2, -3…; "doc-<n>" if empty
   position?: number; // default: last in the project
-  author?: string; // REST default "anonymous", MCP default "claude"
+  author?: string; // REST default "anonymous" (the web UI sends the viewer's name), MCP default "claude"
 }
 
 // Exact-text replacement, like an editor's find/replace. oldText must match exactly once.

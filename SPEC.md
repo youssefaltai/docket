@@ -18,11 +18,11 @@ src/web/index.html    HTML entry (Bun HTML import, bundled by Bun)
 src/web/*.tsx, *.css  React UI
 ```
 
-Env: `PORT` (default 7100), `DATABASE_PATH` (default `$XDG_DATA_HOME/docket/docket.db`, falling back to `./data/docket.db` if that already exists). Optional config file at `$XDG_CONFIG_HOME/docket/config` (or `$XDG_CONFIG_DIRS/docket/config`), `KEY=VALUE` lines; real env vars win. Dev: `bun run dev`. Prod: `bun run start`.
+Env: `PORT` (default 7100), `DATABASE_PATH` (default `$XDG_DATA_HOME/docket/docket.db`). Optional config file at `$XDG_CONFIG_HOME/docket/config` (or `$XDG_CONFIG_DIRS/docket/config`), `KEY=VALUE` lines; real env vars win. Dev: `bun run dev`. Prod: `bun run start`.
 
 ## Data
 
-- **workspaces**: key (PK, URL-safe lowercase slug, e.g. `default`), name, created_at, updated_at.
+- **workspaces**: key (PK, URL-safe lowercase slug, e.g. `acme`), name, created_at, updated_at.
 - **projects**: key (PK, 2–5 uppercase letters, unique across all workspaces), workspace (→ workspaces.key; required by the app), name, description, created_at, updated_at.
 - **issues**: id (PK), project_key, number (per-project sequence), title, description, status, priority, labels (JSON array), assignee, parent_id, created_at, updated_at, completed_at. Unique (project_key, number).
 - **issue_blocks**: blocker_id, blocked_id.
