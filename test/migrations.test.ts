@@ -57,14 +57,23 @@ test("a version 1 database upgrades with its data intact", async () => {
 
     const { body: issue } = await s.api("GET", "/api/issues/OLD-1");
     expect(issue).toMatchObject({ title: "Kept", labels: ["bug"], blocks: ["OLD-5"] });
-    expect(issue.comments[0].body).toBe("Still here");
+    expect(issue.comments[0]).toMatchObject({ body: "Still here", editedAt: null });
+
+    // Old comments can be edited: comments.edited_at exists.
+    const edited = await s.api("PATCH", `/api/issues/OLD-1/comments/${issue.comments[0].id}`, { body: "Edited", author: "me" });
+    expect(edited.status).toBe(200);
+    expect((await s.api("GET", "/api/issues/OLD-1")).body.comments[0]).toMatchObject({ body: "Edited", editedAt: expect.any(String) });
 
     // The per-project counter starts after the highest existing number.
     const { body: next } = await s.api("POST", "/api/issues", { project: "OLD", title: "New" });
     expect(next.id).toBe("OLD-6");
 
-    // Docs tables from later migrations exist.
+    // Docs tables from later migrations exist, document_comments.edited_at included.
     expect((await s.api("POST", "/api/documents", { project: "OLD", title: "Notes" })).status).toBe(201);
+    const { body: doc } = await s.api("POST", "/api/documents/notes/comments", { body: "Hi", author: "me" });
+    const cid = doc.comments[0].id;
+    expect((await s.api("PATCH", `/api/documents/notes/comments/${cid}`, { body: "Hello", author: "me" })).status).toBe(200);
+    expect((await s.api("GET", "/api/documents/notes")).body.comments[0]).toMatchObject({ body: "Hello", editedAt: expect.any(String) });
   } finally {
     await s.stop();
   }
