@@ -409,7 +409,7 @@ function Members({ workspace, members, reload, readOnly }: { workspace: string; 
     if (m.suspendedAt) return [["Reinstate", () => update(m, { suspended: false })]];
     const role = m.role === "admin" ? "member" : "admin";
     const suspend = () => {
-      const note = "They're signed out everywhere and their API keys stop working; what they wrote stays theirs.";
+      const note = "They lose access to this workspace; if it's their only one, they're signed out everywhere. What they wrote stays theirs.";
       if (confirm(`Suspend ${name}? ${note}`)) update(m, { suspended: true });
     };
     return [

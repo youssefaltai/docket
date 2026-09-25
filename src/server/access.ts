@@ -643,6 +643,8 @@ export function updateMember(a: Actor, workspace: unknown, username: unknown, pa
   db.transaction(() => {
     if (losesAdmin && activeAdmins(key) === 1) throw new AppError("Add another admin first", 409);
     if (role !== row.role) db.query("UPDATE workspace_members SET role = ? WHERE workspace = ? AND user_id = ?").run(role, key, row.id);
+    // Invites an admin made die with their admin rights, so no one can pre-mint a way back in.
+    if (losesAdmin) db.query("DELETE FROM codes WHERE created_by = ? AND workspace = ? AND used_at IS NULL").run(row.id, key);
     if (suspending) suspend(key, row);
     if (reinstating) setSuspended(key, row.id, null);
   }).immediate();

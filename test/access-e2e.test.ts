@@ -104,3 +104,24 @@ test("suspending an agent kills its token for good; only a new token brings it b
   const { token } = (await s.as("admin", "cookie").api("POST", `/api/workspaces/${s.workspace}/agents/e2e-bot/token`)).body;
   expect((await s.with({ token }).api("GET", "/api/me")).body.user.username).toBe("e2e-bot");
 });
+
+test("an admin's unused invites die when they're suspended or demoted", async () => {
+  const ws = s.workspace!;
+  const admin = s.as("admin", "cookie");
+  const mint = async (who: string) => (await s.as(who, "cookie").api("POST", `/api/workspaces/${ws}/invites`, { role: "admin" })).body.code;
+  const redeem = (code: string, username: string) => s.anon.api("POST", "/api/auth/redeem", { code, name: username, username });
+
+  await s.user("rogue", { role: "admin" });
+  const beforeSuspension = await mint("rogue");
+  expect((await admin.api("PATCH", `/api/workspaces/${ws}/members/rogue`, { suspended: true })).status).toBe(200);
+  expect((await redeem(beforeSuspension, "rogue2")).status).toBe(401);
+
+  await s.user("rogue3", { role: "admin" });
+  const beforeDemotion = await mint("rogue3");
+  expect((await admin.api("PATCH", `/api/workspaces/${ws}/members/rogue3`, { role: "member" })).status).toBe(200);
+  expect((await redeem(beforeDemotion, "rogue4")).status).toBe(401);
+
+  // Other admins' invites are untouched.
+  const kept = await mint("admin");
+  expect((await redeem(kept, "fresh")).status).toBe(200);
+});
