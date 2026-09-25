@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { xdgDataHome } from "./paths.ts";
 import {
+  CLOSED_STATUSES,
   PRIORITIES,
   STATUSES,
   type Comment,
@@ -21,10 +22,12 @@ import {
   type Priority,
   type Project,
   type ProjectInput,
+  type ProjectPatch,
   type ServerEvent,
   type Status,
   type Workspace,
   type WorkspaceInput,
+  type WorkspacePatch,
 } from "../shared/types.ts";
 
 /** An error with an HTTP status; REST returns it as `{ error }`, MCP as a tool error. */
@@ -36,9 +39,6 @@ export class AppError extends Error {
     super(message);
   }
 }
-
-export const CLOSED_STATUSES: Status[] = ["done", "canceled"];
-export const OPEN_STATUSES = STATUSES.filter((s) => !CLOSED_STATUSES.includes(s));
 
 // --- Connection and migrations ---
 
@@ -176,6 +176,9 @@ function changed(entity: ServerEvent["entity"], id: string) {
 
 const now = () => new Date().toISOString();
 
+const exists = (table: string, column: string, value: string) =>
+  db.query(`SELECT 1 FROM ${table} WHERE ${column} = ?`).get(value) !== null;
+
 function requireText(value: unknown, field: string): string {
   if (typeof value !== "string" || !value.trim()) throw new AppError(`${field} is required`);
   return value.trim();
@@ -249,22 +252,48 @@ function pickSlug(
   }
 }
 
+// --- Comments ---
+
+// Issue and doc comments live in parallel tables; each helper serves both.
+const COMMENTS = {
+  issue: { table: "comments", column: "issue_id" },
+  document: { table: "document_comments", column: "document_id" },
+} as const;
+
+type CommentOwner = keyof typeof COMMENTS;
+
+function listComments(owner: CommentOwner, ownerId: number): Comment[] {
+  const { table, column } = COMMENTS[owner];
+  return db
+    .query<Comment, [number]>(`SELECT id, author, body, created_at AS createdAt FROM ${table} WHERE ${column} = ? ORDER BY id`)
+    .all(ownerId);
+}
+
+function insertComment(owner: CommentOwner, ownerId: number, body: unknown, author: unknown, time: string) {
+  const { table, column } = COMMENTS[owner];
+  const text = requireText(body, "body");
+  const name = requireText(author, "author");
+  db.query(`INSERT INTO ${table} (${column}, author, body, created_at) VALUES (?, ?, ?, ?)`).run(ownerId, name, text, time);
+}
+
 // --- Workspaces ---
 
 interface WorkspaceRow {
   key: string;
   name: string;
+  project_count: number;
   created_at: string;
   updated_at: string;
 }
+
+const WORKSPACE_SELECT =
+  "SELECT w.*, (SELECT COUNT(*) FROM projects WHERE workspace = w.key) AS project_count FROM workspaces w";
 
 function toWorkspace(row: WorkspaceRow): Workspace {
   return {
     key: row.key,
     name: row.name,
-    projectCount: db
-      .query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM projects WHERE workspace = ?")
-      .get(row.key)!.n,
+    projectCount: row.project_count,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -273,7 +302,7 @@ function toWorkspace(row: WorkspaceRow): Workspace {
 function workspaceRow(key: unknown): WorkspaceRow {
   const row =
     typeof key === "string"
-      ? db.query<WorkspaceRow, [string]>("SELECT * FROM workspaces WHERE key = ?").get(key.trim().toLowerCase())
+      ? db.query<WorkspaceRow, [string]>(`${WORKSPACE_SELECT} WHERE w.key = ?`).get(key.trim().toLowerCase())
       : null;
   if (!row) throw new AppError(`Workspace ${key} not found`, 404);
   return row;
@@ -281,14 +310,14 @@ function workspaceRow(key: unknown): WorkspaceRow {
 
 export function listWorkspaces(): Workspace[] {
   return db
-    .query<WorkspaceRow, []>("SELECT * FROM workspaces ORDER BY name COLLATE NOCASE, key")
+    .query<WorkspaceRow, []>(`${WORKSPACE_SELECT} ORDER BY w.name COLLATE NOCASE, w.key`)
     .all()
     .map(toWorkspace);
 }
 
 export function createWorkspace(input: WorkspaceInput): Workspace {
   const name = requireText(input.name, "name");
-  const taken = (key: string) => db.query("SELECT 1 FROM workspaces WHERE key = ?").get(key) !== null;
+  const taken = (key: string) => exists("workspaces", "key", key);
   const key = pickSlug(input.key, name, taken, { label: "workspace key", fallback: "workspace" });
   const time = now();
   db.query("INSERT INTO workspaces (key, name, created_at, updated_at) VALUES (?, ?, ?, ?)").run(key, name, time, time);
@@ -296,7 +325,7 @@ export function createWorkspace(input: WorkspaceInput): Workspace {
   return toWorkspace(workspaceRow(key));
 }
 
-export function updateWorkspace(key: string, patch: { name?: unknown }): Workspace {
+export function updateWorkspace(key: string, patch: WorkspacePatch): Workspace {
   const row = workspaceRow(key);
   const name = patch.name === undefined ? row.name : requireText(patch.name, "name");
   db.query("UPDATE workspaces SET name = ?, updated_at = ? WHERE key = ?").run(name, now(), row.key);
@@ -311,27 +340,28 @@ interface ProjectRow {
   workspace: string;
   name: string;
   description: string;
+  counts: string; // JSON object: status → issue count, statuses without issues left out
+  doc_count: number;
   created_at: string;
   updated_at: string;
 }
 
+const PROJECT_SELECT = `
+  SELECT p.*,
+    (SELECT json_group_object(status, n) FROM (
+      SELECT status, COUNT(*) AS n FROM issues WHERE project_key = p.key GROUP BY status
+    )) AS counts,
+    (SELECT COUNT(*) FROM documents WHERE project_key = p.key) AS doc_count
+  FROM projects p`;
+
 function toProject(row: ProjectRow): Project {
-  const counts = Object.fromEntries(STATUSES.map((s) => [s, 0])) as Record<Status, number>;
-  const rows = db
-    .query<{ status: Status; n: number }, [string]>(
-      "SELECT status, COUNT(*) AS n FROM issues WHERE project_key = ? GROUP BY status",
-    )
-    .all(row.key);
-  for (const { status, n } of rows) counts[status] = n;
   return {
     key: row.key,
     workspace: row.workspace,
     name: row.name,
     description: row.description,
-    counts,
-    docCount: db
-      .query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM documents WHERE project_key = ?")
-      .get(row.key)!.n,
+    counts: { ...Object.fromEntries(STATUSES.map((s) => [s, 0])), ...JSON.parse(row.counts) },
+    docCount: row.doc_count,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -340,17 +370,17 @@ function toProject(row: ProjectRow): Project {
 function projectRow(key: unknown): ProjectRow {
   const row =
     typeof key === "string"
-      ? db.query<ProjectRow, [string]>("SELECT * FROM projects WHERE key = ?").get(key.trim().toUpperCase())
+      ? db.query<ProjectRow, [string]>(`${PROJECT_SELECT} WHERE p.key = ?`).get(key.trim().toUpperCase())
       : null;
   if (!row) throw new AppError(`Project ${key} not found`, 404);
   return row;
 }
 
 export function listProjects(filter: { workspace?: string } = {}): Project[] {
-  if (!filter.workspace) return db.query<ProjectRow, []>("SELECT * FROM projects ORDER BY key").all().map(toProject);
+  const workspace = filter.workspace ? workspaceRow(filter.workspace).key : null;
   return db
-    .query<ProjectRow, [string]>("SELECT * FROM projects WHERE workspace = ? ORDER BY key")
-    .all(workspaceRow(filter.workspace).key)
+    .query<ProjectRow, [string | null]>(`${PROJECT_SELECT} WHERE ?1 IS NULL OR p.workspace = ?1 ORDER BY p.key`)
+    .all(workspace)
     .map(toProject);
 }
 
@@ -360,9 +390,7 @@ export function createProject(input: ProjectInput): Project {
   const workspace = workspaceRow(requireText(input.workspace, "workspace")).key;
   const name = requireText(input.name, "name");
   const description = optionalText(input.description, "description");
-  if (db.query("SELECT 1 FROM projects WHERE key = ?").get(key)) {
-    throw new AppError(`Project ${key} already exists`, 409);
-  }
+  if (exists("projects", "key", key)) throw new AppError(`Project ${key} already exists`, 409);
   const time = now();
   db.query(
     "INSERT INTO projects (key, workspace, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -371,10 +399,7 @@ export function createProject(input: ProjectInput): Project {
   return toProject(projectRow(key));
 }
 
-export function updateProject(
-  key: string,
-  patch: { name?: unknown; description?: unknown; workspace?: unknown },
-): Project {
+export function updateProject(key: string, patch: ProjectPatch): Project {
   const row = projectRow(key);
   const name = patch.name === undefined ? row.name : requireText(patch.name, "name");
   const description =
@@ -444,17 +469,19 @@ function toSummary(row: IssueRow): IssueSummary {
   };
 }
 
+const findIssueId = (key: string, number: number) =>
+  db.query<{ id: number }, [string, number]>("SELECT id FROM issues WHERE project_key = ? AND number = ?").get(key, number)
+    ?.id;
+
 /** Resolves an identifier like "brd-12" to the issue's row id. */
 function issueId(identifier: unknown): number {
   const match = typeof identifier === "string" ? /^([a-z]{2,5})-(\d+)$/i.exec(identifier.trim()) : null;
   if (!match) throw new AppError(`Invalid issue identifier "${identifier}" (expected e.g. BRD-12)`);
   const key = match[1]!.toUpperCase();
   const number = Number(match[2]);
-  const row = db
-    .query<{ id: number }, [string, number]>("SELECT id FROM issues WHERE project_key = ? AND number = ?")
-    .get(key, number);
-  if (!row) throw new AppError(`Issue ${key}-${number} not found`, 404);
-  return row.id;
+  const id = findIssueId(key, number);
+  if (id === undefined) throw new AppError(`Issue ${key}-${number} not found`, 404);
+  return id;
 }
 
 function blockerIds(identifiers: unknown, self?: number): number[] {
@@ -500,21 +527,32 @@ function issueColumns(patch: IssuePatch): Record<string, SQLQueryBindings> {
 
 const isClosed = (status: Status) => CLOSED_STATUSES.includes(status);
 
-// Substring search: the query's own %, _ and \ match literally.
-const LIKE = "LIKE ? ESCAPE '\\'";
-const likePattern = (q: string) => `%${q.trim().replace(/[\\%_]/g, "\\$&")}%`;
-
-export function listIssues(filter: IssueFilter): IssueSummary[] {
+/**
+ * WHERE conditions shared by the issue and doc lists: workspace, project, and a substring
+ * search over `searched` (the query's own %, _ and \ match literally).
+ */
+function listScope(alias: string, filter: { workspace?: string; project?: string; q?: string }, searched: string[]) {
   const where: string[] = [];
   const params: SQLQueryBindings[] = [];
   if (filter.workspace) {
-    where.push("i.project_key IN (SELECT key FROM projects WHERE workspace = ?)");
+    where.push(`${alias}.project_key IN (SELECT key FROM projects WHERE workspace = ?)`);
     params.push(workspaceRow(filter.workspace).key);
   }
   if (filter.project) {
-    where.push("i.project_key = ?");
+    where.push(`${alias}.project_key = ?`);
     params.push(projectRow(filter.project).key);
   }
+  if (filter.q) {
+    where.push(`(${searched.map((column) => `${column} LIKE ? ESCAPE '\\'`).join(" OR ")})`);
+    params.push(...searched.map(() => `%${filter.q!.trim().replace(/[\\%_]/g, "\\$&")}%`));
+  }
+  return { where, params };
+}
+
+const whereClause = (where: string[]) => (where.length ? `WHERE ${where.join(" AND ")}` : "");
+
+export function listIssues(filter: IssueFilter): IssueSummary[] {
+  const { where, params } = listScope("i", filter, ["i.title", "i.description", ident("i")]);
   if (filter.status?.length) {
     where.push(`i.status IN (${filter.status.map(() => "?").join(", ")})`);
     params.push(...filter.status.map(checkStatus));
@@ -531,14 +569,8 @@ export function listIssues(filter: IssueFilter): IssueSummary[] {
     where.push("i.parent_id = ?");
     params.push(issueId(filter.parent));
   }
-  if (filter.q) {
-    where.push(`(i.title ${LIKE} OR i.description ${LIKE} OR ${ident("i")} ${LIKE})`);
-    const like = likePattern(filter.q);
-    params.push(like, like, like);
-  }
-  const sql = `${ISSUE_SELECT} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ${ISSUE_ORDER}`;
   return db
-    .query<IssueRow, SQLQueryBindings[]>(sql)
+    .query<IssueRow, SQLQueryBindings[]>(`${ISSUE_SELECT} ${whereClause(where)} ${ISSUE_ORDER}`)
     .all(...params)
     .map(toSummary);
 }
@@ -557,11 +589,7 @@ export function getIssue(identifier: string): Issue {
     )
     .all(id)
     .map((r) => r.ref);
-  const comments = db
-    .query<Comment, [number]>(
-      "SELECT id, author, body, created_at AS createdAt FROM comments WHERE issue_id = ? ORDER BY id",
-    )
-    .all(id);
+  const comments = listComments("issue", id);
   const docs = db
     .query<DocumentRow, [number]>(
       `SELECT ${DOC_COLUMNS("d")} FROM document_refs r JOIN documents d ON d.id = r.document_id
@@ -627,6 +655,9 @@ export function createIssue(input: IssueInput): Issue {
 export function updateIssue(identifier: string, patch: IssuePatch): Issue {
   const id = issueId(identifier);
   const cols = issueColumns(patch);
+  const current = db
+    .query<{ status: Status; parent_id: number | null }, [number]>("SELECT status, parent_id FROM issues WHERE id = ?")
+    .get(id)!;
   // A new parent must not be the issue itself or one of its descendants.
   for (let p = cols.parent_id as number | null | undefined; p != null; ) {
     if (p === id) throw new AppError("An issue can't be its own parent or ancestor");
@@ -635,21 +666,15 @@ export function updateIssue(identifier: string, patch: IssuePatch): Issue {
   const blockers = patch.blockedBy === undefined ? undefined : blockerIds(patch.blockedBy, id);
   const time = now();
   if (cols.status !== undefined) {
-    const current = db.query<{ status: Status }, [number]>("SELECT status FROM issues WHERE id = ?").get(id)!;
     const closing = isClosed(cols.status as Status);
     if (closing !== isClosed(current.status)) cols.completed_at = closing ? time : null;
   }
   cols.updated_at = time;
   // The old and new parent and any blocker added or removed change too.
   const related = new Set<number>();
-  if (cols.parent_id !== undefined) {
-    const { parent_id } = db
-      .query<{ parent_id: number | null }, [number]>("SELECT parent_id FROM issues WHERE id = ?")
-      .get(id)!;
-    if (parent_id !== cols.parent_id) {
-      if (parent_id !== null) related.add(parent_id);
-      if (cols.parent_id !== null) related.add(cols.parent_id as number);
-    }
+  if (cols.parent_id !== undefined && cols.parent_id !== current.parent_id) {
+    if (current.parent_id !== null) related.add(current.parent_id);
+    if (cols.parent_id !== null) related.add(cols.parent_id as number);
   }
   if (blockers) {
     const before = db
@@ -694,7 +719,7 @@ export function deleteIssue(identifier: string) {
   const ref = db.transaction(() => {
     for (const issue of issues) db.query("UPDATE issues SET updated_at = ? WHERE id = ?").run(time, issue.id);
     return db
-      .query<{ ref: string }, [number]>("DELETE FROM issues WHERE id = ? RETURNING project_key || '-' || number AS ref")
+      .query<{ ref: string }, [number]>(`DELETE FROM issues WHERE id = ? RETURNING ${ident("issues")} AS ref`)
       .get(id)!.ref;
   })();
   changed("issue", ref);
@@ -704,11 +729,9 @@ export function deleteIssue(identifier: string) {
 
 export function addComment(identifier: string, body: unknown, author: unknown): Issue {
   const id = issueId(identifier);
-  const text = requireText(body, "body");
-  const name = requireText(author, "author");
   const time = now();
   db.transaction(() => {
-    db.query("INSERT INTO comments (issue_id, author, body, created_at) VALUES (?, ?, ?, ?)").run(id, name, text, time);
+    insertComment("issue", id, body, author, time);
     db.query("UPDATE issues SET updated_at = ? WHERE id = ?").run(time, id);
   })();
   const issue = getIssue(identifier);
@@ -783,10 +806,6 @@ const nextPosition = (project: string) =>
     .query<{ n: number }, [string]>("SELECT COALESCE(MAX(position), 0) + 1 AS n FROM documents WHERE project_key = ?")
     .get(project)!.n;
 
-function slugTaken(slug: string): boolean {
-  return db.query("SELECT 1 FROM documents WHERE slug = ?").get(slug) !== null;
-}
-
 /** Applies exact-text replacements in order; throws (applying nothing) unless each matches exactly once. */
 function applyEdits(content: string, edits: unknown): string {
   if (!Array.isArray(edits)) throw new AppError("edits must be an array of { oldText, newText }");
@@ -838,10 +857,8 @@ function saveRefs(documentId: number, content: string) {
   db.query("DELETE FROM document_refs WHERE document_id = ?").run(documentId);
   const ids = new Set<number>();
   for (const [, key, number] of content.matchAll(/\b([A-Z]{2,5})-(\d+)\b/g)) {
-    const row = db
-      .query<{ id: number }, [string, number]>("SELECT id FROM issues WHERE project_key = ? AND number = ?")
-      .get(key!, Number(number));
-    if (row) ids.add(row.id);
+    const id = findIssueId(key!, Number(number));
+    if (id !== undefined) ids.add(id);
   }
   [...ids].forEach((issueId, ord) => {
     db.query("INSERT INTO document_refs (document_id, issue_id, ord) VALUES (?, ?, ?)").run(documentId, issueId, ord);
@@ -849,25 +866,11 @@ function saveRefs(documentId: number, content: string) {
 }
 
 export function listDocuments(filter: DocumentFilter): DocumentSummary[] {
-  const where: string[] = [];
-  const params: SQLQueryBindings[] = [];
-  if (filter.workspace) {
-    where.push("d.project_key IN (SELECT key FROM projects WHERE workspace = ?)");
-    params.push(workspaceRow(filter.workspace).key);
-  }
-  if (filter.project) {
-    where.push("d.project_key = ?");
-    params.push(projectRow(filter.project).key);
-  }
-  if (filter.q) {
-    where.push(`(d.title ${LIKE} OR d.content ${LIKE})`);
-    const like = likePattern(filter.q);
-    params.push(like, like);
-  }
-  const sql = `SELECT ${DOC_COLUMNS("d")} FROM documents d ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
-    ORDER BY d.project_key, d.position, d.id`;
+  const { where, params } = listScope("d", filter, ["d.title", "d.content"]);
   return db
-    .query<DocumentRow, SQLQueryBindings[]>(sql)
+    .query<DocumentRow, SQLQueryBindings[]>(
+      `SELECT ${DOC_COLUMNS("d")} FROM documents d ${whereClause(where)} ORDER BY d.project_key, d.position, d.id`,
+    )
     .all(...params)
     .map(toDocSummary);
 }
@@ -880,11 +883,7 @@ export function getDocument(slug: string): Document {
     )
     .all(row.id)
     .map(toSummary);
-  const comments = db
-    .query<Comment, [number]>(
-      "SELECT id, author, body, created_at AS createdAt FROM document_comments WHERE document_id = ? ORDER BY id",
-    )
-    .all(row.id);
+  const comments = listComments("document", row.id);
   const { n: versionCount } = db
     .query<{ n: number }, [number]>("SELECT COUNT(*) AS n FROM document_versions WHERE document_id = ?")
     .get(row.id)!;
@@ -899,7 +898,7 @@ export function createDocument(input: DocumentInput): Document {
   const position = input.position === undefined ? undefined : checkPosition(input.position);
   const time = now();
   const slug = db.transaction(() => {
-    const slug = pickSlug(input.slug, title, slugTaken, { label: "slug", fallback: "doc" });
+    const slug = pickSlug(input.slug, title, (s) => exists("documents", "slug", s), { label: "slug", fallback: "doc" });
     const { id } = db
       .query<{ id: number }, SQLQueryBindings[]>(
         `INSERT INTO documents (slug, project_key, title, content, position, created_at, updated_at, updated_by)
@@ -964,14 +963,7 @@ export function deleteDocument(slug: string) {
 
 export function addDocumentComment(slug: string, body: unknown, author: unknown): Document {
   const row = documentRow(slug);
-  const text = requireText(body, "body");
-  const name = requireText(author, "author");
-  db.query("INSERT INTO document_comments (document_id, author, body, created_at) VALUES (?, ?, ?, ?)").run(
-    row.id,
-    name,
-    text,
-    now(),
-  );
+  insertComment("document", row.id, body, author, now());
   changed("document", row.slug);
   return getDocument(row.slug);
 }
