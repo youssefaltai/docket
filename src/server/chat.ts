@@ -12,7 +12,9 @@ const MAX_BODY = 16 * 1024; // a chat message is at most 4000 characters
 
 // Only these pass, each way: no cookies, credentials, hop-by-hop or encoding headers.
 const REQUEST_HEADERS = ["content-type", "accept", "last-event-id"];
-const RESPONSE_HEADERS = ["content-type", "cache-control", "retry-after"];
+const RESPONSE_HEADERS = ["content-type", "cache-control", "retry-after", "x-accel-buffering"];
+// What the service may answer with: nothing that would render as a page on Docket's origin.
+const ANSWER_TYPES = ["application/json", "text/event-stream"];
 
 const pick = (from: Headers, names: string[]) => {
   const to = new Headers();
@@ -24,6 +26,19 @@ const pick = (from: Headers, names: string[]) => {
 };
 
 // Shaped like the service's own errors, so the UI handles both the same way.
+/** The request body, or undefined once it passes `max` bytes (stops reading there, chunked or not). */
+async function readCapped(req: Request, max: number): Promise<Blob | undefined> {
+  if (Number(req.headers.get("content-length") ?? 0) > max) return undefined;
+  const chunks: BlobPart[] = [];
+  let size = 0;
+  for await (const chunk of req.body ?? []) {
+    size += chunk.byteLength;
+    if (size > max) return undefined;
+    chunks.push(chunk as Uint8Array<ArrayBuffer>);
+  }
+  return new Blob(chunks);
+}
+
 const error = (message: string, code: string, status: number) => Response.json({ error: message, code }, { status });
 
 export async function proxyChat(req: Request, server: Bun.Server<unknown>): Promise<Response> {
@@ -31,19 +46,23 @@ export async function proxyChat(req: Request, server: Bun.Server<unknown>): Prom
   if (!base) return error("The assistant isn't set up", "not_configured", 404);
   const actor = actorOf(req);
   if (actor.sessionId === null) return error("The assistant works from the web app, not with an API key", "forbidden", 403);
-  let body: ArrayBuffer | undefined;
+  // Bun routes on the raw path but req.url is resolved, so "/api/chat/%2e%2e/x" arrives here as "/x".
+  const url = new URL(req.url);
+  if (url.pathname !== "/api/chat" && !url.pathname.startsWith("/api/chat/")) return error("Not found", "not_found", 404);
+  let body: Blob | undefined;
   if (req.method !== "GET" && req.method !== "HEAD" && req.method !== "DELETE") {
-    if (Number(req.headers.get("content-length") ?? 0) > MAX_BODY) return error("That message is too long", "invalid", 413);
-    body = await req.arrayBuffer();
-    if (body.byteLength > MAX_BODY) return error("That message is too long", "invalid", 413);
-    if (body.byteLength && !isJson(req)) return error("Expected Content-Type: application/json", "invalid", 415);
+    body = await readCapped(req, MAX_BODY);
+    if (!body) return error("That message is too long", "invalid", 413);
+    if (body.size && !isJson(req)) return error("Expected Content-Type: application/json", "invalid", 415);
   }
   const token = chatKey(actor);
 
-  const url = new URL(req.url);
   const target = new URL(base);
   target.pathname = target.pathname.replace(/\/+$/, "") + url.pathname.slice("/api".length);
   target.search = url.search;
+  // And the result must still be the service's /chat, whatever the path held.
+  const root = new URL(base).pathname.replace(/\/+$/, "") + "/chat";
+  if (target.pathname !== root && !target.pathname.startsWith(`${root}/`)) return error("Not found", "not_found", 404);
 
   const headers = pick(req.headers, REQUEST_HEADERS);
   headers.set("authorization", `Bearer ${token}`);
@@ -59,6 +78,11 @@ export async function proxyChat(req: Request, server: Bun.Server<unknown>): Prom
       signal: AbortSignal.any([req.signal, started.signal, AbortSignal.timeout(MAX_MS)]),
       redirect: "manual",
     });
+    const type = res.headers.get("content-type")?.split(";")[0]!.trim().toLowerCase();
+    if (res.body && type !== undefined && !ANSWER_TYPES.includes(type)) {
+      await res.body.cancel();
+      return error("The assistant answered with something unexpected", "chat_unavailable", 502);
+    }
     return new Response(res.body, { status: res.status, headers: pick(res.headers, RESPONSE_HEADERS) });
   } catch {
     return started.signal.aborted
