@@ -855,6 +855,9 @@ export function createDocument(input: DocumentInput): Document {
 export function updateDocument(slug: string, patch: DocumentPatch): Document {
   const row = documentRow(slug);
   const author = requireText(patch.author, "author");
+  if (patch.baseUpdatedAt !== undefined && patch.baseUpdatedAt !== row.updated_at) {
+    throw new AppError("Document changed since you started editing", 409);
+  }
   if (patch.content !== undefined && patch.edits !== undefined) {
     throw new AppError("Pass either content (full replacement) or edits, not both");
   }

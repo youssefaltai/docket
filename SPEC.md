@@ -114,7 +114,7 @@ Linear-style docs inside projects. Markdown is the source of truth (agents write
 | GET | /api/documents/:slug/versions | | `DocumentVersionSummary[]` (newest first) |
 | GET | /api/documents/:slug/versions/:id | | `DocumentVersion` |
 
-`edits` errors (400) name the failing edit and whether `oldText` matched 0 or many times; nothing is applied unless every edit applies. `GET /api/issues/:id` now includes `docs` (documents mentioning it). `Project` includes `docCount`. Mutations publish `{ type: "changed", entity: "document", id: slug }`.
+`DocumentPatch.baseUpdatedAt` (optional) is the document's `updatedAt` the client started editing from: if present and different from the current `updatedAt`, the PATCH answers 409 `{ "error": "Document changed since you started editing" }` and changes nothing. The web editor sends it with every save; MCP `update_document` accepts it too. `edits` errors (400) name the failing edit and whether `oldText` matched 0 or many times; nothing is applied unless every edit applies. `GET /api/issues/:id` now includes `docs` (documents mentioning it). `Project` includes `docCount`. Mutations publish `{ type: "changed", entity: "document", id: slug }`.
 
 **MCP tools** (added to the existing 7)
 
@@ -123,7 +123,7 @@ Linear-style docs inside projects. Markdown is the source of truth (agents write
 | list_documents | workspace?, project?, query? | one line per doc: `slug · Title · PROJECT · updated 2h ago by claude` |
 | get_document | slug | full markdown plus metadata and mentioned issues |
 | create_document | project, title, content, slug?, position?, author? | |
-| update_document | slug, title?, content?, edits?, project?, position?, author? | prefer `edits` for small changes to long docs; `content` replaces everything |
+| update_document | slug, title?, content?, edits?, project?, position?, baseUpdatedAt?, author? | prefer `edits` for small changes to long docs; `content` replaces everything; `baseUpdatedAt` rejects the update if the doc changed since it was read |
 | comment_document | slug, body, author? | |
 
 Tool descriptions must say: docs are markdown; mention issues by identifier (e.g. BRD-2) and they auto-link; link other docs with `[Title](/doc/slug)`; use `edits` for targeted changes.

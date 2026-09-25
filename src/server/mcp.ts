@@ -359,6 +359,10 @@ function createServer(): McpServer {
           .describe("Targeted find/replace edits, applied in order, all or nothing"),
         project: projectKey.optional().describe("Move the doc to this project"),
         position: z.number().optional().describe("Order within the project, ascending"),
+        baseUpdatedAt: z
+          .string()
+          .optional()
+          .describe("The updatedAt you read with get_document. If the doc changed since, nothing is applied (reread and retry). Recommended with `content`."),
         author: docAuthor,
       },
     },
