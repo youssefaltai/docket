@@ -74,6 +74,12 @@ export interface Comment {
   author: string;
   body: string; // markdown
   createdAt: string;
+  editedAt: string | null; // set when the body was last edited
+}
+
+export interface LabelCount {
+  label: string;
+  open: number; // open issues carrying it
 }
 
 export interface Issue extends IssueSummary {

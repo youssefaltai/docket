@@ -19,6 +19,7 @@ import {
   type IssueInput,
   type IssuePatch,
   type IssueSummary,
+  type LabelCount,
   type Priority,
   type Project,
   type ProjectInput,
@@ -149,6 +150,11 @@ const MIGRATIONS = [
   ALTER TABLE projects ADD COLUMN next_number INTEGER NOT NULL DEFAULT 1;
   UPDATE projects SET next_number = COALESCE((SELECT MAX(number) FROM issues WHERE project_key = projects.key), 0) + 1;
   `,
+  // Comments can be edited; edited_at marks it.
+  `
+  ALTER TABLE comments ADD COLUMN edited_at TEXT;
+  ALTER TABLE document_comments ADD COLUMN edited_at TEXT;
+  `,
 ];
 
 const { user_version } = db.query("PRAGMA user_version").get() as { user_version: number };
@@ -265,7 +271,9 @@ type CommentOwner = keyof typeof COMMENTS;
 function listComments(owner: CommentOwner, ownerId: number): Comment[] {
   const { table, column } = COMMENTS[owner];
   return db
-    .query<Comment, [number]>(`SELECT id, author, body, created_at AS createdAt FROM ${table} WHERE ${column} = ? ORDER BY id`)
+    .query<Comment, [number]>(
+      `SELECT id, author, body, created_at AS createdAt, edited_at AS editedAt FROM ${table} WHERE ${column} = ? ORDER BY id`,
+    )
     .all(ownerId);
 }
 
@@ -274,6 +282,34 @@ function insertComment(owner: CommentOwner, ownerId: number, body: unknown, auth
   const text = requireText(body, "body");
   const name = requireText(author, "author");
   db.query(`INSERT INTO ${table} (${column}, author, body, created_at) VALUES (?, ?, ?, ?)`).run(ownerId, name, text, time);
+}
+
+/**
+ * The id of a comment on this owner that `author` wrote (case-insensitive). Authors are
+ * self-declared, so this guards against mistakes (an agent rewriting a person's note), not abuse.
+ */
+function ownComment(owner: CommentOwner, ownerId: number, commentId: unknown, author: unknown): number {
+  const { table, column } = COMMENTS[owner];
+  const id = Number(commentId);
+  const row = Number.isInteger(id)
+    ? db.query<{ author: string }, [number, number]>(`SELECT author FROM ${table} WHERE id = ? AND ${column} = ?`).get(id, ownerId)
+    : null;
+  if (!row) throw new AppError(`Comment ${commentId} not found`, 404);
+  if (row.author.toLowerCase() !== requireText(author, "author").toLowerCase()) {
+    throw new AppError(`Only ${row.author} can change this comment`, 403);
+  }
+  return id;
+}
+
+function updateComment(owner: CommentOwner, ownerId: number, commentId: unknown, body: unknown, author: unknown, time: string) {
+  const id = ownComment(owner, ownerId, commentId, author);
+  const text = requireText(body, "body");
+  db.query(`UPDATE ${COMMENTS[owner].table} SET body = ?, edited_at = ? WHERE id = ?`).run(text, time, id);
+}
+
+function deleteComment(owner: CommentOwner, ownerId: number, commentId: unknown, author: unknown) {
+  const id = ownComment(owner, ownerId, commentId, author);
+  db.query(`DELETE FROM ${COMMENTS[owner].table} WHERE id = ?`).run(id);
 }
 
 // --- Workspaces ---
@@ -727,11 +763,12 @@ export function deleteIssue(identifier: string) {
   for (const doc of docs) changed("document", doc.slug);
 }
 
-export function addComment(identifier: string, body: unknown, author: unknown): Issue {
+/** Runs a change to an issue's comments, bumping the issue in the same transaction. */
+function changeIssueComments(identifier: string, change: (id: number, time: string) => void): Issue {
   const id = issueId(identifier);
   const time = now();
   db.transaction(() => {
-    insertComment("issue", id, body, author, time);
+    change(id, time);
     db.query("UPDATE issues SET updated_at = ? WHERE id = ?").run(time, id);
   })();
   const issue = getIssue(identifier);
@@ -739,13 +776,28 @@ export function addComment(identifier: string, body: unknown, author: unknown): 
   return issue;
 }
 
-export function listLabels(): string[] {
+export function addComment(identifier: string, body: unknown, author: unknown): Issue {
+  return changeIssueComments(identifier, (id, time) => insertComment("issue", id, body, author, time));
+}
+
+export function updateIssueComment(identifier: string, commentId: unknown, body: unknown, author: unknown): Issue {
+  return changeIssueComments(identifier, (id, time) => updateComment("issue", id, commentId, body, author, time));
+}
+
+export function deleteIssueComment(identifier: string, commentId: unknown, author: unknown): Issue {
+  return changeIssueComments(identifier, (id) => deleteComment("issue", id, commentId, author));
+}
+
+/** Labels in use (optionally in one workspace), each with how many open issues carry it. */
+export function listLabels(filter: { workspace?: string } = {}): LabelCount[] {
+  const { where, params } = listScope("i", filter, []);
   return db
-    .query<{ value: string }, []>(
-      "SELECT DISTINCT value FROM issues, json_each(issues.labels) ORDER BY value COLLATE NOCASE",
+    .query<LabelCount, SQLQueryBindings[]>(
+      `SELECT l.value AS label, SUM(i.status NOT IN (${CLOSED_STATUSES.map(() => "?").join(", ")})) AS open
+       FROM issues i, json_each(i.labels) l ${whereClause(where)}
+       GROUP BY l.value ORDER BY l.value COLLATE NOCASE`,
     )
-    .all()
-    .map((r) => r.value);
+    .all(...CLOSED_STATUSES, ...params);
 }
 
 // --- Documents ---
@@ -962,11 +1014,24 @@ export function deleteDocument(slug: string) {
   changed("document", row.slug);
 }
 
-export function addDocumentComment(slug: string, body: unknown, author: unknown): Document {
+/** Runs a change to a doc's comments. It leaves the doc's updated_at alone, so an open editor sees no conflict. */
+function changeDocumentComments(slug: string, change: (id: number) => void): Document {
   const row = documentRow(slug);
-  insertComment("document", row.id, body, author, now());
+  change(row.id);
   changed("document", row.slug);
   return getDocument(row.slug);
+}
+
+export function addDocumentComment(slug: string, body: unknown, author: unknown): Document {
+  return changeDocumentComments(slug, (id) => insertComment("document", id, body, author, now()));
+}
+
+export function updateDocumentComment(slug: string, commentId: unknown, body: unknown, author: unknown): Document {
+  return changeDocumentComments(slug, (id) => updateComment("document", id, commentId, body, author, now()));
+}
+
+export function deleteDocumentComment(slug: string, commentId: unknown, author: unknown): Document {
+  return changeDocumentComments(slug, (id) => deleteComment("document", id, commentId, author));
 }
 
 export function listDocumentVersions(slug: string): DocumentVersionSummary[] {

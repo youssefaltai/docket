@@ -87,6 +87,16 @@ export const apiRoutes = {
       return db.addComment(req.params.id, text, author);
     }, 201),
   },
+  "/api/issues/:id/comments/:cid": {
+    PATCH: handle<"/api/issues/:id/comments/:cid">(async (req) => {
+      const { body: text, author } = await authored(req);
+      return db.updateIssueComment(req.params.id, req.params.cid, text, author);
+    }),
+    DELETE: handle<"/api/issues/:id/comments/:cid">(async (req) => {
+      const { author } = await authored(req);
+      return db.deleteIssueComment(req.params.id, req.params.cid, author);
+    }),
+  },
   "/api/documents": {
     GET: handle((req) =>
       db.listDocuments({ workspace: param(req, "workspace"), project: param(req, "project"), q: param(req, "q") }),
@@ -117,6 +127,16 @@ export const apiRoutes = {
       return db.addDocumentComment(req.params.slug, text, author);
     }, 201),
   },
+  "/api/documents/:slug/comments/:cid": {
+    PATCH: handle<"/api/documents/:slug/comments/:cid">(async (req) => {
+      const { body: text, author } = await authored(req);
+      return db.updateDocumentComment(req.params.slug, req.params.cid, text, author);
+    }),
+    DELETE: handle<"/api/documents/:slug/comments/:cid">(async (req) => {
+      const { author } = await authored(req);
+      return db.deleteDocumentComment(req.params.slug, req.params.cid, author);
+    }),
+  },
   "/api/documents/:slug/versions": {
     GET: handle<"/api/documents/:slug/versions">((req) => db.listDocumentVersions(req.params.slug)),
   },
@@ -126,7 +146,7 @@ export const apiRoutes = {
     ),
   },
   "/api/labels": {
-    GET: handle(() => db.listLabels()),
+    GET: handle((req) => db.listLabels({ workspace: param(req, "workspace") }).map((l) => l.label)),
   },
   "/api/*": () => Response.json({ error: "Not found" }, { status: 404 }),
 };

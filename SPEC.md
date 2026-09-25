@@ -26,7 +26,7 @@ Env: `PORT` (default 7100), `DATABASE_PATH` (default `$XDG_DATA_HOME/docket/dock
 - **projects**: key (PK, 2–5 uppercase letters, unique across all workspaces), workspace (→ workspaces.key; required by the app), name, description, next_number (the next issue number), created_at, updated_at.
 - **issues**: id (PK), project_key, number (per-project sequence from `projects.next_number`; never reused after a delete), title, description, status, priority, labels (JSON array), assignee, parent_id, created_at, updated_at, completed_at. Unique (project_key, number).
 - **issue_blocks**: blocker_id, blocked_id. No cycles: setting `blockedBy` fails (400) if the issue itself or any issue it already blocks, directly or through a chain, is among the blockers.
-- **comments**: id, issue_id, author, body, created_at.
+- **comments**: id, issue_id, author, body, created_at, edited_at (set on each edit, else null).
 
 Identifier = `${project_key}-${number}`, parsed case-insensitively. Issues can't move between projects. Any change to an issue or its comments bumps `updated_at`. Deleting an issue also bumps `updated_at` on, and publishes `issue` events for, its sub-issues (parent cleared), its parent, and the issues it blocked or was blocked by; docs that mentioned it get a `document` event. Changing an issue's parent or blockers likewise bumps and publishes the old and new parent and each blocker added or removed. `completed_at` is set when status enters done/canceled, cleared when it leaves. List order: status order, then priority (1→4, then 0 last), then `updated_at` desc. WAL mode on.
 
@@ -48,7 +48,11 @@ Request bodies (including `POST /api/login`) must be `Content-Type: application/
 | PATCH | /api/issues/:id | `IssuePatch` | `Issue` |
 | DELETE | /api/issues/:id | | `{ ok: true }` |
 | POST | /api/issues/:id/comments | `{ body, author? }` (author default "anonymous") | `Issue` |
-| GET | /api/labels | | `string[]` (distinct, sorted) |
+| PATCH | /api/issues/:id/comments/:cid | `{ body, author? }` | `Issue` |
+| DELETE | /api/issues/:id/comments/:cid | `{ author? }` | `Issue` |
+| GET | /api/labels | `?workspace` | `string[]` (distinct, sorted) |
+
+Only a comment's author (case-insensitive) may edit or delete it, else 403. Authors are self-declared, so this guards against mistakes (an agent rewriting a person's note), not abuse. A `:cid` not on that issue or doc is 404. Editing sets `editedAt`; deleting is permanent. Both bump the issue's `updated_at` like adding a comment; doc comments never bump the doc (so an open editor gets no conflict).
 
 ## Realtime
 
@@ -73,6 +77,7 @@ Tools return short markdown text (one line per issue: `BRD-3 · todo · high · 
 | create_issue | project, title, description?, status?, priority?, labels?, assignee?, parent?, blockedBy? | |
 | update_issue | id + any of title, description, status, priority, labels, assignee, parent, blockedBy | |
 | comment_issue | id, body, author? (default "claude") | use for progress notes |
+| list_labels | workspace? | `label · N open`, so agents reuse existing labels |
 
 Tool descriptions must explain the conventions (workspace → project → issue/doc, statuses, priority numbers, identifiers) so an agent can use them without reading docs. No issue delete tool: agents cancel instead.
 
@@ -113,12 +118,14 @@ Linear-style docs inside projects. Markdown is the source of truth (agents write
 | PATCH | /api/documents/:slug | `DocumentPatch` | `Document` |
 | DELETE | /api/documents/:slug | | `{ ok: true }` |
 | POST | /api/documents/:slug/comments | `{ body, author? }` | `Document` |
+| PATCH | /api/documents/:slug/comments/:cid | `{ body, author? }` | `Document` |
+| DELETE | /api/documents/:slug/comments/:cid | `{ author? }` | `Document` |
 | GET | /api/documents/:slug/versions | | `DocumentVersionSummary[]` (newest first) |
 | GET | /api/documents/:slug/versions/:id | | `DocumentVersion` |
 
 `DocumentPatch.baseUpdatedAt` (optional) is the document's `updatedAt` the client started editing from: if present and different from the current `updatedAt`, the PATCH answers 409 `{ "error": "Document changed since you started editing" }` and changes nothing. Every save moves `updatedAt` strictly forward (at least 1 ms past the previous one), so it works as a version token even for saves in the same millisecond. The web editor sends it with every save; MCP `update_document` accepts it too. `edits` errors (400) name the failing edit and whether `oldText` matched 0 or many times (overlapping occurrences count: `aa` matches `aaa` twice); nothing is applied unless every edit applies. `GET /api/issues/:id` now includes `docs` (documents mentioning it). `Project` includes `docCount`. Mutations publish `{ type: "changed", entity: "document", id: slug }`.
 
-**MCP tools** (added to the 11 above)
+**MCP tools** (added to the 12 above)
 
 | Tool | Input | Notes |
 |---|---|---|
@@ -128,6 +135,10 @@ Linear-style docs inside projects. Markdown is the source of truth (agents write
 | update_document | slug, title?, content?, edits?, project?, position?, baseUpdatedAt?, author? | prefer `edits` for small changes to long docs; `content` replaces everything; `baseUpdatedAt` rejects the update if the doc changed since it was read |
 | comment_document | slug, body, author? | |
 | delete_document | slug | permanent (versions and comments too); `destructiveHint` |
+| update_comment | issue? or document?, comment, body, author? | exactly one of issue/document; own comments only |
+| delete_comment | issue? or document?, comment, author? | same; `destructiveHint` |
+
+`get_issue` and `get_document` show each comment as `**author** · #id · time` (plus ` · edited`), so agents can address it.
 
 Tool descriptions must say: docs are markdown; mention issues by identifier (e.g. BRD-2) and they auto-link; link other docs with `[Title](/doc/slug)`; use `edits` for targeted changes.
 
@@ -150,6 +161,10 @@ Migration 3 (additive): creates `workspaces`, inserts `default` / "Default", add
 ## Issue numbering
 
 Migration 4 (additive): adds `projects.next_number INTEGER NOT NULL DEFAULT 1`, backfilled to `MAX(number) + 1` per project. `createIssue` takes the number from it (increment inside the insert transaction), so deleting an issue never frees its number. Numbers deleted before the migration (above the current max) can be reused once.
+
+## Comment edits
+
+Migration 5 (additive): adds nullable `edited_at` to `comments` and `document_comments`. `Comment` includes `editedAt: string | null`.
 
 ## Deploy
 
