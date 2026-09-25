@@ -68,7 +68,7 @@ Linear's model: sign-in is always required, accounts are global, each workspace 
 
 | Method | Path | Body | Returns |
 |---|---|---|---|
-| GET / PATCH | /api/me | `{ name?, username?, email? }` | `Me` `{ user, workspaces: [{ key, name, role }] }` |
+| GET / PATCH | /api/me | `{ name?, username?, email? }` | `Me` `{ user, workspaces: [{ key, name, role }] }`; only here does `user` carry its numeric `id`, stable across renames (docket-chat keys history by it) |
 | GET | /api/sessions | | `Session[]` (`current` marks this one) |
 | DELETE | /api/sessions, /api/sessions/:id | | all but this one, or one |
 | POST | /api/sign-in-links | | 201 `CodeLink` `{ code, url, expiresAt }` for yourself |
