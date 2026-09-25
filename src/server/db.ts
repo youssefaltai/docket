@@ -144,6 +144,11 @@ const MIGRATIONS = [
   UPDATE projects SET workspace = 'default';
   CREATE INDEX projects_workspace ON projects(workspace);
   `,
+  // Issue numbers come from a per-project counter, so a deleted issue's number is never reused.
+  `
+  ALTER TABLE projects ADD COLUMN next_number INTEGER NOT NULL DEFAULT 1;
+  UPDATE projects SET next_number = COALESCE((SELECT MAX(number) FROM issues WHERE project_key = projects.key), 0) + 1;
+  `,
 ];
 
 const { user_version } = db.query("PRAGMA user_version").get() as { user_version: number };
@@ -455,7 +460,21 @@ function issueId(identifier: unknown): number {
 function blockerIds(identifiers: unknown, self?: number): number[] {
   if (!Array.isArray(identifiers)) throw new AppError("blockedBy must be an array of issue identifiers");
   const ids = [...new Set(identifiers.map(issueId))];
-  if (self !== undefined && ids.includes(self)) throw new AppError("An issue can't block itself");
+  if (self === undefined) return ids; // a new issue blocks nothing yet, so it can't close a cycle
+  if (ids.includes(self)) throw new AppError("An issue can't block itself");
+  if (ids.length === 0) return ids;
+  // A blocker must not already depend on this issue, directly or through a chain of blocks.
+  const cycle = db
+    .query<{ ref: string }, [number]>(
+      `WITH RECURSIVE downstream(id) AS (
+         SELECT blocked_id FROM issue_blocks WHERE blocker_id = ?
+         UNION SELECT x.blocked_id FROM issue_blocks x JOIN downstream d ON x.blocker_id = d.id
+       )
+       SELECT ${ident("i")} AS ref FROM issues i JOIN downstream d ON d.id = i.id
+       WHERE i.id IN (${ids.join(", ")})`,
+    )
+    .get(self);
+  if (cycle) throw new AppError(`${cycle.ref} is already blocked by this issue (directly or indirectly); that would be a cycle`);
   return ids;
 }
 
@@ -480,6 +499,10 @@ function issueColumns(patch: IssuePatch): Record<string, SQLQueryBindings> {
 }
 
 const isClosed = (status: Status) => CLOSED_STATUSES.includes(status);
+
+// Substring search: the query's own %, _ and \ match literally.
+const LIKE = "LIKE ? ESCAPE '\\'";
+const likePattern = (q: string) => `%${q.trim().replace(/[\\%_]/g, "\\$&")}%`;
 
 export function listIssues(filter: IssueFilter): IssueSummary[] {
   const where: string[] = [];
@@ -509,8 +532,8 @@ export function listIssues(filter: IssueFilter): IssueSummary[] {
     params.push(issueId(filter.parent));
   }
   if (filter.q) {
-    where.push(`(i.title LIKE ? OR i.description LIKE ? OR ${ident("i")} LIKE ?)`);
-    const like = `%${filter.q.trim()}%`;
+    where.push(`(i.title ${LIKE} OR i.description ${LIKE} OR ${ident("i")} ${LIKE})`);
+    const like = likePattern(filter.q);
     params.push(like, like, like);
   }
   const sql = `${ISSUE_SELECT} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ${ISSUE_ORDER}`;
@@ -566,7 +589,7 @@ export function createIssue(input: IssueInput): Issue {
   const identifier = db.transaction(() => {
     const { number } = db
       .query<{ number: number }, [string]>(
-        "SELECT COALESCE(MAX(number), 0) + 1 AS number FROM issues WHERE project_key = ?",
+        "UPDATE projects SET next_number = next_number + 1 WHERE key = ? RETURNING next_number - 1 AS number",
       )
       .get(project)!;
     const row: Record<string, SQLQueryBindings> = {
@@ -627,10 +650,31 @@ export function updateIssue(identifier: string, patch: IssuePatch): Issue {
 }
 
 export function deleteIssue(identifier: string) {
-  const { ref } = db
-    .query<{ ref: string }, [number]>("DELETE FROM issues WHERE id = ? RETURNING project_key || '-' || number AS ref")
-    .get(issueId(identifier))!;
+  const id = issueId(identifier);
+  // Issues that lose their parent, a blocker link or a sub-issue, and docs that lose a ref, change too.
+  const issues = db
+    .query<{ id: number; ref: string }, [number, number, number, number]>(
+      `SELECT i.id, ${ident("i")} AS ref FROM issues i
+       WHERE i.parent_id = ? OR i.id = (SELECT parent_id FROM issues WHERE id = ?)
+         OR i.id IN (SELECT blocked_id FROM issue_blocks WHERE blocker_id = ?)
+         OR i.id IN (SELECT blocker_id FROM issue_blocks WHERE blocked_id = ?)`,
+    )
+    .all(id, id, id, id);
+  const docs = db
+    .query<{ slug: string }, [number]>(
+      "SELECT d.slug FROM document_refs r JOIN documents d ON d.id = r.document_id WHERE r.issue_id = ?",
+    )
+    .all(id);
+  const time = now();
+  const ref = db.transaction(() => {
+    for (const issue of issues) db.query("UPDATE issues SET updated_at = ? WHERE id = ?").run(time, issue.id);
+    return db
+      .query<{ ref: string }, [number]>("DELETE FROM issues WHERE id = ? RETURNING project_key || '-' || number AS ref")
+      .get(id)!.ref;
+  })();
   changed("issue", ref);
+  for (const issue of issues) changed("issue", issue.ref);
+  for (const doc of docs) changed("document", doc.slug);
 }
 
 export function addComment(identifier: string, body: unknown, author: unknown): Issue {
@@ -675,7 +719,7 @@ const DOC_COLUMNS = (a: string) =>
     .map((c) => `${a}.${c}`)
     .join(", ");
 
-// Consecutive saves by the same author within this window update one version (autosave-friendly).
+// Saves by the same author within this window of a version's first save update that version (autosave-friendly).
 const VERSION_WINDOW_MS = 10 * 60 * 1000;
 
 function toDocSummary(row: DocumentRow): DocumentSummary {
@@ -726,7 +770,9 @@ function applyEdits(content: string, edits: unknown): string {
     if (typeof oldText !== "string" || !oldText || typeof newText !== "string") {
       throw new AppError(`edits[${i}]: oldText (non-empty) and newText must be strings`);
     }
-    const matches = text.split(oldText).length - 1;
+    // Overlapping matches count too: "aa" occurs twice in "aaa", which is ambiguous.
+    let matches = 0;
+    for (let at = text.indexOf(oldText); at !== -1; at = text.indexOf(oldText, at + 1)) matches++;
     if (matches === 0) {
       throw new AppError(`edits[${i}]: oldText not found (0 matches). Nothing was applied. Copy the text exactly from the current content.`);
     }
@@ -739,7 +785,7 @@ function applyEdits(content: string, edits: unknown): string {
 }
 
 /**
- * Records a version, or updates the latest one if it's by the same author and recent.
+ * Records a version, or updates the latest one if it's by the same author and started < 10 min ago.
  * The first version (creation) is never merged into, and a checkpoint always gets its own.
  */
 function saveVersion(documentId: number, title: string, content: string, author: string, time: string, checkpoint = false) {
@@ -753,12 +799,8 @@ function saveVersion(documentId: number, title: string, content: string, author:
     last && !checkpoint && !last.first && last.author === author &&
     Date.parse(time) - Date.parse(last.created_at) < VERSION_WINDOW_MS;
   if (merge) {
-    db.query("UPDATE document_versions SET title = ?, content = ?, created_at = ? WHERE id = ?").run(
-      title,
-      content,
-      time,
-      last.id,
-    );
+    // created_at stays put, so the window is anchored to the version's start and can't slide forever.
+    db.query("UPDATE document_versions SET title = ?, content = ? WHERE id = ?").run(title, content, last.id);
   } else {
     db.query(
       "INSERT INTO document_versions (document_id, title, content, author, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -793,8 +835,8 @@ export function listDocuments(filter: DocumentFilter): DocumentSummary[] {
     params.push(projectRow(filter.project).key);
   }
   if (filter.q) {
-    where.push("(d.title LIKE ? OR d.content LIKE ?)");
-    const like = `%${filter.q.trim()}%`;
+    where.push(`(d.title ${LIKE} OR d.content ${LIKE})`);
+    const like = likePattern(filter.q);
     params.push(like, like);
   }
   const sql = `SELECT ${DOC_COLUMNS("d")} FROM documents d ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
@@ -850,6 +892,9 @@ export function createDocument(input: DocumentInput): Document {
 export function updateDocument(slug: string, patch: DocumentPatch): Document {
   const row = documentRow(slug);
   const author = requireText(patch.author, "author");
+  if (patch.baseUpdatedAt !== undefined && patch.baseUpdatedAt !== row.updated_at) {
+    throw new AppError("Document changed since you started editing", 409);
+  }
   if (patch.content !== undefined && patch.edits !== undefined) {
     throw new AppError("Pass either content (full replacement) or edits, not both");
   }

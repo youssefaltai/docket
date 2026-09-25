@@ -12,9 +12,12 @@ function applyConfigFile(path: string) {
     const eq = line.indexOf("=");
     if (eq === -1) continue;
     const key = line.slice(0, eq).trim();
-    const value = line.slice(eq + 1).trim().replace(/^(["'])(.*)\1$/, "$2");
-    // Real env vars win over the config file.
-    if (key && process.env[key] === undefined) process.env[key] = value;
+    const raw = line.slice(eq + 1).trim();
+    // Quoted values are taken as-is; unquoted ones lose a trailing " # comment".
+    const quoted = /^(["'])(.*?)\1(?:\s+#.*)?$/.exec(raw);
+    const value = quoted ? quoted[2]! : raw.replace(/\s+#.*$/, "");
+    // Real env vars win over the config file; a set-but-empty one (e.g. compose's `${X:-}`) counts as unset.
+    if (key && !process.env[key]) process.env[key] = value;
   }
 }
 

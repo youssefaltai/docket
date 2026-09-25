@@ -7,6 +7,7 @@ import type {
   Status,
   WorkspaceInput,
 } from "../shared/types.ts";
+import { isJson } from "./auth.ts";
 import * as db from "./db.ts";
 
 /** Wraps a handler: its return value becomes the JSON body (unless it's a Response); errors become `{ error }`. */
@@ -25,7 +26,7 @@ function handle<Path extends string>(fn: (req: BunRequest<Path>) => unknown, sta
 
 async function body(req: Request): Promise<Record<string, unknown>> {
   // JSON only: browsers can't send it cross-origin without a CORS preflight, which Docket never allows.
-  if (!req.headers.get("content-type")?.includes("application/json")) {
+  if (!isJson(req)) {
     throw new db.AppError("Expected Content-Type: application/json", 415);
   }
   const data = await req.json().catch(() => {

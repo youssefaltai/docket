@@ -18,19 +18,21 @@ src/web/index.html    HTML entry (Bun HTML import, bundled by Bun)
 src/web/*.tsx, *.css  React UI
 ```
 
-Env: `PORT` (default 7100), `DATABASE_PATH` (default `$XDG_DATA_HOME/docket/docket.db`). Optional config file at `$XDG_CONFIG_HOME/docket/config` (or `$XDG_CONFIG_DIRS/docket/config`), `KEY=VALUE` lines; real env vars win. Dev: `bun run dev`. Prod: `bun run start`.
+Env: `PORT` (default 7100), `DATABASE_PATH` (default `$XDG_DATA_HOME/docket/docket.db`), `DOCKET_TOKEN` (see Auth), `DOCKET_HOSTS` (comma-separated extra hostnames the server answers to, e.g. `docket.example.com,vps.tailnet.ts.net`; see Auth). Optional config file at `$XDG_CONFIG_HOME/docket/config` (or `$XDG_CONFIG_DIRS/docket/config`), `KEY=VALUE` lines (`#` comment lines; unquoted values drop a trailing ` # comment`; quotes are stripped); real env vars win unless empty (a set-but-empty var, as docker-compose's `${DOCKET_TOKEN:-}` passes, counts as unset). Dev: `bun run dev`. Prod: `bun run start` (sets `NODE_ENV=production`, so Bun serves bundled assets and never shows its dev error page).
 
 ## Data
 
 - **workspaces**: key (PK, URL-safe lowercase slug, e.g. `acme`), name, created_at, updated_at.
-- **projects**: key (PK, 2–5 uppercase letters, unique across all workspaces), workspace (→ workspaces.key; required by the app), name, description, created_at, updated_at.
-- **issues**: id (PK), project_key, number (per-project sequence), title, description, status, priority, labels (JSON array), assignee, parent_id, created_at, updated_at, completed_at. Unique (project_key, number).
-- **issue_blocks**: blocker_id, blocked_id.
+- **projects**: key (PK, 2–5 uppercase letters, unique across all workspaces), workspace (→ workspaces.key; required by the app), name, description, next_number (the next issue number), created_at, updated_at.
+- **issues**: id (PK), project_key, number (per-project sequence from `projects.next_number`; never reused after a delete), title, description, status, priority, labels (JSON array), assignee, parent_id, created_at, updated_at, completed_at. Unique (project_key, number).
+- **issue_blocks**: blocker_id, blocked_id. No cycles: setting `blockedBy` fails (400) if the issue itself or any issue it already blocks, directly or through a chain, is among the blockers.
 - **comments**: id, issue_id, author, body, created_at.
 
-Identifier = `${project_key}-${number}`, parsed case-insensitively. Issues can't move between projects. Any change to an issue or its comments bumps `updated_at`. `completed_at` is set when status enters done/canceled, cleared when it leaves. List order: status order, then priority (1→4, then 0 last), then `updated_at` desc. WAL mode on.
+Identifier = `${project_key}-${number}`, parsed case-insensitively. Issues can't move between projects. Any change to an issue or its comments bumps `updated_at`. Deleting an issue also bumps `updated_at` on, and publishes `issue` events for, its sub-issues (parent cleared), its parent, and the issues it blocked or was blocked by; docs that mentioned it get a `document` event. `completed_at` is set when status enters done/canceled, cleared when it leaves. List order: status order, then priority (1→4, then 0 last), then `updated_at` desc. WAL mode on.
 
 ## REST (JSON; errors are `{ "error": string }` with 4xx)
+
+Request bodies (including `POST /api/login`) must be `Content-Type: application/json`, compared exactly on the media type before any `;` (so `text/plain;charset=application/json` is refused), else 415. Browsers can't send that cross-origin without a CORS preflight, which Docket never allows: this is the CSRF defence.
 
 | Method | Path | Body / query | Returns |
 |---|---|---|---|
@@ -92,11 +94,11 @@ Linear-style docs inside projects. Markdown is the source of truth (agents write
 
 **Data** (migration 2, additive only — production already holds real data at `user_version` 1):
 - **documents**: id, slug (unique), project_key, title, content, position, created_at, updated_at, updated_by.
-- **document_versions**: id, document_id, title, content, author, created_at. A version is written on every title/content change. Autosave-friendly: if the latest version has the same author and is < 10 min old, overwrite it instead of inserting.
+- **document_versions**: id, document_id, title, content, author, created_at. A version is written on every title/content change. Autosave-friendly: if the latest version has the same author and was first saved < 10 min ago, overwrite its title and content instead of inserting. Its `created_at` stays the first save's time, so a long session still gets a new version every 10 minutes. The first version (creation) and checkpoints (restores) are never merged into.
 - **document_refs**: document_id, issue_id, ord. Recomputed on every content change from `\b[A-Z]{2,5}-\d+\b` matches that resolve to real issues (first-mention order).
 - Document comments: same `Comment` shape as issues (separate table or a nullable FK — your call; keep it simple).
 - Slugs are stable: renaming a doc never changes its slug. Deleting a project isn't a thing; deleting a doc deletes its versions, refs and comments.
-- Search (`q`) matches title and content.
+- Search (`q`) matches title and content. Like issue search, it's a literal substring match: `%`, `_` and `\` in the query are escaped, not wildcards.
 
 **REST**
 
@@ -112,16 +114,16 @@ Linear-style docs inside projects. Markdown is the source of truth (agents write
 | GET | /api/documents/:slug/versions | | `DocumentVersionSummary[]` (newest first) |
 | GET | /api/documents/:slug/versions/:id | | `DocumentVersion` |
 
-`edits` errors (400) name the failing edit and whether `oldText` matched 0 or many times; nothing is applied unless every edit applies. `GET /api/issues/:id` now includes `docs` (documents mentioning it). `Project` includes `docCount`. Mutations publish `{ type: "changed", entity: "document", id: slug }`.
+`DocumentPatch.baseUpdatedAt` (optional) is the document's `updatedAt` the client started editing from: if present and different from the current `updatedAt`, the PATCH answers 409 `{ "error": "Document changed since you started editing" }` and changes nothing. The web editor sends it with every save; MCP `update_document` accepts it too. `edits` errors (400) name the failing edit and whether `oldText` matched 0 or many times (overlapping occurrences count: `aa` matches `aaa` twice); nothing is applied unless every edit applies. `GET /api/issues/:id` now includes `docs` (documents mentioning it). `Project` includes `docCount`. Mutations publish `{ type: "changed", entity: "document", id: slug }`.
 
-**MCP tools** (added to the existing 7)
+**MCP tools** (added to the 9 above)
 
 | Tool | Input | Notes |
 |---|---|---|
 | list_documents | workspace?, project?, query? | one line per doc: `slug · Title · PROJECT · updated 2h ago by claude` |
 | get_document | slug | full markdown plus metadata and mentioned issues |
 | create_document | project, title, content, slug?, position?, author? | |
-| update_document | slug, title?, content?, edits?, project?, position?, author? | prefer `edits` for small changes to long docs; `content` replaces everything |
+| update_document | slug, title?, content?, edits?, project?, position?, baseUpdatedAt?, author? | prefer `edits` for small changes to long docs; `content` replaces everything; `baseUpdatedAt` rejects the update if the doc changed since it was read |
 | comment_document | slug, body, author? | |
 
 Tool descriptions must say: docs are markdown; mention issues by identifier (e.g. BRD-2) and they auto-link; link other docs with `[Title](/doc/slug)`; use `edits` for targeted changes.
@@ -142,10 +144,16 @@ Tool descriptions must say: docs are markdown; mention issues by identifier (e.g
 
 Migration 3 (additive): creates `workspaces`, inserts `default` / "Default", adds the nullable `projects.workspace` column (SQLite can't add a NOT NULL column with a foreign key) and assigns every existing project to `default`. `Workspace` includes `projectCount`. Mutations publish `{ type: "changed", entity: "workspace", id: key }`.
 
+## Issue numbering
+
+Migration 4 (additive): adds `projects.next_number INTEGER NOT NULL DEFAULT 1`, backfilled to `MAX(number) + 1` per project. `createIssue` takes the number from it (increment inside the insert transaction), so deleting an issue never frees its number. Numbers deleted before the migration (above the current max) can be reused once.
+
 ## Deploy
 
-`Dockerfile` (oven/bun image) + `docker-compose.yml`: volume `./data:/app/data`, port `127.0.0.1:7100:7100`, `restart: unless-stopped`, `DOCKET_TOKEN` passed through from the environment or `.env`. HTTPS and exposure are the operator's choice (reverse proxy, tunnel, VPN).
+`Dockerfile` (oven/bun image) + `docker-compose.yml`: volume `./data:/app/data`, port `127.0.0.1:7100:7100`, `restart: unless-stopped`, `DOCKET_TOKEN` passed through from the environment or `.env`. HTTPS and exposure are the operator's choice (reverse proxy, tunnel, VPN). Anything reached by a hostname other than localhost needs that hostname in `DOCKET_HOSTS` (see Auth), or data routes answer 403.
 
 ## Auth
 
-`src/server/auth.ts`. With `DOCKET_TOKEN` set, `/api/*`, `/mcp` and `/ws` return 401 unless the request carries `Authorization: Bearer <token>` or the `docket_token` cookie (compared in constant time). `POST /api/login {token}` sets that cookie (HttpOnly, SameSite=Lax, 1 year, Secure over HTTPS). The app shell, manifest, service worker and icons stay public; they hold no data. The web client shows a login screen on any 401. Each browser keeps a display name (`localStorage["docket.name"]`, asked on first run, changed from the sidebar footer) and sends it as `author` on comments and doc writes. The service worker never caches non-OK responses.
+`src/server/auth.ts`. With `DOCKET_TOKEN` set, `/api/*`, `/mcp` and `/ws` return 401 unless the request carries `Authorization: Bearer <token>` or the `docket_token` cookie (both compared in constant time). `POST /api/login {token}` sets that cookie (HttpOnly, SameSite=Lax, 1 year, Secure over HTTPS). The cookie never holds the token itself: its value is hex HMAC-SHA256 of `"docket session"` keyed by the token, so it only works as a cookie, not as a bearer, and changing the token logs every browser out. Login is rate-limited per client IP: after 10 failures in a minute it answers 429 until the minute ends (behind a proxy, all clients share the proxy's IP). The app shell, manifest, service worker and icons stay public; they hold no data.
+
+**Host check** (DNS rebinding), token or not: `/api/*` (including login), `/mcp` and `/ws` answer 403 unless the `Host` header's hostname (port ignored, case-insensitive) is `localhost`, `127.0.0.1`, `[::1]` or listed in `DOCKET_HOSTS`. Behind a reverse proxy or tunnel, list the public hostname the proxy forwards in `Host`. The web client shows a login screen on any 401. Each browser keeps a display name (`localStorage["docket.name"]`, asked on first run, changed from the sidebar footer) and sends it as `author` on comments and doc writes. The service worker never caches non-OK responses.

@@ -136,6 +136,7 @@ export interface DocumentPatch {
   position?: number;
   author?: string;
   checkpoint?: boolean; // always record a new version instead of merging into the latest (e.g. a restore)
+  baseUpdatedAt?: string; // the updatedAt this edit started from; if the doc has changed since, 409 and nothing is applied
 }
 
 export interface ProjectInput {
