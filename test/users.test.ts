@@ -182,7 +182,7 @@ test("PATCH /api/me renames you without breaking your key", async () => {
 test("sign-in-link CLI: a shell on the server can always get a person back in", async () => {
   const out = await s.cli("sign-in-link", "admin");
   expect(out.exitCode).toBe(0);
-  const code = out.stdout.match(/\/login#([A-Z2-7]{5}-[A-Z2-7]{5})/)?.[1];
+  const code = out.stdout.match(/\/login#([A-HJ-NP-Z2-9]{5}-[A-HJ-NP-Z2-9]{5})/)?.[1];
   expect(code).toBeString();
   const res = await s.anon.api("POST", "/api/auth/redeem", { code });
   expect(res.status).toBe(200);

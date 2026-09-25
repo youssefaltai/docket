@@ -21,7 +21,7 @@ describe("setup", () => {
   test("runs once, with the right code, and signs the creator in as admin", async () => {
     expect((await s.anon.api("GET", "/api/setup")).body).toEqual({ needed: true });
     expect((await s.anon.api("GET", "/api/me")).status).toBe(401);
-    expect((await setup("WRONG-CODE0")).status).toBe(403);
+    expect((await setup("WRNGX-CDEXX")).status).toBe(403);
 
     const done = await setup(SETUP_CODE);
     expect(done.status).toBe(201);
@@ -59,7 +59,7 @@ describe("signed in", () => {
     const link = await s.as("ana").api("POST", "/api/sign-in-links");
     expect(link.status).toBe(201);
     expect(link.body.url).toBe(`${new URL(s.url).origin}/login#${link.body.code}`);
-    expect(link.body.code).toMatch(/^[A-Z2-7]{5}-[A-Z2-7]{5}$/);
+    expect(link.body.code).toMatch(/^[A-HJ-NP-Z2-9]{5}-[A-HJ-NP-Z2-9]{5}$/);
 
     for (let i = 0; i < 2; i++)
       expect((await s.anon.api("POST", "/api/auth/peek", { code: link.body.code })).body).toMatchObject({ kind: "sign-in", needsProfile: false });
@@ -180,7 +180,7 @@ describe("rate limit", () => {
 
   test("after 10 bad codes even a good one waits", async () => {
     const good = (await s.as("ana").api("POST", "/api/sign-in-links")).body.code;
-    for (let i = 0; i < 10; i++) expect((await s.anon.api("POST", "/api/auth/redeem", { code: `BADXX-BADX${"ABCDEFGHIJ"[i]}` })).status).toBe(401);
+    for (let i = 0; i < 10; i++) expect((await s.anon.api("POST", "/api/auth/redeem", { code: `BADXX-BADX${"ABCDEFGHJK"[i]}` })).status).toBe(401);
     expect((await s.anon.api("POST", "/api/auth/redeem", { code: good })).status).toBe(429);
     // Signed-in callers aren't affected.
     expect((await s.as("ana").api("GET", "/api/me")).status).toBe(200);

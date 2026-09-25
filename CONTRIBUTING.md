@@ -8,7 +8,7 @@ You need [Bun](https://bun.sh) 1.4+ (CI uses the version in `package.json`).
 
 ```sh
 bun install
-bun run dev          # http://localhost:7100, hot reload; the first run prints a setup code
+bun run dev          # http://localhost:7100, hot reload; set it up with code DEVEL-SETUP
 DOCKET_API_KEY=dk_... bun run seed   # demo data, in another terminal (create a key in Settings)
 bun test
 bun run typecheck
