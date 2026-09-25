@@ -44,19 +44,32 @@ export const isJson = (req: Request) =>
 
 export const unauthorized = () => Response.json({ error: "Unauthorized" }, { status: 401 });
 
-/** Wraps a route so it answers 401 without a valid token. Works on handlers and method maps. */
+// DNS rebinding defence: a browser tricked into resolving evil.example to us still sends Host: evil.example.
+const HOSTS = new Set([
+  "localhost",
+  "127.0.0.1",
+  "[::1]",
+  ...(process.env.DOCKET_HOSTS ?? "").split(",").map((h) => h.trim().toLowerCase()).filter(Boolean),
+]);
+
+const hostAllowed = (req: Request) =>
+  HOSTS.has((req.headers.get("host") ?? "").toLowerCase().replace(/:\d+$/, ""));
+
+const forbiddenHost = () => Response.json({ error: "Host not allowed (see DOCKET_HOSTS)" }, { status: 403 });
+
+/** Wraps a route so it answers 403 for an unknown Host and 401 without a valid token. Works on handlers and method maps. */
 export function guard<T>(route: T): T {
-  if (!TOKEN) return route;
   const wrap =
     (fn: (req: Request, ...rest: unknown[]) => unknown) =>
     (req: Request, ...rest: unknown[]) =>
-      authorized(req) ? fn(req, ...rest) : unauthorized();
+      !hostAllowed(req) ? forbiddenHost() : authorized(req) ? fn(req, ...rest) : unauthorized();
   if (typeof route === "function") return wrap(route as never) as T;
   return Object.fromEntries(Object.entries(route as object).map(([m, fn]) => [m, wrap(fn)])) as T;
 }
 
 /** POST /api/login `{ token }`: sets an HttpOnly cookie for the web UI. */
 export async function login(req: Request): Promise<Response> {
+  if (!hostAllowed(req)) return forbiddenHost();
   if (!isJson(req)) return Response.json({ error: "Expected Content-Type: application/json" }, { status: 415 });
   const { token } = ((await req.json().catch(() => null)) ?? {}) as { token?: unknown };
   if (!TOKEN) return Response.json({ ok: true });

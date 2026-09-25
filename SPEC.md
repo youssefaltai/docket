@@ -18,7 +18,7 @@ src/web/index.html    HTML entry (Bun HTML import, bundled by Bun)
 src/web/*.tsx, *.css  React UI
 ```
 
-Env: `PORT` (default 7100), `DATABASE_PATH` (default `$XDG_DATA_HOME/docket/docket.db`). Optional config file at `$XDG_CONFIG_HOME/docket/config` (or `$XDG_CONFIG_DIRS/docket/config`), `KEY=VALUE` lines; real env vars win. Dev: `bun run dev`. Prod: `bun run start`.
+Env: `PORT` (default 7100), `DATABASE_PATH` (default `$XDG_DATA_HOME/docket/docket.db`), `DOCKET_TOKEN` (see Auth), `DOCKET_HOSTS` (comma-separated extra hostnames the server answers to, e.g. `docket.example.com,vps.tailnet.ts.net`; see Auth). Optional config file at `$XDG_CONFIG_HOME/docket/config` (or `$XDG_CONFIG_DIRS/docket/config`), `KEY=VALUE` lines; real env vars win. Dev: `bun run dev`. Prod: `bun run start`.
 
 ## Data
 
@@ -150,4 +150,6 @@ Migration 3 (additive): creates `workspaces`, inserts `default` / "Default", add
 
 ## Auth
 
-`src/server/auth.ts`. With `DOCKET_TOKEN` set, `/api/*`, `/mcp` and `/ws` return 401 unless the request carries `Authorization: Bearer <token>` or the `docket_token` cookie (compared in constant time). `POST /api/login {token}` sets that cookie (HttpOnly, SameSite=Lax, 1 year, Secure over HTTPS). The app shell, manifest, service worker and icons stay public; they hold no data. The web client shows a login screen on any 401. Each browser keeps a display name (`localStorage["docket.name"]`, asked on first run, changed from the sidebar footer) and sends it as `author` on comments and doc writes. The service worker never caches non-OK responses.
+`src/server/auth.ts`. With `DOCKET_TOKEN` set, `/api/*`, `/mcp` and `/ws` return 401 unless the request carries `Authorization: Bearer <token>` or the `docket_token` cookie (compared in constant time). `POST /api/login {token}` sets that cookie (HttpOnly, SameSite=Lax, 1 year, Secure over HTTPS). The app shell, manifest, service worker and icons stay public; they hold no data.
+
+**Host check** (DNS rebinding), token or not: `/api/*` (including login), `/mcp` and `/ws` answer 403 unless the `Host` header's hostname (port ignored, case-insensitive) is `localhost`, `127.0.0.1`, `[::1]` or listed in `DOCKET_HOSTS`. Behind a reverse proxy or tunnel, list the public hostname the proxy forwards in `Host`. The web client shows a login screen on any 401. Each browser keeps a display name (`localStorage["docket.name"]`, asked on first run, changed from the sidebar footer) and sends it as `author` on comments and doc writes. The service worker never caches non-OK responses.
