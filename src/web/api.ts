@@ -103,7 +103,8 @@ export const api = {
     request<DocumentSummary[]>("GET", `/api/documents${query(filter)}`),
   document: (slug: string) => request<Document>("GET", `/api/documents/${enc(slug)}`),
   createDocument: (input: DocumentInput) => request<Document>("POST", "/api/documents", withAuthor(input)),
-  updateDocument: (slug: string, patch: DocumentPatch) =>
+  // baseUpdatedAt isn't in the shared type yet (server-side addition); widen it locally.
+  updateDocument: (slug: string, patch: DocumentPatch & { baseUpdatedAt?: string }) =>
     request<Document>("PATCH", `/api/documents/${enc(slug)}`, withAuthor(patch)),
   deleteDocument: (slug: string) => request<{ ok: true }>("DELETE", `/api/documents/${enc(slug)}`),
   commentDocument: (slug: string, body: string) => {

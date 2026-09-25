@@ -432,6 +432,7 @@ export function DocPage({ slug }: { slug: string }) {
                   onSaved={apply}
                   onLocal={(content) => setDoc((d) => d && { ...d, content })}
                   onStatus={setSaveState}
+                  onConflict={() => setTick((t) => t + 1)}
                   onExit={stopEdit}
                 />
               ) : shown.trim() ? (
@@ -641,6 +642,7 @@ function DocEditor({
   onSaved,
   onLocal,
   onStatus,
+  onConflict,
   onExit,
 }: {
   doc: Document;
@@ -650,6 +652,8 @@ function DocEditor({
   onSaved: (fresh: Document) => void;
   onLocal: (content: string) => void;
   onStatus: (s: SaveState) => void;
+  /** The server rejected a save because the doc changed since (409); go refetch it. */
+  onConflict: () => void;
   onExit: () => void;
 }) {
   const [draft, setDraft] = useState(doc.content);
@@ -659,6 +663,7 @@ function DocEditor({
   const s = useRef({
     draft: doc.content,
     base: doc.content,
+    baseUpdatedAt: doc.updatedAt,
     echo: doc.content,
     inflight: null as string | null,
     blocked: false,
@@ -673,13 +678,22 @@ function DocEditor({
     s.inflight = text;
     onStatus("saving");
     try {
-      const fresh = await api.updateDocument(doc.slug, { content: text });
+      const fresh = await api.updateDocument(doc.slug, { content: text, baseUpdatedAt: s.baseUpdatedAt });
       s.base = text;
+      s.baseUpdatedAt = fresh.updatedAt;
       s.echo = fresh.content;
       s.inflight = null;
       onSaved(fresh);
     } catch (e) {
       s.inflight = null;
+      if (e instanceof HttpError && e.status === 409) {
+        // Someone else changed the doc first: stop retrying and let the conflict
+        // banner (below, via the refetched `doc` prop) offer Reload / Keep mine.
+        s.blocked = true;
+        onStatus("idle");
+        onConflict();
+        return;
+      }
       errorToast(e);
       return onStatus("error");
     }
@@ -689,12 +703,18 @@ function DocEditor({
 
   // A change that isn't ours arrived while editing.
   useEffect(() => {
-    if ([s.base, s.echo, s.inflight, s.draft].includes(doc.content)) return;
+    if ([s.base, s.echo, s.inflight, s.draft].includes(doc.content)) {
+      // Content still matches what we know: a benign external bump (e.g. the title
+      // changed elsewhere). Adopt its updatedAt so the next save isn't rejected as a
+      // false conflict.
+      s.baseUpdatedAt = doc.updatedAt;
+      return;
+    }
     s.blocked = true;
     clearTimeout(s.timer);
     onStatus("idle");
     setConflict(doc.updatedBy);
-  }, [doc.content]);
+  }, [doc.content, doc.updatedAt]);
 
   const change = (text: string) => {
     s.draft = text;
@@ -707,12 +727,14 @@ function DocEditor({
 
   const reload = () => {
     s.draft = s.base = s.echo = doc.content;
+    s.baseUpdatedAt = doc.updatedAt;
     s.blocked = false;
     setDraft(doc.content);
     setConflict(null);
   };
   const keepMine = () => {
     s.base = doc.content;
+    s.baseUpdatedAt = doc.updatedAt;
     s.blocked = false;
     setConflict(null);
     save();
