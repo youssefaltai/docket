@@ -94,7 +94,7 @@ Linear-style docs inside projects. Markdown is the source of truth (agents write
 
 **Data** (migration 2, additive only — production already holds real data at `user_version` 1):
 - **documents**: id, slug (unique), project_key, title, content, position, created_at, updated_at, updated_by.
-- **document_versions**: id, document_id, title, content, author, created_at. A version is written on every title/content change. Autosave-friendly: if the latest version has the same author and is < 10 min old, overwrite it instead of inserting.
+- **document_versions**: id, document_id, title, content, author, created_at. A version is written on every title/content change. Autosave-friendly: if the latest version has the same author and was first saved < 10 min ago, overwrite its title and content instead of inserting. Its `created_at` stays the first save's time, so a long session still gets a new version every 10 minutes. The first version (creation) and checkpoints (restores) are never merged into.
 - **document_refs**: document_id, issue_id, ord. Recomputed on every content change from `\b[A-Z]{2,5}-\d+\b` matches that resolve to real issues (first-mention order).
 - Document comments: same `Comment` shape as issues (separate table or a nullable FK — your call; keep it simple).
 - Slugs are stable: renaming a doc never changes its slug. Deleting a project isn't a thing; deleting a doc deletes its versions, refs and comments.

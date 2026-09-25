@@ -680,7 +680,7 @@ const DOC_COLUMNS = (a: string) =>
     .map((c) => `${a}.${c}`)
     .join(", ");
 
-// Consecutive saves by the same author within this window update one version (autosave-friendly).
+// Saves by the same author within this window of a version's first save update that version (autosave-friendly).
 const VERSION_WINDOW_MS = 10 * 60 * 1000;
 
 function toDocSummary(row: DocumentRow): DocumentSummary {
@@ -744,7 +744,7 @@ function applyEdits(content: string, edits: unknown): string {
 }
 
 /**
- * Records a version, or updates the latest one if it's by the same author and recent.
+ * Records a version, or updates the latest one if it's by the same author and started < 10 min ago.
  * The first version (creation) is never merged into, and a checkpoint always gets its own.
  */
 function saveVersion(documentId: number, title: string, content: string, author: string, time: string, checkpoint = false) {
@@ -758,12 +758,8 @@ function saveVersion(documentId: number, title: string, content: string, author:
     last && !checkpoint && !last.first && last.author === author &&
     Date.parse(time) - Date.parse(last.created_at) < VERSION_WINDOW_MS;
   if (merge) {
-    db.query("UPDATE document_versions SET title = ?, content = ?, created_at = ? WHERE id = ?").run(
-      title,
-      content,
-      time,
-      last.id,
-    );
+    // created_at stays put, so the window is anchored to the version's start and can't slide forever.
+    db.query("UPDATE document_versions SET title = ?, content = ? WHERE id = ?").run(title, content, last.id);
   } else {
     db.query(
       "INSERT INTO document_versions (document_id, title, content, author, created_at) VALUES (?, ?, ?, ?, ?)",
