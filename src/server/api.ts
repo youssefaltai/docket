@@ -3,11 +3,13 @@ import type {
   DocumentInput,
   IssueFilter,
   IssueInput,
+  Me,
+  MemberInput,
   ProjectInput,
   Status,
   WorkspaceInput,
 } from "../shared/types.ts";
-import { isJson } from "./auth.ts";
+import { OPEN, authorFor, isAdmin, isJson, requireAdmin, viewerOf } from "./auth.ts";
 import * as db from "./db.ts";
 
 /** Wraps a handler: its return value becomes the JSON body (unless it's a Response); errors become `{ error }`. */
@@ -39,8 +41,22 @@ async function body<T = Record<string, unknown>>(req: Request): Promise<T> {
   return data as T;
 }
 
-/** Writes without an author (e.g. curl) are credited to "anonymous"; the web UI sends the viewer's name. */
-const authored = async <T = Record<string, unknown>>(req: Request) => ({ author: "anonymous", ...(await body<T>(req)) });
+/**
+ * The body with its author: a member always writes as themselves. Root sends a name (the web UI sends the
+ * viewer's), and writes without one (e.g. curl) are credited to "anonymous".
+ */
+const authored = async <T = Record<string, unknown>>(req: Request) => {
+  const data = await body<T & { author?: unknown }>(req);
+  return { ...data, author: authorFor(viewerOf(req), data.author, "anonymous") as string };
+};
+
+/** Runs `fn` for admins only (403 otherwise). */
+const admin =
+  <R extends Request>(fn: (req: R) => unknown) =>
+  (req: R) => {
+    requireAdmin(req);
+    return fn(req);
+  };
 
 const param = (req: Request, name: string) => new URL(req.url).searchParams.get(name) || undefined;
 
@@ -144,6 +160,23 @@ export const apiRoutes = {
     GET: handle<"/api/documents/:slug/versions/:id">((req) =>
       db.getDocumentVersion(req.params.slug, req.params.id),
     ),
+  },
+  "/api/me": {
+    GET: handle((req): Me => {
+      const viewer = viewerOf(req);
+      return { member: viewer.member, admin: isAdmin(viewer), open: OPEN };
+    }),
+  },
+  "/api/members": {
+    GET: handle(() => db.listMembers()),
+    POST: handle(admin(async (req) => db.createMember(await body<MemberInput>(req))), 201),
+  },
+  "/api/members/:name": {
+    PATCH: handle<"/api/members/:name">(admin(async (req) => db.updateMember(req.params.name, await body(req)))),
+    DELETE: handle<"/api/members/:name">(admin((req) => db.revokeMember(req.params.name))),
+  },
+  "/api/members/:name/token": {
+    POST: handle<"/api/members/:name/token">(admin((req) => db.rotateMemberToken(req.params.name))),
   },
   "/api/labels": {
     GET: handle((req) => db.listLabels({ workspace: param(req, "workspace") }).map((l) => l.label)),

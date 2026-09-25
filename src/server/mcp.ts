@@ -13,6 +13,7 @@ import {
   type Issue,
   type IssueSummary,
 } from "../shared/types.ts";
+import { authorFor, type Viewer, viewerOf } from "./auth.ts";
 import * as db from "./db.ts";
 
 const INSTRUCTIONS = `Docket is a small issue tracker shared by a human and agents.
@@ -21,6 +22,7 @@ const INSTRUCTIONS = `Docket is a small issue tracker shared by a human and agen
 - Statuses: backlog, todo, in_progress, in_review, done, canceled.
 - Priority: 0 none, 1 urgent, 2 high, 3 medium, 4 low.
 - Working on an issue: get_issue, set status in_progress, post progress notes with comment_issue, then set in_review or done. There is no delete: set status canceled instead.
+- Members: people and agents can have their own token. Connected with one, you act as that member (author is set for you); list_members shows who can be assigned.
 - Documents (specs, plans, notes) live in projects and are identified by a slug, e.g. "architecture". They are markdown: mention issues by identifier (BRD-2) and they auto-link; link other docs with [Title](/doc/slug). Change a long doc with update_document's \`edits\` rather than rewriting it.`;
 
 const identifier = z.string().describe('Issue identifier: project key + number, e.g. "BRD-12" (case-insensitive)');
@@ -37,7 +39,7 @@ const docContent = z
   .describe(
     "Markdown. Mention issues by identifier (e.g. BRD-2) and they auto-link; link other docs with [Title](/doc/slug).",
   );
-const author = z.string().optional().describe('Default "claude"');
+const author = z.string().optional().describe('Default "claude". Ignored when you connect with your own member token.');
 
 const title = z.string().describe("Short, imperative title");
 const description = z.string().describe("Markdown description");
@@ -122,8 +124,9 @@ function result(text: string, structuredContent: Record<string, unknown>): CallT
   return { content: [{ type: "text", text }], structuredContent };
 }
 
-function createServer(): McpServer {
+function createServer(viewer: Viewer): McpServer {
   const server = new McpServer({ name: "docket", version: "1.0.0" }, { instructions: INSTRUCTIONS });
+  const by = (author: string | undefined) => authorFor(viewer, author, "claude") as string;
 
   server.registerTool(
     "list_workspaces",
@@ -255,6 +258,21 @@ function createServer(): McpServer {
   );
 
   server.registerTool(
+    "list_members",
+    {
+      description:
+        "List members (people and agents with their own token), one line each: name · kind · role, marking you. Once any member exists, assignees must be member names.",
+      annotations: { readOnlyHint: true },
+    },
+    () => {
+      const members = db.listMembers().filter((m) => !m.revokedAt);
+      const you = viewer.member?.name;
+      const lines = members.map((m) => `${m.name} · ${m.kind} · ${m.role}${m.name === you ? " · you" : ""}`);
+      return result(lines.join("\n") || "No members yet: assignees are free text.", { members, you: you ?? null });
+    },
+  );
+
+  server.registerTool(
     "list_labels",
     {
       description:
@@ -339,8 +357,8 @@ function createServer(): McpServer {
         author,
       },
     },
-    ({ id, body, author = "claude" }) => {
-      const issue = db.addComment(id, body, author);
+    ({ id, body, author }) => {
+      const issue = db.addComment(id, body, by(author));
       return result(`Commented on ${issue.id}`, { issue });
     },
   );
@@ -391,8 +409,8 @@ function createServer(): McpServer {
         author,
       },
     },
-    ({ author = "claude", ...input }) => {
-      const document = db.createDocument({ ...input, author });
+    ({ author, ...input }) => {
+      const document = db.createDocument({ ...input, author: by(author) });
       return result(`Created document ${document.slug} · ${document.title} (/doc/${document.slug})`, docMeta(document));
     },
   );
@@ -424,8 +442,8 @@ function createServer(): McpServer {
         author,
       },
     },
-    ({ slug, author = "claude", ...patch }) => {
-      const document = db.updateDocument(slug, { ...patch, author });
+    ({ slug, author, ...patch }) => {
+      const document = db.updateDocument(slug, { ...patch, author: by(author) });
       return result(`Updated document ${document.slug} · ${document.title}`, docMeta(document));
     },
   );
@@ -441,8 +459,8 @@ function createServer(): McpServer {
         author,
       },
     },
-    ({ slug, body, author = "claude" }) => {
-      const document = db.addDocumentComment(slug, body, author);
+    ({ slug, body, author }) => {
+      const document = db.addDocumentComment(slug, body, by(author));
       return result(`Commented on document ${document.slug}`, docMeta(document));
     },
   );
@@ -460,15 +478,15 @@ function createServer(): McpServer {
         "Edit one of your own comments (the author must match) on an issue or a document, e.g. to fix a typo or an outdated note. It shows as edited. For new information, add a new comment instead.",
       inputSchema: { ...commentTarget, body: z.string().describe("Markdown, replaces the whole comment"), author },
     },
-    ({ comment, body, author = "claude", ...target }) =>
+    ({ comment, body, author, ...target }) =>
       commentOn(
         target,
         (id) => {
-          const issue = db.updateIssueComment(id, comment, body, author);
+          const issue = db.updateIssueComment(id, comment, body, by(author));
           return result(`Edited comment #${comment} on ${issue.id}`, { issue });
         },
         (slug) => {
-          const document = db.updateDocumentComment(slug, comment, body, author);
+          const document = db.updateDocumentComment(slug, comment, body, by(author));
           return result(`Edited comment #${comment} on document ${document.slug}`, docMeta(document));
         },
       ),
@@ -481,15 +499,15 @@ function createServer(): McpServer {
       inputSchema: { ...commentTarget, author },
       annotations: { destructiveHint: true },
     },
-    ({ comment, author = "claude", ...target }) =>
+    ({ comment, author, ...target }) =>
       commentOn(
         target,
         (id) => {
-          const issue = db.deleteIssueComment(id, comment, author);
+          const issue = db.deleteIssueComment(id, comment, by(author));
           return result(`Deleted comment #${comment} on ${issue.id}`, { issue });
         },
         (slug) => {
-          const document = db.deleteDocumentComment(slug, comment, author);
+          const document = db.deleteDocumentComment(slug, comment, by(author));
           return result(`Deleted comment #${comment} on document ${document.slug}`, docMeta(document));
         },
       ),
@@ -520,7 +538,7 @@ export async function handleMcp(req: Request): Promise<Response> {
       { status: 405, headers: { Allow: "POST" } },
     );
   }
-  const server = createServer();
+  const server = createServer(viewerOf(req));
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
     enableJsonResponse: true,

@@ -1,6 +1,6 @@
 # Docket
 
-A nano issue tracker: workspaces, projects, issues, comments. Web UI for humans, MCP for agents. Bun + SQLite + TypeScript. Self-hosted anywhere. Optional single access token (`DOCKET_TOKEN`); unset means open, for private networks.
+A nano issue tracker: workspaces, projects, issues, comments. Web UI for humans, MCP for agents. Bun + SQLite + TypeScript. Self-hosted anywhere. Optional access token (`DOCKET_TOKEN`), plus optional per-member tokens for people and agents; unset means open, for private networks.
 
 Rules: minimal, simple, clean, smooth. Few dependencies (react, react-dom, marked, zod, @modelcontextprotocol/sdk). No frameworks beyond that.
 
@@ -51,8 +51,14 @@ Request bodies (including `POST /api/login`) must be `Content-Type: application/
 | PATCH | /api/issues/:id/comments/:cid | `{ body, author? }` | `Issue` |
 | DELETE | /api/issues/:id/comments/:cid | `{ author? }` | `Issue` |
 | GET | /api/labels | `?workspace` | `string[]` (distinct, sorted) |
+| GET | /api/me | | `Me` |
+| GET | /api/members | | `Member[]` (by name, revoked included) |
+| POST | /api/members | `MemberInput` (admin) | `MemberToken` |
+| PATCH | /api/members/:name | `{ role }` (admin) | `Member` |
+| POST | /api/members/:name/token | (admin) new token, reinstating a revoked member | `MemberToken` |
+| DELETE | /api/members/:name | (admin) revoke | `Member` |
 
-Only a comment's author (case-insensitive) may edit or delete it, else 403. Authors are self-declared, so this guards against mistakes (an agent rewriting a person's note), not abuse. A `:cid` not on that issue or doc is 404. Editing sets `editedAt`; deleting is permanent. Both bump the issue's `updated_at` like adding a comment; doc comments never bump the doc (so an open editor gets no conflict).
+Only a comment's author (case-insensitive) may edit or delete it, else 403. A member's author is always their own name (see Members), so for them this is enforced; root's author is self-declared, so for root it guards against mistakes, not abuse. A `:cid` not on that issue or doc is 404. Editing sets `editedAt`; deleting is permanent. Both bump the issue's `updated_at` like adding a comment; doc comments never bump the doc (so an open editor gets no conflict).
 
 ## Realtime
 
@@ -78,6 +84,7 @@ Tools return short markdown text (one line per issue: `BRD-3 · todo · high · 
 | update_issue | id + any of title, description, status, priority, labels, assignee, parent, blockedBy | |
 | comment_issue | id, body, author? (default "claude") | use for progress notes |
 | list_labels | workspace? | `label · N open`, so agents reuse existing labels |
+| list_members | | active members, `name · kind · role`, marking the caller. No tool creates members or tokens: agents never mint credentials |
 
 Tool descriptions must explain the conventions (workspace → project → issue/doc, statuses, priority numbers, identifiers) so an agent can use them without reading docs. No issue delete tool: agents cancel instead.
 
@@ -169,12 +176,28 @@ Migration 5 (additive): adds nullable `edited_at` to `comments` and `document_co
 
 UI (issues and docs alike): comments whose author matches this browser's name (case-insensitive) show Edit and Delete on hover (always on touch screens). Edit swaps the body for the composer (`⌘↵` saves, `Esc` cancels); Delete asks first. An edited comment shows "edited" next to its time. A 403 appears as a toast.
 
+## Members
+
+People and agents with their own token, so each writes under a name the server vouches for. Opt-in: until the first member exists, nothing changes.
+
+Migration 6 (additive): **members**: id, name (one line, ≤ 40 chars; `me` and `anonymous` reserved), name_key (unique: `nameKey(name)` = NFKC-normalized, lowercased, from `src/shared/types.ts`; SQLite's NOCASE only folds ASCII), kind (`human` | `agent`), role (`admin` | `member`), token_hash (SHA-256 of the token, unique, null once revoked), created_at, revoked_at. A token is 32 random bytes as hex, returned once by create and rotate and never stored. Revoking keeps the row, so the name stays reserved and old comments keep pointing at the right person; rotating issues a new token and reinstates.
+
+**Viewer**: each guarded request acts as a member (their token as bearer or cookie) or as **root**: an admin with no name, which is the `DOCKET_TOKEN` holder, or anyone in open mode. `GET /api/me` answers `{ member, admin, open }` (`open`: no `DOCKET_TOKEN`). Only admins (root or `role: "admin"`) manage members (else 403).
+
+**Authors**: a member always writes as themselves: the `author` they send (REST or MCP) is ignored. Root keeps the old behaviour: it names itself, default "anonymous" over REST and "claude" over MCP. Wherever names are compared for identity (uniqueness, comment ownership, assignees) they go through `nameKey`, so "Émile" and "émile" are one person. Naming a member `claude` makes it the owner of every comment MCP clients wrote under the old default.
+
+**Assignees**: free text while there are no active members. Once there are, a new assignee must be an active member's name (normalized to its casing), else 400 listing them. Existing values stay until changed.
+
+**Backward compatibility**: with no members, a `DOCKET_TOKEN` setup and an open setup behave exactly as before: same bearer, same cookie value, same login. Adding members doesn't change root.
+
+**Open mode caveat**: without `DOCKET_TOKEN`, anyone can reach the API as root, including creating members and tokens, and a request with no member token is root. Once any member exists (revoked ones count), credentials that don't verify are refused, not ignored, so a revoked agent can't quietly fall back to root: a bad bearer or a member-shaped cookie (`<id>.<hmac>`) is 401, and `POST /api/login` with anything but a member token is 401. With no members, stray bearers, cookies and logins are ignored as before. Member tokens then only name who is writing (useful for telling agents apart), and restrict nothing. Set `DOCKET_TOKEN` for real access control.
+
 ## Deploy
 
 `Dockerfile` (oven/bun image) + `docker-compose.yml`: volume `./data:/app/data`, port `127.0.0.1:7100:7100`, `restart: unless-stopped`, `DOCKET_TOKEN` passed through from the environment or `.env`. HTTPS and exposure are the operator's choice (reverse proxy, tunnel, VPN). Anything reached by a hostname other than localhost needs that hostname in `DOCKET_HOSTS` (see Auth), or data routes answer 403.
 
 ## Auth
 
-`src/server/auth.ts`. With `DOCKET_TOKEN` set, `/api/*`, `/mcp` and `/ws` return 401 unless the request carries `Authorization: Bearer <token>` or the `docket_token` cookie (both compared in constant time). `POST /api/login {token}` sets that cookie (HttpOnly, SameSite=Lax, 1 year, Secure over HTTPS). The cookie never holds the token itself: its value is hex HMAC-SHA256 of `"docket session"` keyed by the token, so it only works as a cookie, not as a bearer, and changing the token logs every browser out. Login is rate-limited per client IP: after 10 failures in a minute it answers 429 until the minute ends (behind a proxy, all clients share the proxy's IP). The app shell, manifest, service worker and icons stay public; they hold no data.
+`src/server/auth.ts`. With `DOCKET_TOKEN` set, `/api/*`, `/mcp` and `/ws` return 401 unless the request carries `Authorization: Bearer <token>` or the `docket_token` cookie, where the token is `DOCKET_TOKEN` (compared in constant time) or an active member's (looked up by its SHA-256). `POST /api/login {token}` takes either and sets that cookie (HttpOnly, SameSite=Lax, 1 year, Secure over HTTPS). The cookie never holds a token, so it only works as a cookie, not as a bearer. Root's value is hex HMAC-SHA256 of `"docket session"` keyed by `DOCKET_TOKEN`; changing it logs every browser out. A member's is `<id>.<hex HMAC-SHA256 of "docket member session <token_hash>" keyed by DOCKET_TOKEN>`, compared in constant time, so the database alone can't forge one, and rotating or revoking that member's token (or changing `DOCKET_TOKEN`) logs them out. In open mode a member token still sets a member cookie; any other token answers ok with no cookie. `POST /api/logout` (same Host and JSON checks, no token needed) clears the cookie with `Max-Age=0`; so does any 401 caused by a cookie that no longer verifies. Rotating or revoking a member's token also closes their open `/ws` sockets (code 4401). Login is rate-limited per client IP: after 10 failures in a minute it answers 429 until the minute ends (behind a proxy, all clients share the proxy's IP). The app shell, manifest, service worker and icons stay public; they hold no data.
 
-**Host check** (DNS rebinding), token or not: `/api/*` (including login), `/mcp` and `/ws` answer 403 unless the `Host` header's hostname (port ignored, case-insensitive) is `localhost`, `127.0.0.1`, `[::1]` or listed in `DOCKET_HOSTS`. Behind a reverse proxy or tunnel, list the public hostname the proxy forwards in `Host`. The web client shows a login screen on any 401. Each browser keeps a display name (`localStorage["docket.name"]`, asked on first run, changed from the sidebar footer) and sends it as `author` on comments and doc writes. The service worker never caches non-OK responses.
+**Host check** (DNS rebinding), token or not: `/api/*` (including login), `/mcp` and `/ws` answer 403 unless the `Host` header's hostname (port ignored, case-insensitive) is `localhost`, `127.0.0.1`, `[::1]` or listed in `DOCKET_HOSTS`. Behind a reverse proxy or tunnel, list the public hostname the proxy forwards in `Host`. The web client shows a login screen on any 401. Each browser keeps a display name (`localStorage["docket.name"]`, asked on first run, changed from the sidebar footer) and sends it as `author` on comments and doc writes; the server ignores it for members. The service worker never caches non-OK responses.
