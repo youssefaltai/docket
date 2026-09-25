@@ -32,6 +32,26 @@ export class HttpError extends Error {
 export let onUnauthorized = () => {};
 export const setOnUnauthorized = (fn: () => void) => (onUnauthorized = fn);
 
+/** Per-browser display name, used as the `author` on writes. */
+export function getName(): string | null {
+  try {
+    return localStorage.getItem("docket.name");
+  } catch {
+    return null;
+  }
+}
+export function setName(name: string): void {
+  try {
+    localStorage.setItem("docket.name", name);
+  } catch {}
+}
+
+/** Stamps a write body with the stored name, unless it already has an author. */
+function withAuthor<T extends object>(body: T & { author?: string }): T & { author?: string } {
+  const author = getName();
+  return author && !body.author ? { ...body, author } : body;
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
     method,
@@ -72,19 +92,24 @@ export const api = {
   createIssue: (input: IssueInput) => request<Issue>("POST", "/api/issues", input),
   updateIssue: (id: string, patch: IssuePatch) => request<Issue>("PATCH", `/api/issues/${enc(id)}`, patch),
   deleteIssue: (id: string) => request<{ ok: true }>("DELETE", `/api/issues/${enc(id)}`),
-  comment: (id: string, body: string, author?: string) =>
-    request<Issue>("POST", `/api/issues/${enc(id)}/comments`, { body, author }),
+  comment: (id: string, body: string) => {
+    const payload = { body };
+    return request<Issue>("POST", `/api/issues/${enc(id)}/comments`, withAuthor(payload));
+  },
 
   labels: () => request<string[]>("GET", "/api/labels"),
 
   documents: (filter: DocumentFilter = {}) =>
     request<DocumentSummary[]>("GET", `/api/documents${query(filter)}`),
   document: (slug: string) => request<Document>("GET", `/api/documents/${enc(slug)}`),
-  createDocument: (input: DocumentInput) => request<Document>("POST", "/api/documents", input),
-  updateDocument: (slug: string, patch: DocumentPatch) => request<Document>("PATCH", `/api/documents/${enc(slug)}`, patch),
+  createDocument: (input: DocumentInput) => request<Document>("POST", "/api/documents", withAuthor(input)),
+  updateDocument: (slug: string, patch: DocumentPatch) =>
+    request<Document>("PATCH", `/api/documents/${enc(slug)}`, withAuthor(patch)),
   deleteDocument: (slug: string) => request<{ ok: true }>("DELETE", `/api/documents/${enc(slug)}`),
-  commentDocument: (slug: string, body: string, author?: string) =>
-    request<Document>("POST", `/api/documents/${enc(slug)}/comments`, { body, author }),
+  commentDocument: (slug: string, body: string) => {
+    const payload = { body };
+    return request<Document>("POST", `/api/documents/${enc(slug)}/comments`, withAuthor(payload));
+  },
   versions: (slug: string) => request<DocumentVersionSummary[]>("GET", `/api/documents/${enc(slug)}/versions`),
   version: (slug: string, id: number) => request<DocumentVersion>("GET", `/api/documents/${enc(slug)}/versions/${id}`),
 };

@@ -421,6 +421,22 @@ kbd {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
+.whoami {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 8px;
+  margin-top: auto;
+  border-radius: var(--radius);
+  color: var(--muted);
+  font-weight: 500;
+  transition: background-color var(--t), color var(--t);
+}
+.whoami:hover {
+  background: rgb(0 0 0 / 0.04);
+  color: var(--text);
+}
 .nav-section {
   display: flex;
   align-items: center;
