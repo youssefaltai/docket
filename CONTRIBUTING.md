@@ -8,8 +8,8 @@ You need [Bun](https://bun.sh) 1.4+ (CI uses the version in `package.json`).
 
 ```sh
 bun install
-bun run dev          # http://localhost:7100, hot reload
-bun run seed         # demo data into the empty dev server, in another terminal
+bun run dev          # http://localhost:7100, hot reload; the first run prints a setup code
+DOCKET_API_KEY=dk_... bun run seed   # demo data, in another terminal (create a key in Settings)
 bun test
 bun run typecheck
 ```
@@ -30,10 +30,11 @@ scripts/seed.ts       demo data, created over REST
 
 ## Tests
 
-Tests start a real server in a subprocess against a temp database, then talk to it over REST and MCP (`test/server.ts`). They never import `src/`, so refactors don't break them. Only behaviour changes do.
+Tests start a real server in a subprocess against a temp database, set it up with an admin, then talk to it over REST, MCP and `/ws` (`test/server.ts`). They never import `src/`, so refactors don't break them. Only behaviour changes do.
 
 - A behaviour change or a bug fix comes with a test.
-- A new migration comes with a check in `test/migrations.test.ts` that old data survives the upgrade. Its schema fixture is frozen: add a newer fixture, don't edit the old one.
+- Tests sign in only through the harness: `s.api` (the admin), `s.user(name)`, `s.agent(name)`, `s.as(name)` and `s.anon`. A change to how auth works then touches `test/server.ts` alone.
+- A new migration comes with a test that data written under the previous schema survives it. Freeze that schema in the test as a fixture; never edit it later.
 
 ## What makes a PR easy to merge
 

@@ -1,72 +1,52 @@
 // Claims and issue versions under pressure: two server processes on one database (so the races go through
-// SQLite's locks, not just one JS thread), every issue bump path, and "me" on every route that takes it.
+// SQLite's locks, not just one JS thread), every issue bump path, and each slot taking only its kind of member.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { join } from "node:path";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { startServer, type TestServer } from "./server.ts";
 
-const ROOT = "claims-hardening-root";
 const N = 20;
-
-async function as(s: TestServer, token: string, method: string, path: string, body?: unknown) {
-  const res = await fetch(new URL(path, s.url), {
-    method,
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  return { status: res.status, body: (await res.json()) as any };
-}
-
-async function mcpTool(s: TestServer, token: string, name: string, args: Record<string, unknown>) {
-  const client = new Client({ name: "claims-hardening", version: "0" });
-  await client.connect(
-    new StreamableHTTPClientTransport(new URL("/mcp", s.url), { requestInit: { headers: { Authorization: `Bearer ${token}` } } }),
-  );
-  try {
-    const r = (await client.callTool({ name, arguments: args })) as { content: { text: string }[]; isError?: boolean };
-    return { isError: !!r.isError, text: r.content.map((c) => c.text).join("\n") };
-  } finally {
-    await client.close();
-  }
-}
 
 describe("two server processes on one database", () => {
   let a: TestServer;
   let b: TestServer;
-  let alpha: string;
-  let beta: string;
   beforeAll(async () => {
-    a = await startServer({ env: { DOCKET_TOKEN: ROOT } });
-    b = await startServer({ databasePath: join(a.dir, "docket.db"), env: { DOCKET_TOKEN: ROOT } });
-    alpha = (await a.api("POST", "/api/members", { name: "alpha", kind: "agent" })).body.token;
-    beta = (await a.api("POST", "/api/members", { name: "beta", kind: "agent" })).body.token;
-    await a.api("POST", "/api/workspaces", { key: "race", name: "Race" });
-    await a.api("POST", "/api/projects", { key: "RACE", workspace: "race", name: "Race" });
-    for (let i = 0; i < N + 1; i++) await a.api("POST", "/api/issues", { project: "RACE", title: `Issue ${i + 1}` });
+    a = await startServer();
+    b = await startServer({ sharing: a });
+    await a.agent("alpha");
+    await a.agent("beta");
+    await a.user("ana");
+    await a.user("bo");
+    await a.api("POST", "/api/teams", { key: "RACE", workspace: "acme", name: "Race" });
+    for (let i = 0; i < N + 1; i++) await a.api("POST", "/api/issues", { team: "RACE", title: `Issue ${i + 1}` });
   });
   afterAll(async () => {
     await b.stop();
     await a.stop();
   });
 
-  test("of two claims racing across processes, exactly one wins every issue", async () => {
+  test("of two claims racing across processes for each slot, exactly one wins it on every issue", async () => {
     const ids = Array.from({ length: N }, (_, i) => `RACE-${i + 1}`);
+    const claim = (s: TestServer, who: string, slot: string, id: string) =>
+      s.as(who).api("POST", `/api/issues/${id}/claim`, {}).then((r) => ({ id, who, slot, ...r }));
     const results = await Promise.all(
       ids.flatMap((id) => [
-        as(a, alpha, "POST", `/api/issues/${id}/claim`, {}).then((r) => ({ id, who: "alpha", ...r })),
-        as(b, beta, "POST", `/api/issues/${id}/claim`, {}).then((r) => ({ id, who: "beta", ...r })),
+        claim(a, "alpha", "delegate", id),
+        claim(b, "beta", "delegate", id),
+        claim(a, "ana", "assignee", id),
+        claim(b, "bo", "assignee", id),
       ]),
     );
     for (const id of ids) {
-      const pair = results.filter((r) => r.id === id);
-      const won = pair.filter((r) => r.status === 200);
-      const lost = pair.filter((r) => r.status === 409);
-      expect(won).toHaveLength(1);
-      expect(lost).toHaveLength(1);
-      expect(lost[0]!.body.error).toBe(`${id} is claimed by ${won[0]!.who}`);
       const { body } = await b.api("GET", `/api/issues/${id}`);
-      expect(body).toMatchObject({ assignee: won[0]!.who, status: "in_progress" });
+      expect(body.status).toBe("in_progress");
+      for (const slot of ["delegate", "assignee"]) {
+        const pair = results.filter((r) => r.id === id && r.slot === slot);
+        const won = pair.filter((r) => r.status === 200);
+        const lost = pair.filter((r) => r.status === 409);
+        expect(won).toHaveLength(1);
+        expect(lost).toHaveLength(1);
+        expect(lost[0]!.body.error).toBe(`${id} is claimed by ${won[0]!.who}`);
+        expect(body[slot].username).toBe(won[0]!.who);
+      }
     }
   });
 
@@ -87,10 +67,9 @@ describe("every issue bump path moves the version", () => {
   let s: TestServer;
   beforeAll(async () => {
     s = await startServer();
-    await s.api("POST", "/api/workspaces", { key: "v", name: "V" });
-    await s.api("POST", "/api/projects", { key: "VER", workspace: "v", name: "Ver" });
-    await s.api("POST", "/api/issues", { project: "VER", title: "Parent" }); // VER-1
-    await s.api("POST", "/api/issues", { project: "VER", title: "Blocker" }); // VER-2
+    await s.api("POST", "/api/teams", { key: "VER", workspace: "acme", name: "Ver" });
+    await s.api("POST", "/api/issues", { team: "VER", title: "Parent" }); // VER-1
+    await s.api("POST", "/api/issues", { team: "VER", title: "Blocker" }); // VER-2
   });
   afterAll(() => s.stop());
 
@@ -107,18 +86,18 @@ describe("every issue bump path moves the version", () => {
   }
 
   test("setting a parent and a blocker bumps them", async () => {
-    await s.api("POST", "/api/issues", { project: "VER", title: "Child" }); // VER-3
+    await s.api("POST", "/api/issues", { team: "VER", title: "Child" }); // VER-3
     await bumps(["VER-1", "VER-2"], () => s.api("PATCH", "/api/issues/VER-3", { parent: "VER-1", blockedBy: ["VER-2"] }));
   });
 
   test("comment added, edited and deleted each bump the issue", async () => {
     let cid = 0;
     await bumps(["VER-3"], async () => {
-      const { body } = await s.api("POST", "/api/issues/VER-3/comments", { body: "a", author: "me-too" });
+      const { body } = await s.api("POST", "/api/issues/VER-3/comments", { body: "a" });
       cid = body.comments.at(-1).id;
     });
-    await bumps(["VER-3"], () => s.api("PATCH", `/api/issues/VER-3/comments/${cid}`, { body: "b", author: "me-too" }));
-    await bumps(["VER-3"], () => s.api("DELETE", `/api/issues/VER-3/comments/${cid}`, { author: "me-too" }));
+    await bumps(["VER-3"], () => s.api("PATCH", `/api/issues/VER-3/comments/${cid}`, { body: "b" }));
+    await bumps(["VER-3"], () => s.api("DELETE", `/api/issues/VER-3/comments/${cid}`));
   });
 
   test("deleting an issue bumps its parent and its blocker", async () => {
@@ -126,35 +105,49 @@ describe("every issue bump path moves the version", () => {
   });
 });
 
-describe('"me" without a member token', () => {
+describe("the assignee is a person and the delegate an agent", () => {
   let s: TestServer;
-  let member: string;
   beforeAll(async () => {
-    s = await startServer({ env: { DOCKET_TOKEN: ROOT } });
-    member = (await s.api("POST", "/api/members", { name: "gamma", kind: "agent" })).body.token;
-    await s.api("POST", "/api/workspaces", { key: "m", name: "M" });
-    await s.api("POST", "/api/projects", { key: "ME", workspace: "m", name: "Me" });
-    await s.api("POST", "/api/issues", { project: "ME", title: "One" });
+    s = await startServer();
+    await s.user("ana");
+    await s.agent("bot");
+    await s.api("POST", "/api/teams", { key: "SLT", workspace: "acme", name: "Slots" });
+    await s.api("POST", "/api/issues", { team: "SLT", title: "One" }); // SLT-1
   });
   afterAll(() => s.stop());
 
-  test("root gets a 400 on every REST route, and nothing changes", async () => {
-    expect((await s.api("POST", "/api/issues", { project: "ME", title: "x", assignee: "me" })).status).toBe(400);
-    expect((await s.api("POST", "/api/issues", { project: "ME", title: "x", assignee: " ME " })).status).toBe(400);
-    expect((await s.api("PATCH", "/api/issues/ME-1", { assignee: "me" })).status).toBe(400);
-    const { body } = await s.api("GET", "/api/issues?project=ME");
-    expect(body.map((i: any) => [i.id, i.assignee])).toEqual([["ME-1", null]]);
+  const refused = (r: { status: number; body: any }) => {
+    expect(r.status).toBeGreaterThanOrEqual(400);
+    expect(typeof r.body.error).toBe("string");
+  };
+
+  test("REST refuses the wrong kind, a non-member, and a mismatched \"me\", and nothing changes", async () => {
+    refused(await s.api("POST", "/api/issues", { team: "SLT", title: "x", assignee: "bot" }));
+    refused(await s.api("POST", "/api/issues", { team: "SLT", title: "x", delegate: "ana" }));
+    refused(await s.api("POST", "/api/issues", { team: "SLT", title: "x", assignee: "nobody" }));
+    refused(await s.api("PATCH", "/api/issues/SLT-1", { assignee: "bot" }));
+    refused(await s.api("PATCH", "/api/issues/SLT-1", { delegate: "ana" }));
+    refused(await s.api("PATCH", "/api/issues/SLT-1", { delegate: "nobody" }));
+    refused(await s.as("ana").api("POST", "/api/issues", { team: "SLT", title: "x", delegate: "me" }));
+    refused(await s.as("ana").api("PATCH", "/api/issues/SLT-1", { delegate: "me" }));
+    refused(await s.as("bot").api("POST", "/api/issues", { team: "SLT", title: "x", assignee: "me" }));
+    refused(await s.as("bot").api("PATCH", "/api/issues/SLT-1", { assignee: "me" }));
+    const { body } = await s.api("GET", "/api/issues?team=SLT");
+    expect(body.map((i: any) => [i.id, i.assignee, i.delegate])).toEqual([["SLT-1", null, null]]);
   });
 
-  test("root gets an error from every MCP tool, and a member doesn't", async () => {
-    for (const [name, args] of [
-      ["create_issue", { project: "ME", title: "x", assignee: "me" }],
-      ["update_issue", { id: "ME-1", assignee: "me" }],
-      ["list_issues", { assignee: "me" }],
-      ["claim_issue", { id: "ME-1", assignee: "me" }],
+  test("MCP refuses the same, and the right kind of \"me\" works", async () => {
+    for (const [caller, name, args] of [
+      ["admin", "create_issue", { team: "SLT", title: "x", assignee: "bot" }],
+      ["admin", "update_issue", { id: "SLT-1", delegate: "ana" }],
+      ["ana", "create_issue", { team: "SLT", title: "x", delegate: "me" }],
+      ["ana", "update_issue", { id: "SLT-1", delegate: "me" }],
+      ["bot", "create_issue", { team: "SLT", title: "x", assignee: "me" }],
+      ["bot", "update_issue", { id: "SLT-1", assignee: "me" }],
     ] as const) {
-      expect((await mcpTool(s, ROOT, name, args)).isError).toBeTrue();
+      await expect(s.as(caller).tool(name, args)).rejects.toThrow();
     }
-    expect((await mcpTool(s, member, "create_issue", { project: "ME", title: "mine", assignee: "me" })).text).toContain("@gamma");
+    expect(await s.as("ana").tool("create_issue", { team: "SLT", title: "mine", assignee: "me" })).toContain("@ana");
+    expect(await s.as("bot").tool("create_issue", { team: "SLT", title: "mine", delegate: "me" })).toContain("→@bot");
   });
 });

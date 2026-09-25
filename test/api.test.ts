@@ -4,8 +4,7 @@ import { startServer, type TestServer } from "./server.ts";
 let s: TestServer;
 beforeAll(async () => {
   s = await startServer();
-  await s.api("POST", "/api/workspaces", { key: "acme", name: "Acme" });
-  await s.api("POST", "/api/projects", { key: "API", workspace: "acme", name: "API" });
+  await s.api("POST", "/api/teams", { key: "API", workspace: s.workspace, name: "API" });
 });
 afterAll(() => s.stop());
 
@@ -15,40 +14,41 @@ test("serves the web UI", async () => {
   expect(await res.text()).toContain("<div id=\"root\"");
 });
 
-test("workspaces and projects", async () => {
+test("workspaces and teams", async () => {
   const { body: workspaces } = await s.api("GET", "/api/workspaces");
-  expect(workspaces.map((w: any) => w.key)).toContain("acme");
+  expect(workspaces.map((w: any) => w.key)).toContain(s.workspace);
 
-  const { body: projects } = await s.api("GET", "/api/projects?workspace=acme");
-  expect(projects).toHaveLength(1);
-  expect(projects[0]).toMatchObject({ key: "API", workspace: "acme", name: "API" });
+  const { body: teams } = await s.api("GET", `/api/teams?workspace=${s.workspace}`);
+  expect(teams).toHaveLength(1);
+  expect(teams[0]).toMatchObject({ key: "API", workspace: s.workspace, name: "API" });
 
-  const dup = await s.api("POST", "/api/projects", { key: "API", workspace: "acme", name: "Again" });
+  const dup = await s.api("POST", "/api/teams", { key: "API", workspace: s.workspace, name: "Again" });
   expect(dup.status).toBeGreaterThanOrEqual(400);
   expect(dup.body.error).toBeString();
 });
 
 test("issue lifecycle", async () => {
-  const created = await s.api("POST", "/api/issues", { project: "API", title: "First", priority: 2, labels: ["bug"] });
+  const created = await s.api("POST", "/api/issues", { team: "API", title: "First", priority: 2, labels: ["bug"] });
   expect(created.status).toBe(201);
   expect(created.body).toMatchObject({ id: "API-1", status: "todo", priority: 2, labels: ["bug"] });
 
-  const child = await s.api("POST", "/api/issues", { project: "API", title: "Child", parent: "API-1", blockedBy: ["API-1"] });
+  const child = await s.api("POST", "/api/issues", { team: "API", title: "Child", parent: "API-1", blockedBy: ["API-1"] });
   expect(child.body).toMatchObject({ id: "API-2", parent: "API-1", blockedBy: ["API-1"] });
 
   const patched = await s.api("PATCH", "/api/issues/API-1", { status: "done" });
   expect(patched.body.status).toBe("done");
   expect(patched.body.completedAt).toBeString();
 
-  const comment = await s.api("POST", "/api/issues/API-1/comments", { body: "Shipped", author: "tester" });
+  const comment = await s.api("POST", "/api/issues/API-1/comments", { body: "Shipped" });
   expect(comment.status).toBe(201);
 
   const { body: issue } = await s.api("GET", "/api/issues/api-1");
   expect(issue.children.map((c: any) => c.id)).toEqual(["API-2"]);
   expect(issue.blocks).toEqual(["API-2"]);
-  expect(issue.comments.map((c: any) => [c.author, c.body])).toEqual([["tester", "Shipped"]]);
+  // s.api acts as the setup admin, so the comment's author is admin's UserRef.
+  expect(issue.comments.map((c: any) => [c.author.username, c.body])).toEqual([["admin", "Shipped"]]);
 
-  const { body: open } = await s.api("GET", "/api/issues?project=API&status=todo");
+  const { body: open } = await s.api("GET", "/api/issues?team=API&status=todo");
   expect(open.map((i: any) => i.id)).toEqual(["API-2"]);
 
   const { body: labels } = await s.api("GET", "/api/labels");
@@ -56,17 +56,18 @@ test("issue lifecycle", async () => {
 });
 
 test("deleted issue numbers are never reused", async () => {
-  const { body: temp } = await s.api("POST", "/api/issues", { project: "API", title: "Temp" });
+  const { body: temp } = await s.api("POST", "/api/issues", { team: "API", title: "Temp" });
   expect((await s.api("DELETE", `/api/issues/${temp.id}`)).status).toBe(200);
   expect((await s.api("GET", `/api/issues/${temp.id}`)).status).toBe(404);
-  const { body: next } = await s.api("POST", "/api/issues", { project: "API", title: "Next" });
+  const { body: next } = await s.api("POST", "/api/issues", { team: "API", title: "Next" });
   expect(next.number).toBe(temp.number + 1);
 });
 
 test("documents, versions and issue links", async () => {
-  const created = await s.api("POST", "/api/documents", { project: "API", title: "Design Notes", content: "See API-1." });
+  const created = await s.api("POST", "/api/documents", { team: "API", title: "Design Notes", content: "See API-1." });
   expect(created.status).toBe(201);
-  expect(created.body).toMatchObject({ slug: "design-notes", updatedBy: "anonymous" });
+  expect(created.body).toMatchObject({ slug: "design-notes" });
+  expect(created.body.updatedBy.username).toBe("admin");
   expect(created.body.issues.map((i: any) => i.id)).toEqual(["API-1"]);
 
   const stale = created.body.updatedAt;
@@ -96,10 +97,13 @@ test("documents, versions and issue links", async () => {
 });
 
 test("rejects bad requests", async () => {
+  // Raw fetch: this test is about the 415 itself (a non-JSON content type), which s.api can't
+  // send. We still authenticate, using s.admin.token for the bearer header as the one allowed
+  // exception to "no hand-built auth headers".
   const form = await fetch(new URL("/api/issues", s.url), {
     method: "POST",
-    headers: { "Content-Type": "text/plain" },
-    body: JSON.stringify({ project: "API", title: "x" }),
+    headers: { "Content-Type": "text/plain", Authorization: `Bearer ${s.admin.token}` },
+    body: JSON.stringify({ team: "API", title: "x" }),
   });
   expect(form.status).toBe(415);
   expect((await s.api("GET", "/api/nope")).status).toBe(404);

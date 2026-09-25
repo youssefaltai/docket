@@ -5,8 +5,7 @@ import { startServer, type TestServer } from "./server.ts";
 let s: TestServer;
 beforeAll(async () => {
   s = await startServer();
-  await s.api("POST", "/api/workspaces", { key: "acme", name: "Acme" });
-  await s.api("POST", "/api/projects", { key: "DOC", workspace: "acme", name: "Docs" });
+  await s.api("POST", "/api/teams", { key: "DOC", workspace: s.workspace, name: "Docs" });
 });
 afterAll(() => s.stop());
 
@@ -19,14 +18,14 @@ const burst = (slug: string, n: number, base?: string) =>
   );
 
 test("every save moves updatedAt forward", async () => {
-  await s.api("POST", "/api/documents", { project: "DOC", title: "Burst" });
+  await s.api("POST", "/api/documents", { team: "DOC", title: "Burst" });
   const saves = await burst("burst", 30);
   const stamps = saves.map((r) => r.body.updatedAt as string).sort();
   expect(new Set(stamps).size).toBe(stamps.length);
 });
 
 test("only one of many writers from the same base wins", async () => {
-  const { body: doc } = await s.api("POST", "/api/documents", { project: "DOC", title: "Race" });
+  const { body: doc } = await s.api("POST", "/api/documents", { team: "DOC", title: "Race" });
   const saves = await burst("race", 30, doc.updatedAt);
   expect(saves.filter((r) => r.status === 200)).toHaveLength(1);
   expect(saves.filter((r) => r.status === 409)).toHaveLength(29);
