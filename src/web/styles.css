@@ -1951,6 +1951,11 @@ kbd {
   overflow-wrap: anywhere;
   user-select: all;
 }
+.token-warning {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+}
 .token-actions {
   display: flex;
   flex-wrap: wrap;

@@ -369,7 +369,11 @@ function takeLoginLink(): string | null {
   const match = /^#login=([^&]+)/.exec(location.hash);
   if (!match) return null;
   history.replaceState(null, "", location.pathname + location.search);
-  return decodeURIComponent(match[1]!);
+  try {
+    return decodeURIComponent(match[1]!);
+  } catch {
+    return null; // a mangled link is no link
+  }
 }
 const loginLink = takeLoginLink();
 // Pasting a login link into a tab already on Docket only changes the hash: reload to use it.
@@ -389,8 +393,9 @@ function Root() {
     if (loginLink) {
       api.login(loginLink).then(
         () => location.reload(),
-        () => {
-          setLinkError("This sign-in link is invalid or was revoked.");
+        (err) => {
+          const revoked = err instanceof HttpError && err.status === 401;
+          setLinkError(revoked ? "This sign-in link is invalid or was revoked." : String(err.message));
           setLocked(true);
         },
       );

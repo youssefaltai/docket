@@ -177,6 +177,12 @@ function IssuedToken({ issued: { member, token }, fresh, onDone }: { issued: Mem
           {agent ? "Connect the agent with this command." : "Send them this link to sign in."} It’s shown only once.
         </p>
         <div className="token-box mono">{agent ? command : `${origin}/#login=${token}`}</div>
+        {!agent && (
+          <small className="token-warning">
+            Works like a password: anyone with this link can sign in as <span dir="auto">{member.name}</span>. Rotate the
+            token if it leaks.
+          </small>
+        )}
         <div className="token-actions">
           {agent ? (
             <button className="btn" onClick={() => copy(command, "Command")}>
