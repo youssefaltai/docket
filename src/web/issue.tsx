@@ -1,6 +1,6 @@
 // Issue page: title, description, sub-issues, comments and the properties panel.
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { CLOSED_STATUSES, PRIORITY_LABELS, STATUS_LABELS, type Issue, type IssuePatch } from "../shared/types";
+import { CLOSED_STATUSES, PRIORITY_LABELS, STATUS_LABELS, nameKey, type Issue, type IssuePatch } from "../shared/types";
 import { HttpError, api, getMe } from "./api";
 import { AssigneePicker, BlockedByPicker, LabelsPicker, ParentPicker, PriorityPicker, StatusPicker } from "./pickers";
 import {
@@ -136,8 +136,14 @@ export function IssuePage({ id }: { id: string }) {
     remove: (cid) => withFresh(() => api.deleteComment(issue.id, cid)),
   };
 
-  // Members can claim an open issue nobody holds; the server refuses (naming the holder) if someone got there first.
-  const claimable = !!getMe().member && !issue.assignee && !CLOSED_STATUSES.includes(issue.status);
+  // A member can claim an open issue no other active member holds (a revoked member or leftover free text
+  // doesn't hold one), including their own not yet in progress: the same rule as the server, which has the
+  // last word and names the holder if someone got there first.
+  const me = getMe().member;
+  const heldByOther =
+    !!issue.assignee && nameKey(issue.assignee) !== nameKey(me?.name ?? "") && app.members.some((m) => nameKey(m) === nameKey(issue.assignee!));
+  const alreadyMine = !!me && !!issue.assignee && nameKey(issue.assignee) === nameKey(me.name) && issue.status === "in_progress";
+  const claimable = !!me && !CLOSED_STATUSES.includes(issue.status) && !heldByOther && !alreadyMine;
   const claim = () => withFresh(() => api.claimIssue(issue.id)).catch(errorToast);
 
   // The description is the one field sent with baseUpdatedAt, since a stale save would overwrite someone's
@@ -145,20 +151,27 @@ export function IssuePage({ id }: { id: string }) {
   // changed; otherwise it saves again on top of the fresh version.
   const saveDescription = async (description: string, start: Edit) => {
     const n = invalidate();
-    const save = (base: string) => api.updateIssue(issue.id, { description, baseUpdatedAt: base });
-    try {
-      const fresh = await save(start.base);
-      if (isLatest(n)) setIssue(fresh);
-    } catch (e) {
-      if (!(e instanceof HttpError && e.status === 409)) throw e;
-      const latest = await api.issue(issue.id);
-      if (latest.description !== start.value) {
-        setIssue(latest);
-        throw e;
+    const conflict = (e: unknown) => e instanceof HttpError && e.status === 409;
+    // Saves on `base`; true if it landed, false on a 409.
+    const save = async (base: string) => {
+      try {
+        const fresh = await api.updateIssue(issue.id, { description, baseUpdatedAt: base });
+        if (isLatest(n)) setIssue(fresh);
+        return true;
+      } catch (e) {
+        if (!conflict(e)) throw e;
+        return false;
       }
-      const fresh = await save(latest.updatedAt);
-      if (isLatest(n)) setIssue(fresh);
+    };
+    if (await save(start.base)) return;
+    let latest = await api.issue(issue.id);
+    if (latest.description === start.value) {
+      if (await save(latest.updatedAt)) return;
+      latest = await api.issue(issue.id);
     }
+    // A real conflict: show the latest version, so the banner and its choices work from what's there now.
+    setIssue(latest);
+    throw new HttpError("Issue changed since you read it", 409);
   };
 
   const remove = async () => {
@@ -238,6 +251,7 @@ function Description({
   const [draft, setDraft] = useState(value);
   const [saving, setSaving] = useState(false);
   const [conflict, setConflict] = useState(false);
+  const inFlight = useRef(false); // guards double ⌘↵ presses before `saving` re-renders
   const started = useRef<Edit>({ value, base: updatedAt });
   const ref = useRef<HTMLTextAreaElement>(null);
   useAutosize(ref, editing ? draft : "");
@@ -261,13 +275,19 @@ function Description({
     setEditing(false);
   };
   const save = () => {
-    if (saving) return;
+    if (saving || conflict || inFlight.current) return;
     if (draft.trim() === started.current.value.trim()) return close();
+    inFlight.current = true;
     setSaving(true);
-    onSave(draft.trim(), started.current).then(close, (e) => {
-      if (e instanceof HttpError && e.status === 409) setConflict(true);
-      else errorToast(e);
-    }).finally(() => setSaving(false));
+    onSave(draft.trim(), started.current)
+      .then(close, (e) => {
+        if (e instanceof HttpError && e.status === 409) setConflict(true);
+        else errorToast(e);
+      })
+      .finally(() => {
+        inFlight.current = false;
+        setSaving(false);
+      });
   };
   // After a conflict, the props hold their version: keep editing on top of it, or take it.
   const rebase = () => {
@@ -301,14 +321,19 @@ function Description({
         />
         {conflict && (
           <div className="editor-conflict" role="alert">
-            <span>Someone changed this description while you were editing.</span>
-            <span className="grow" />
-            <button className="btn btn-sm" onClick={takeTheirs}>
-              Use theirs
-            </button>
-            <button className="btn btn-sm" onClick={rebase}>
-              Keep mine
-            </button>
+            <div className="editor-conflict-head">
+              <span>Someone changed this description while you were editing. Theirs:</span>
+              <span className="grow" />
+              <button className="btn btn-sm" onClick={takeTheirs}>
+                Use theirs
+              </button>
+              <button className="btn btn-sm" onClick={rebase}>
+                Keep mine
+              </button>
+            </div>
+            <pre className="editor-theirs" dir="auto">
+              {value || "(empty)"}
+            </pre>
           </div>
         )}
         <div className="editor-foot">

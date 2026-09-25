@@ -1,7 +1,7 @@
 // Issues view: header with search + filters, and the list / board layouts.
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { CLOSED_STATUSES, STATUSES, STATUS_LABELS, type IssuePatch, type IssueSummary, type Status } from "../shared/types";
-import { api, store } from "./api";
+import { api, getMe, store } from "./api";
 import { AssigneePicker, Picker, PriorityPicker, StatusPicker, personOption } from "./pickers";
 import {
   Avatar,
@@ -165,15 +165,19 @@ export function IssuesView({ projectKey }: { projectKey: string | null }) {
 }
 
 function Filters(props: { label: string; setLabel: (v: string) => void; assignee: string; setAssignee: (v: string) => void }) {
-  const { labels, people, name, loadDirectory } = useApp();
+  const { labels, people, members, name, loadDirectory } = useApp();
   const any = (label: string, icon: ReactNode) => ({ value: "", label, icon });
   const mine = props.assignee === name;
+  // Once members exist, root's display name isn't anyone's identity, so there's nothing to call "mine".
+  const hasMine = !!getMe().member || members.length === 0;
   return (
     <>
-      <button className={cls("chip", mine && "chip-on")} aria-pressed={mine} onClick={() => props.setAssignee(mine ? "" : name)}>
-        <Avatar name={name} />
-        <span className="chip-text">Mine</span>
-      </button>
+      {hasMine && (
+        <button className={cls("chip", mine && "chip-on")} aria-pressed={mine} onClick={() => props.setAssignee(mine ? "" : name)}>
+          <Avatar name={name} />
+          <span className="chip-text">Mine</span>
+        </button>
+      )}
       <Picker
         label="Filter by label"
         options={[any("Any label", <TagIcon />), ...labels.map((l) => ({ value: l, label: l, icon: <LabelDot name={l} /> }))]}

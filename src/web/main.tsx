@@ -61,6 +61,7 @@ function App({ name, onChangeName }: { name: string; onChangeName?: () => void }
   const [projectsTick, setProjectsTick] = useState(0);
   const [labels, setLabels] = useState<string[]>([]);
   const [people, setPeople] = useState<string[]>(() => defaultPeople(name));
+  const [members, setMembers] = useState<string[]>([]);
   const [modal, setModal] = useState<ModalState>(null);
   const [navOpen, setNavOpen] = useState(false);
   const [docProject, setDocProject] = useState<string | null>(null);
@@ -102,6 +103,7 @@ function App({ name, onChangeName }: { name: string; onChangeName?: () => void }
   useEffect(() => {
     api.workspaces().then(setWorkspaces, errorToast);
     api.projects().then(setProjects, errorToast);
+    api.members().then((list) => setMembers(list.filter((m) => !m.revokedAt).map((m) => m.name)), () => {});
   }, [live, projectsTick]);
 
   useEffect(() => setNavOpen(false), [path]);
@@ -156,6 +158,7 @@ function App({ name, onChangeName }: { name: string; onChangeName?: () => void }
     workspaceProjects,
     labels,
     people,
+    members,
     name,
     changeName: onChangeName,
     loadDirectory,
