@@ -2,7 +2,7 @@
 import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { IssueInput, Project, Workspace } from "../shared/types";
-import { api, subscribe } from "./api";
+import { HttpError, api, setOnUnauthorized, subscribe } from "./api";
 import { DocPage, DocsView } from "./docs";
 import { IssuePage } from "./issue";
 import { IssuesView } from "./issues";
@@ -308,8 +308,47 @@ function moveFocus(delta: number): boolean {
   return true;
 }
 
+/** Shows the login screen once the server answers 401 (DOCKET_TOKEN is set). */
+function Root() {
+  const [locked, setLocked] = useState(false);
+  useEffect(() => void setOnUnauthorized(() => setLocked(true)), []);
+  return locked ? <Login /> : <App />;
+}
+
+function Login() {
+  const [token, setToken] = useState("");
+  const [error, setError] = useState("");
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    api.login(token.trim()).then(
+      () => location.reload(),
+      (err) => setError(err instanceof HttpError && err.status === 401 ? "Wrong token" : String(err.message)),
+    );
+  };
+  return (
+    <form className="empty login" onSubmit={submit}>
+      <Logo />
+      <h2>Docket</h2>
+      <p>Enter the access token (DOCKET_TOKEN) for this server.</p>
+      <input
+        className="input"
+        type="password"
+        autoFocus
+        autoComplete="current-password"
+        placeholder="Token"
+        value={token}
+        onChange={(e) => setToken(e.target.value)}
+      />
+      {error && <small className="login-error">{error}</small>}
+      <button className="btn btn-primary" disabled={!token.trim()}>
+        Sign in
+      </button>
+    </form>
+  );
+}
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <App />
+    <Root />
   </StrictMode>,
 );

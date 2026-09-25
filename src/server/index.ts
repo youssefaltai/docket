@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import index from "../web/index.html";
 import { apiRoutes } from "./api.ts";
+import { guard, login } from "./auth.ts";
 import { onChange } from "./db.ts";
 import { handleMcp } from "./mcp.ts";
 
@@ -33,9 +34,12 @@ const server = Bun.serve({
         headers: { "Cache-Control": "public, max-age=31536000, immutable" },
       });
     },
-    ...apiRoutes,
-    "/mcp": handleMcp,
-    "/ws": (req, server) => (server.upgrade(req) ? undefined : new Response("Expected a WebSocket", { status: 400 })),
+    "/api/login": { POST: login },
+    ...(Object.fromEntries(Object.entries(apiRoutes).map(([path, route]) => [path, guard(route)])) as typeof apiRoutes),
+    "/mcp": guard(handleMcp),
+    "/ws": guard((req: Request, server: Bun.Server<undefined>) =>
+      server.upgrade(req) ? undefined : new Response("Expected a WebSocket", { status: 400 }),
+    ),
   },
   websocket: {
     open(ws) {

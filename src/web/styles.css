@@ -1974,6 +1974,18 @@ textarea.input {
   max-width: 320px;
   margin: 0 0 12px;
 }
+.login {
+  min-height: 100dvh;
+}
+.login .input {
+  width: min(280px, 100%);
+}
+.login .btn {
+  margin-top: 6px;
+}
+.login-error {
+  color: var(--danger);
+}
 
 @keyframes fade-in {
   from {

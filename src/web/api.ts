@@ -28,6 +28,10 @@ export class HttpError extends Error {
   }
 }
 
+/** Called on any 401, so the app can show the login screen. */
+export let onUnauthorized = () => {};
+export const setOnUnauthorized = (fn: () => void) => (onUnauthorized = fn);
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
     method,
@@ -35,6 +39,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const data: unknown = await res.json().catch(() => null);
+  if (res.status === 401) onUnauthorized();
   if (!res.ok) throw new HttpError((data as ApiError | null)?.error || `${res.status} ${res.statusText}`, res.status);
   return data as T;
 }
@@ -52,6 +57,8 @@ function query(filter: IssueFilter | DocumentFilter | Record<string, string | un
 const enc = encodeURIComponent;
 
 export const api = {
+  login: (token: string) => request<{ ok: true }>("POST", "/api/login", { token }),
+
   workspaces: () => request<Workspace[]>("GET", "/api/workspaces"),
   createWorkspace: (input: WorkspaceInput) => request<Workspace>("POST", "/api/workspaces", input),
 
