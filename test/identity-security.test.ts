@@ -37,6 +37,12 @@ test("malformed or forged credentials are a clean 401", async () => {
     expect([t, (await s.with({ token: t }).api("GET", "/api/me")).status]).toEqual([t, 401]);
 });
 
+test("junk codes are a clean 401, never a 500", async () => {
+  // Few on purpose: bad codes count toward the per-IP sign-in limit.
+  for (const code of ["%E0", "", "x".repeat(10_000)])
+    expect([code.slice(0, 8), (await s.anon.api("POST", "/api/auth/peek", { code })).status]).toEqual([code.slice(0, 8), 401]);
+});
+
 test("a signed-out cookie stays dead", async () => {
   const code = (await s.as("ana").api("POST", "/api/sign-in-links")).body.code;
   const cookie = (await s.anon.api("POST", "/api/auth/redeem", { code })).headers.getSetCookie()[0]!.split(";")[0]!;
