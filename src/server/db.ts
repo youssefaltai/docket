@@ -6,6 +6,7 @@ import {
   STATUSES,
   type Comment,
   type Document,
+  type DocumentFilter,
   type DocumentInput,
   type DocumentPatch,
   type DocumentSummary,
@@ -21,6 +22,8 @@ import {
   type ProjectInput,
   type ServerEvent,
   type Status,
+  type Workspace,
+  type WorkspaceInput,
 } from "../shared/types.ts";
 
 /** An error with an HTTP status; REST returns it as `{ error }`, MCP as a tool error. */
@@ -125,6 +128,21 @@ const MIGRATIONS = [
   );
   CREATE INDEX document_comments_document ON document_comments(document_id);
   `,
+  // Workspaces group projects. Existing projects move into "default". SQLite can't add a
+  // NOT NULL column with a foreign key, so the column is nullable and the app requires it.
+  `
+  CREATE TABLE workspaces (
+    key TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  INSERT INTO workspaces (key, name, created_at, updated_at)
+    VALUES ('default', 'Default', strftime('%Y-%m-%dT%H:%M:%fZ'), strftime('%Y-%m-%dT%H:%M:%fZ'));
+  ALTER TABLE projects ADD COLUMN workspace TEXT REFERENCES workspaces(key);
+  UPDATE projects SET workspace = 'default';
+  CREATE INDEX projects_workspace ON projects(workspace);
+  `,
 ];
 
 const { user_version } = db.query("PRAGMA user_version").get() as { user_version: number };
@@ -189,10 +207,102 @@ function checkAssignee(value: unknown): string | null {
   return value?.trim() || null;
 }
 
+/** "Q3 Roadmap: Café!" → "q3-roadmap-cafe"; "" when nothing Latin is left (e.g. an Arabic title). */
+function slugify(title: string): string {
+  return title
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .slice(0, 60)
+    .replace(/^-+|-+$/g, "");
+}
+
+/**
+ * An explicit slug must be valid and free; a derived one is deduped: base, base-2, base-3…
+ * or `${fallback}-1`, `${fallback}-2`… when the name has nothing Latin in it.
+ */
+function pickSlug(
+  explicit: unknown,
+  name: string,
+  taken: (slug: string) => boolean,
+  { label, fallback }: { label: string; fallback: string },
+): string {
+  if (explicit !== undefined) {
+    const slug = typeof explicit === "string" ? explicit.trim().toLowerCase() : "";
+    if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(slug)) {
+      throw new AppError(`Invalid ${label} "${explicit}": use a-z, 0-9 and single dashes, e.g. "api-design"`);
+    }
+    if (taken(slug)) throw new AppError(`${label[0]!.toUpperCase()}${label.slice(1)} "${slug}" is already taken`, 409);
+    return slug;
+  }
+  const base = slugify(name);
+  for (let n = 1; ; n++) {
+    const slug = base ? (n === 1 ? base : `${base}-${n}`) : `${fallback}-${n}`;
+    if (!taken(slug)) return slug;
+  }
+}
+
+// --- Workspaces ---
+
+interface WorkspaceRow {
+  key: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+}
+
+function toWorkspace(row: WorkspaceRow): Workspace {
+  return {
+    key: row.key,
+    name: row.name,
+    projectCount: db
+      .query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM projects WHERE workspace = ?")
+      .get(row.key)!.n,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function workspaceRow(key: unknown): WorkspaceRow {
+  const row =
+    typeof key === "string"
+      ? db.query<WorkspaceRow, [string]>("SELECT * FROM workspaces WHERE key = ?").get(key.trim().toLowerCase())
+      : null;
+  if (!row) throw new AppError(`Workspace ${key} not found`, 404);
+  return row;
+}
+
+export function listWorkspaces(): Workspace[] {
+  return db
+    .query<WorkspaceRow, []>("SELECT * FROM workspaces ORDER BY name COLLATE NOCASE, key")
+    .all()
+    .map(toWorkspace);
+}
+
+export function createWorkspace(input: WorkspaceInput): Workspace {
+  const name = requireText(input.name, "name");
+  const taken = (key: string) => db.query("SELECT 1 FROM workspaces WHERE key = ?").get(key) !== null;
+  const key = pickSlug(input.key, name, taken, { label: "workspace key", fallback: "workspace" });
+  const time = now();
+  db.query("INSERT INTO workspaces (key, name, created_at, updated_at) VALUES (?, ?, ?, ?)").run(key, name, time, time);
+  changed("workspace", key);
+  return toWorkspace(workspaceRow(key));
+}
+
+export function updateWorkspace(key: string, patch: { name?: unknown }): Workspace {
+  const row = workspaceRow(key);
+  const name = patch.name === undefined ? row.name : requireText(patch.name, "name");
+  db.query("UPDATE workspaces SET name = ?, updated_at = ? WHERE key = ?").run(name, now(), row.key);
+  changed("workspace", row.key);
+  return toWorkspace(workspaceRow(row.key));
+}
+
 // --- Projects ---
 
 interface ProjectRow {
   key: string;
+  workspace: string;
   name: string;
   description: string;
   created_at: string;
@@ -209,6 +319,7 @@ function toProject(row: ProjectRow): Project {
   for (const { status, n } of rows) counts[status] = n;
   return {
     key: row.key,
+    workspace: row.workspace,
     name: row.name,
     description: row.description,
     counts,
@@ -229,38 +340,44 @@ function projectRow(key: unknown): ProjectRow {
   return row;
 }
 
-export function listProjects(): Project[] {
-  return db.query<ProjectRow, []>("SELECT * FROM projects ORDER BY key").all().map(toProject);
+export function listProjects(filter: { workspace?: string } = {}): Project[] {
+  if (!filter.workspace) return db.query<ProjectRow, []>("SELECT * FROM projects ORDER BY key").all().map(toProject);
+  return db
+    .query<ProjectRow, [string]>("SELECT * FROM projects WHERE workspace = ? ORDER BY key")
+    .all(workspaceRow(filter.workspace).key)
+    .map(toProject);
 }
 
 export function createProject(input: ProjectInput): Project {
   const key = typeof input.key === "string" ? input.key.trim().toUpperCase() : "";
   if (!/^[A-Z]{2,5}$/.test(key)) throw new AppError("Project key must be 2–5 letters, e.g. BRD");
+  const workspace = workspaceRow(requireText(input.workspace, "workspace")).key;
   const name = requireText(input.name, "name");
   const description = optionalText(input.description, "description");
   if (db.query("SELECT 1 FROM projects WHERE key = ?").get(key)) {
     throw new AppError(`Project ${key} already exists`, 409);
   }
   const time = now();
-  db.query("INSERT INTO projects (key, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run(
-    key,
-    name,
-    description,
-    time,
-    time,
-  );
+  db.query(
+    "INSERT INTO projects (key, workspace, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+  ).run(key, workspace, name, description, time, time);
   changed("project", key);
   return toProject(projectRow(key));
 }
 
-export function updateProject(key: string, patch: { name?: unknown; description?: unknown }): Project {
+export function updateProject(
+  key: string,
+  patch: { name?: unknown; description?: unknown; workspace?: unknown },
+): Project {
   const row = projectRow(key);
   const name = patch.name === undefined ? row.name : requireText(patch.name, "name");
   const description =
     patch.description === undefined ? row.description : optionalText(patch.description, "description");
-  db.query("UPDATE projects SET name = ?, description = ?, updated_at = ? WHERE key = ?").run(
+  const workspace = patch.workspace === undefined ? row.workspace : workspaceRow(patch.workspace).key;
+  db.query("UPDATE projects SET name = ?, description = ?, workspace = ?, updated_at = ? WHERE key = ?").run(
     name,
     description,
+    workspace,
     now(),
     row.key,
   );
@@ -366,6 +483,10 @@ const isClosed = (status: Status) => CLOSED_STATUSES.includes(status);
 export function listIssues(filter: IssueFilter): IssueSummary[] {
   const where: string[] = [];
   const params: SQLQueryBindings[] = [];
+  if (filter.workspace) {
+    where.push("i.project_key IN (SELECT key FROM projects WHERE workspace = ?)");
+    params.push(workspaceRow(filter.workspace).key);
+  }
   if (filter.project) {
     where.push("i.project_key = ?");
     params.push(projectRow(filter.project).key);
@@ -592,36 +713,8 @@ const nextPosition = (project: string) =>
     .query<{ n: number }, [string]>("SELECT COALESCE(MAX(position), 0) + 1 AS n FROM documents WHERE project_key = ?")
     .get(project)!.n;
 
-/** "Q3 Roadmap: Café!" → "q3-roadmap-cafe"; "" when nothing Latin is left (e.g. an Arabic title). */
-function slugify(title: string): string {
-  return title
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .slice(0, 60)
-    .replace(/^-+|-+$/g, "");
-}
-
 function slugTaken(slug: string): boolean {
   return db.query("SELECT 1 FROM documents WHERE slug = ?").get(slug) !== null;
-}
-
-/** An explicit slug must be free; a derived one is deduped: base, base-2, base-3… or doc-1, doc-2… */
-function pickSlug(explicit: unknown, title: string): string {
-  if (explicit !== undefined) {
-    const slug = typeof explicit === "string" ? explicit.trim().toLowerCase() : "";
-    if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(slug)) {
-      throw new AppError(`Invalid slug "${explicit}": use a-z, 0-9 and single dashes, e.g. "api-design"`);
-    }
-    if (slugTaken(slug)) throw new AppError(`Slug "${slug}" is already taken`, 409);
-    return slug;
-  }
-  const base = slugify(title);
-  for (let n = 1; ; n++) {
-    const slug = base ? (n === 1 ? base : `${base}-${n}`) : `doc-${n}`;
-    if (!slugTaken(slug)) return slug;
-  }
 }
 
 /** Applies exact-text replacements in order; throws (applying nothing) unless each matches exactly once. */
@@ -687,9 +780,13 @@ function saveRefs(documentId: number, content: string) {
   });
 }
 
-export function listDocuments(filter: { project?: string; q?: string }): DocumentSummary[] {
+export function listDocuments(filter: DocumentFilter): DocumentSummary[] {
   const where: string[] = [];
   const params: SQLQueryBindings[] = [];
+  if (filter.workspace) {
+    where.push("d.project_key IN (SELECT key FROM projects WHERE workspace = ?)");
+    params.push(workspaceRow(filter.workspace).key);
+  }
   if (filter.project) {
     where.push("d.project_key = ?");
     params.push(projectRow(filter.project).key);
@@ -734,7 +831,7 @@ export function createDocument(input: DocumentInput): Document {
   const position = input.position === undefined ? undefined : checkPosition(input.position);
   const time = now();
   const slug = db.transaction(() => {
-    const slug = pickSlug(input.slug, title);
+    const slug = pickSlug(input.slug, title, slugTaken, { label: "slug", fallback: "doc" });
     const { id } = db
       .query<{ id: number }, SQLQueryBindings[]>(
         `INSERT INTO documents (slug, project_key, title, content, position, created_at, updated_at, updated_by)

@@ -51,17 +51,20 @@ export function DocsView({ projectKey }: { projectKey: string | null }) {
     document.title = `${project ? `${project.name} docs` : projectKey || "All docs"} · Docket`;
   }, [projectKey, project?.name]);
 
+  // "All docs" is the current workspace's; wait until it's known.
+  const workspace = projectKey ? undefined : app.workspace?.key;
   useEffect(() => {
+    if (!projectKey && !workspace) return;
     const n = ++seq.current;
     api
-      .documents({ project: projectKey ?? undefined, q: q || undefined })
+      .documents({ project: projectKey ?? undefined, workspace, q: q || undefined })
       .then((list) => n === seq.current && setDocs(list))
       .catch((e) => {
         if (n !== seq.current) return;
         errorToast(e);
         setDocs((cur) => cur ?? []);
       });
-  }, [projectKey, q, live]);
+  }, [projectKey, workspace, q, live]);
 
   // Server order is project key, then position; keep it while grouping.
   const groups = new Map<string, DocumentSummary[]>();

@@ -1,6 +1,13 @@
-// New issue + new project dialogs.
+// New issue, doc, project and workspace dialogs.
 import { useRef, useState } from "react";
-import { PRIORITY_LABELS, STATUS_LABELS, type IssueInput, type Priority, type Status } from "../shared/types";
+import {
+  PRIORITY_LABELS,
+  STATUS_LABELS,
+  type IssueInput,
+  type Priority,
+  type Status,
+  type Workspace,
+} from "../shared/types";
 import { api } from "./api";
 import { AssigneePicker, LabelsPicker, ParentPicker, PriorityPicker, ProjectPicker, StatusPicker } from "./pickers";
 import {
@@ -233,13 +240,19 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
   const [description, setDescription] = useState("");
   const [busy, setBusy] = useState(false);
   const key = customKey ?? deriveKey(name);
-  const ready = !!name.trim() && /^[A-Z]{2,5}$/.test(key) && !busy;
+  const workspace = app.workspace;
+  const ready = !!name.trim() && /^[A-Z]{2,5}$/.test(key) && !!workspace && !busy;
 
   const submit = async () => {
-    if (!ready) return;
+    if (!ready || !workspace) return;
     setBusy(true);
     try {
-      const project = await api.createProject({ key, name: name.trim(), description: description.trim() || undefined });
+      const project = await api.createProject({
+        key,
+        workspace: workspace.key,
+        name: name.trim(),
+        description: description.trim() || undefined,
+      });
       app.reloadProjects();
       navigate(`/p/${project.key}`);
       onClose();
@@ -253,6 +266,11 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
     <Modal label="New project" className="modal-sm" onClose={onClose} onSubmit={submit}>
       <div className="modal-head">
         <span className="modal-title">New project</span>
+        {workspace && (
+          <span className="muted" dir="auto">
+            in {workspace.name}
+          </span>
+        )}
         <span className="grow" />
         <button className="icon-btn" onClick={onClose} aria-label="Close">
           <CloseIcon />
@@ -300,6 +318,59 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
         </button>
         <button className="btn btn-primary" disabled={!ready} onClick={submit}>
           Create project
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+export function NewWorkspaceModal({ onCreate, onClose }: { onCreate: (w: Workspace) => void; onClose: () => void }) {
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const ready = !!name.trim() && !busy;
+
+  const submit = async () => {
+    if (!ready) return;
+    setBusy(true);
+    try {
+      onCreate(await api.createWorkspace({ name: name.trim() }));
+      onClose();
+    } catch (e) {
+      errorToast(e);
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal label="New workspace" className="modal-sm" onClose={onClose} onSubmit={submit}>
+      <div className="modal-head">
+        <span className="modal-title">New workspace</span>
+        <span className="grow" />
+        <button className="icon-btn" onClick={onClose} aria-label="Close">
+          <CloseIcon />
+        </button>
+      </div>
+      <form
+        className="modal-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          submit();
+        }}
+      >
+        <label className="field">
+          <span>Name</span>
+          <input className="input" autoFocus dir="auto" placeholder="Default" value={name} onChange={(e) => setName(e.target.value)} />
+          <small>A workspace groups related projects, with their issues and docs.</small>
+        </label>
+        <button type="submit" hidden />
+      </form>
+      <div className="modal-foot">
+        <span className="grow" />
+        <button className="btn" onClick={onClose}>
+          Cancel
+        </button>
+        <button className="btn btn-primary" disabled={!ready} onClick={submit}>
+          Create workspace
         </button>
       </div>
     </Modal>

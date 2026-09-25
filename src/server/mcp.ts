@@ -14,7 +14,8 @@ import {
 import * as db from "./db.ts";
 
 const INSTRUCTIONS = `Docket is a small issue tracker shared by a human and agents.
-- Projects have a 2–5 letter key (e.g. BRD). Issues are identified as KEY-number, e.g. BRD-12.
+- Workspace → project → issues and docs. A workspace (e.g. "default") groups related projects; call list_projects to see which workspace each project is in, and pass \`workspace\` to list_issues or list_documents to stay inside one.
+- Projects have a 2–5 letter key (e.g. BRD), unique across all workspaces. Issues are identified as KEY-number, e.g. BRD-12.
 - Statuses: backlog, todo, in_progress, in_review, done, canceled.
 - Priority: 0 none, 1 urgent, 2 high, 3 medium, 4 low.
 - Working on an issue: get_issue, set status in_progress, post progress notes with comment_issue, then set in_review or done. There is no delete: set status canceled instead.
@@ -22,6 +23,7 @@ const INSTRUCTIONS = `Docket is a small issue tracker shared by a human and agen
 
 const identifier = z.string().describe('Issue identifier: project key + number, e.g. "BRD-12" (case-insensitive)');
 const projectKey = z.string().describe('Project key, e.g. "BRD"');
+const workspaceKey = z.string().describe('Workspace key, e.g. "default" (see list_workspaces)');
 const status = z.enum(STATUSES).describe("backlog | todo | in_progress | in_review | done | canceled");
 const priority = z.literal(PRIORITIES).describe("0 none, 1 urgent, 2 high, 3 medium, 4 low");
 const labels = z.array(z.string()).describe('Label names, e.g. ["bug", "ui"]');
@@ -110,17 +112,48 @@ function createServer(): McpServer {
   const server = new McpServer({ name: "docket", version: "1.0.0" }, { instructions: INSTRUCTIONS });
 
   server.registerTool(
-    "list_projects",
+    "list_workspaces",
     {
       description:
-        "List all projects with their open-issue counts. A project's key (e.g. BRD) prefixes its issue identifiers (BRD-12).",
+        "List workspaces, one line each: key · name · project count. A workspace groups related projects (workspace → project → issues and docs).",
       annotations: { readOnlyHint: true },
     },
     () => {
-      const projects = db.listProjects();
+      const workspaces = db.listWorkspaces();
+      const lines = workspaces.map((w) => `${w.key} · ${w.name} · ${w.projectCount} project${w.projectCount === 1 ? "" : "s"}`);
+      return result(lines.join("\n") || "No workspaces yet.", { workspaces });
+    },
+  );
+
+  server.registerTool(
+    "create_workspace",
+    {
+      description:
+        "Create a workspace to group a separate body of work's projects. Check list_workspaces first; only create one when asked to.",
+      inputSchema: {
+        key: z.string().optional().describe('URL-safe id (a-z, 0-9, dashes), e.g. "default"; default derived from the name'),
+        name: z.string(),
+      },
+    },
+    (input) => {
+      const workspace = db.createWorkspace(input);
+      return result(`Created workspace ${workspace.key} · ${workspace.name}`, { workspace });
+    },
+  );
+
+  server.registerTool(
+    "list_projects",
+    {
+      description:
+        "List projects with their workspace and open-issue counts, one line each: key · name · workspace · open count. A project's key (e.g. BRD) prefixes its issue identifiers (BRD-12).",
+      inputSchema: { workspace: workspaceKey.optional().describe("Only projects in this workspace") },
+      annotations: { readOnlyHint: true },
+    },
+    ({ workspace }) => {
+      const projects = db.listProjects({ workspace });
       const lines = projects.map((p) => {
         const open = db.OPEN_STATUSES.reduce((sum, s) => sum + p.counts[s], 0);
-        return `${p.key} · ${p.name} · ${open} open`;
+        return `${p.key} · ${p.name} · workspace ${p.workspace} · ${open} open`;
       });
       return result(lines.join("\n") || "No projects yet.", { projects });
     },
@@ -130,16 +163,24 @@ function createServer(): McpServer {
     "create_project",
     {
       description:
-        "Create a project. The key is 2–5 letters (uppercased), permanent, and prefixes every issue identifier: key BRD gives BRD-1, BRD-2… Check list_projects first; only create a project when asked to.",
+        "Create a project in a workspace. The key is 2–5 letters (uppercased), permanent, unique across all workspaces, and prefixes every issue identifier: key BRD gives BRD-1, BRD-2… Check list_projects first; only create a project when asked to.",
       inputSchema: {
         key: z.string().describe('2–5 letters, e.g. "BRD"'),
+        workspace: workspaceKey.optional().describe("Required when more than one workspace exists; otherwise the only one"),
         name: z.string(),
         description: z.string().optional(),
       },
     },
-    (input) => {
-      const project = db.createProject(input);
-      return result(`Created project ${project.key} · ${project.name}`, { project });
+    ({ workspace, ...input }) => {
+      if (!workspace) {
+        const all = db.listWorkspaces();
+        if (all.length !== 1) {
+          throw new db.AppError(`Pass workspace: one of ${all.map((w) => w.key).join(", ") || "(none yet, create one first)"}`);
+        }
+        workspace = all[0]!.key;
+      }
+      const project = db.createProject({ ...input, workspace });
+      return result(`Created project ${project.key} · ${project.name} in workspace ${project.workspace}`, { project });
     },
   );
 
@@ -149,6 +190,7 @@ function createServer(): McpServer {
       description:
         "List issues, one line each: identifier · status · priority · title · @assignee · #labels. Sorted by status, then priority (urgent first, none last), then most recently updated. Only open issues (backlog, todo, in_progress, in_review) unless you pass `status`. Use get_issue for the description, comments, sub-issues and blockers.",
       inputSchema: {
+        workspace: workspaceKey.optional().describe("Only issues in this workspace's projects"),
         project: projectKey.optional(),
         status: z.array(status).optional().describe("Only these statuses. Default: all except done and canceled."),
         label: z.string().optional(),
@@ -251,13 +293,14 @@ function createServer(): McpServer {
       description:
         "List documents (specs, plans, notes), one line each: slug · title · project · updated time and author. Ordered by project, then position. Use get_document with the slug to read one.",
       inputSchema: {
+        workspace: workspaceKey.optional().describe("Only docs in this workspace's projects"),
         project: projectKey.optional(),
         query: z.string().optional().describe("Text to find in title or content"),
       },
       annotations: { readOnlyHint: true },
     },
-    ({ project, query }) => {
-      const documents = db.listDocuments({ project, q: query });
+    ({ workspace, project, query }) => {
+      const documents = db.listDocuments({ workspace, project, q: query });
       return result(documents.map(docLine).join("\n") || "No matching documents.", { documents });
     },
   );

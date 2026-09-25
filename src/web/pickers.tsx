@@ -297,8 +297,8 @@ export function LabelsPicker({
 }
 
 export function ProjectPicker({ value, onChange, children, ...rest }: Trigger & { value: string; onChange: (key: string) => void }) {
-  const { projects } = useApp();
-  const options = (projects ?? []).map((p) => ({ value: p.key, label: p.name, icon: <ProjectMark id={p.key} /> }));
+  const { workspaceProjects } = useApp();
+  const options = (workspaceProjects ?? []).map((p) => ({ value: p.key, label: p.name, icon: <ProjectMark id={p.key} /> }));
   return (
     <Picker label="Project" options={options} selected={[value]} onPick={onChange} {...rest}>
       {children}

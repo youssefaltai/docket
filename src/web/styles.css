@@ -328,6 +328,26 @@ kbd {
   font-size: 14px;
   font-weight: 600;
   letter-spacing: -0.01em;
+  border-radius: var(--radius);
+  transition: background-color var(--t);
+}
+.brand:hover,
+.brand[aria-expanded="true"] {
+  background: rgb(0 0 0 / 0.04);
+}
+.brand > svg {
+  flex-shrink: 0;
+}
+.brand-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.brand-chevron {
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
 }
 .new-issue {
   display: flex;

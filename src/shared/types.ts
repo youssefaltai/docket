@@ -24,8 +24,22 @@ export const PRIORITY_LABELS: Record<Priority, string> = {
   4: "Low",
 };
 
+export interface Workspace {
+  key: string; // URL-safe lowercase slug, e.g. "default"
+  name: string;
+  projectCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WorkspaceInput {
+  key?: string; // default: slugified name, deduped with -2, -3…
+  name: string;
+}
+
 export interface Project {
-  key: string; // 2–5 uppercase letters, e.g. "BRD"
+  key: string; // 2–5 uppercase letters, e.g. "BRD"; globally unique across workspaces
+  workspace: string; // workspace key
   name: string;
   description: string;
   counts: Record<Status, number>;
@@ -93,6 +107,12 @@ export interface DocumentVersion extends DocumentVersionSummary {
   content: string;
 }
 
+export interface DocumentFilter {
+  workspace?: string;
+  project?: string;
+  q?: string; // matches title and content
+}
+
 export interface DocumentInput {
   project: string;
   title: string;
@@ -120,6 +140,7 @@ export interface DocumentPatch {
 
 export interface ProjectInput {
   key: string;
+  workspace: string;
   name: string;
   description?: string;
 }
@@ -139,6 +160,7 @@ export interface IssueInput {
 export type IssuePatch = Partial<Omit<IssueInput, "project">>;
 
 export interface IssueFilter {
+  workspace?: string;
   project?: string;
   status?: Status[];
   label?: string;
@@ -150,8 +172,8 @@ export interface IssueFilter {
 // Pushed over the WebSocket at /ws after every mutation.
 export interface ServerEvent {
   type: "changed";
-  entity: "project" | "issue" | "document";
-  id: string; // project key, issue identifier or document slug
+  entity: "workspace" | "project" | "issue" | "document";
+  id: string; // workspace key, project key, issue identifier or document slug
 }
 
 export interface ApiError {

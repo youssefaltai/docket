@@ -63,17 +63,20 @@ export function IssuesView({ projectKey }: { projectKey: string | null }) {
     document.title = `${project?.name ?? (projectKey || "All issues")} · Docket`;
   }, [projectKey, project?.name]);
 
+  // "All issues" is the current workspace's; wait until it's known.
+  const workspace = projectKey ? undefined : app.workspace?.key;
   useEffect(() => {
+    if (!projectKey && !workspace) return;
     const n = ++seq.current;
     api
-      .issues({ project: projectKey ?? undefined, q, label, assignee })
+      .issues({ project: projectKey ?? undefined, workspace, q, label, assignee })
       .then((list) => n === seq.current && setIssues(list))
       .catch((e) => {
         if (n !== seq.current) return;
         errorToast(e);
         setIssues((cur) => cur ?? []);
       });
-  }, [projectKey, q, label, assignee, live, tick]);
+  }, [projectKey, workspace, q, label, assignee, live, tick]);
 
   const patch: Patch = (id, p) => {
     ++seq.current; // drop any in-flight fetch that predates this change
@@ -98,7 +101,7 @@ export function IssuesView({ projectKey }: { projectKey: string | null }) {
   };
 
   let body;
-  if (app.projects?.length === 0) {
+  if (!projectKey && app.workspaceProjects?.length === 0) {
     body = (
       <EmptyState
         icon={<IssuesIcon />}

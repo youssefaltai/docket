@@ -1,6 +1,6 @@
 # Docket
 
-A nano issue tracker: projects, issues, comments. Web UI for humans, MCP for agents. Bun + SQLite + TypeScript. Runs on the server, reachable only over Tailscale, so there's no app-level auth.
+A nano issue tracker: workspaces, projects, issues, comments. Web UI for humans, MCP for agents. Bun + SQLite + TypeScript. Runs on the server, reachable only over Tailscale, so there's no app-level auth.
 
 Rules: minimal, simple, clean, smooth. Few dependencies (react, react-dom, marked, zod, @modelcontextprotocol/sdk). No frameworks beyond that.
 
@@ -20,7 +20,8 @@ Env: `PORT` (default 7100), `DATABASE_PATH` (default `./data/docket.db`). Dev: `
 
 ## Data
 
-- **projects**: key (PK, 2–5 uppercase letters), name, description, created_at, updated_at.
+- **workspaces**: key (PK, URL-safe lowercase slug, e.g. `default`), name, created_at, updated_at.
+- **projects**: key (PK, 2–5 uppercase letters, unique across all workspaces), workspace (→ workspaces.key; required by the app), name, description, created_at, updated_at.
 - **issues**: id (PK), project_key, number (per-project sequence), title, description, status, priority, labels (JSON array), assignee, parent_id, created_at, updated_at, completed_at. Unique (project_key, number).
 - **issue_blocks**: blocker_id, blocked_id.
 - **comments**: id, issue_id, author, body, created_at.
@@ -31,10 +32,13 @@ Identifier = `${project_key}-${number}`, parsed case-insensitively. Issues can't
 
 | Method | Path | Body / query | Returns |
 |---|---|---|---|
-| GET | /api/projects | | `Project[]` |
-| POST | /api/projects | `ProjectInput` | `Project` |
-| PATCH | /api/projects/:key | `{ name?, description? }` | `Project` |
-| GET | /api/issues | `?project&status=a,b&label&assignee&parent&q` | `IssueSummary[]` |
+| GET | /api/workspaces | | `Workspace[]` (by name) |
+| POST | /api/workspaces | `WorkspaceInput` | `Workspace` |
+| PATCH | /api/workspaces/:key | `{ name }` | `Workspace` |
+| GET | /api/projects | `?workspace` | `Project[]` |
+| POST | /api/projects | `ProjectInput` (workspace required) | `Project` |
+| PATCH | /api/projects/:key | `{ name?, description?, workspace? }` (workspace moves it) | `Project` |
+| GET | /api/issues | `?workspace&project&status=a,b&label&assignee&parent&q` | `IssueSummary[]` |
 | POST | /api/issues | `IssueInput` | `Issue` |
 | GET | /api/issues/:id | | `Issue` |
 | PATCH | /api/issues/:id | `IssuePatch` | `Issue` |
@@ -54,26 +58,29 @@ Tools return short markdown text (one line per issue: `BRD-3 · todo · high · 
 
 | Tool | Input | Notes |
 |---|---|---|
-| list_projects | | with open-issue counts |
-| create_project | key, name, description? | |
-| list_issues | project?, status?[], label?, assignee?, parent?, query?, limit? (default 50) | excludes done/canceled unless `status` given |
+| list_workspaces | | with project counts |
+| create_workspace | key?, name | key defaults to the slugified name |
+| list_projects | workspace? | with workspace and open-issue counts |
+| create_project | key, name, workspace?, description? | workspace required when more than one exists, else the only one |
+| list_issues | workspace?, project?, status?[], label?, assignee?, parent?, query?, limit? (default 50) | excludes done/canceled unless `status` given |
 | get_issue | id | full issue with description, sub-issues, blockers, comments |
 | create_issue | project, title, description?, status?, priority?, labels?, assignee?, parent?, blockedBy? | |
 | update_issue | id + any of title, description, status, priority, labels, assignee, parent, blockedBy | |
 | comment_issue | id, body, author? (default "claude") | use for progress notes |
 
-Tool descriptions must explain the conventions (statuses, priority numbers, identifiers) so an agent can use them without reading docs. No delete tool: agents cancel instead.
+Tool descriptions must explain the conventions (workspace → project → issue/doc, statuses, priority numbers, identifiers) so an agent can use them without reading docs. No delete tool: agents cancel instead.
 
 ## UI
 
 Light theme only, neutral and modern, in the spirit of Linear, Vercel, Resend. Geist + Geist Mono (Google Fonts). White canvas, `#fafafa` sidebar, 1px `#ebebeb` borders, `#171717` text, `#737373` muted, black primary buttons, 6px radii, shadows only on popovers/modals. Small SVG status icons (Linear-like: dashed circle backlog, circle todo, half-filled in progress, three-quarter in review, check done, x canceled) and priority bars. Tight 13–14px type, generous whitespace, fast 120ms transitions. `dir="auto"` on all user text (content may be Arabic).
 
-- **Sidebar**: "Docket" wordmark, "All issues", projects with open counts, "New issue" (shortcut `C`).
+- **Sidebar**: workspace switcher (current workspace name; popover lists workspaces plus "New workspace"), "New issue" (shortcut `C`), "All issues", projects with open counts. Everything in it is scoped to the current workspace.
 - **List view** (default): issues grouped by status with sticky headers and counts; Done and Canceled collapsed by default. Row: priority, identifier (mono, muted), status icon, title, labels, assignee initial, relative updated time.
 - **Board view**: columns by status (no Canceled), cards, drag between columns to change status.
 - **Toolbar**: search (`/` to focus), label and assignee filters, List/Board toggle.
 - **Issue page** (`/issue/BRD-12`): inline-editable title; markdown description with edit toggle; properties panel (status, priority, assignee, labels, project, parent, blocked by) editable via small popovers; sub-issues; comments thread with composer (`⌘↵` to send).
 - **New issue modal**: project, title, description, status, priority, labels, assignee, parent. `⌘↵` creates, `Esc` closes.
+- **Workspaces**: the current workspace is remembered in localStorage (`docket.workspace`), falling back to the first. `/` and `/docs` show only its content; the new issue/doc project pickers list only its projects; a new project is created in it. Opening `/p/:key`, `/issue/:id` or `/doc/:slug` of another workspace's project switches to that workspace. "New workspace" is a name-only modal. Project keys stay globally unique, so identifiers and routes don't change.
 - Client routing with `history.pushState`: `/`, `/p/:key`, `/issue/:id`. The server returns index.html for these paths.
 - Works on a phone: the sidebar collapses below 768px.
 
@@ -93,7 +100,7 @@ Linear-style docs inside projects. Markdown is the source of truth (agents write
 
 | Method | Path | Body / query | Returns |
 |---|---|---|---|
-| GET | /api/documents | `?project&q` | `DocumentSummary[]` (project key, then position) |
+| GET | /api/documents | `?workspace&project&q` | `DocumentSummary[]` (project key, then position) |
 | POST | /api/documents | `DocumentInput` | `Document` |
 | GET | /api/documents/:slug | | `Document` |
 | GET | /api/documents/:slug/raw | | `text/markdown; charset=utf-8` (the content) |
@@ -109,7 +116,7 @@ Linear-style docs inside projects. Markdown is the source of truth (agents write
 
 | Tool | Input | Notes |
 |---|---|---|
-| list_documents | project?, query? | one line per doc: `slug · Title · PROJECT · updated 2h ago by claude` |
+| list_documents | workspace?, project?, query? | one line per doc: `slug · Title · PROJECT · updated 2h ago by claude` |
 | get_document | slug | full markdown plus metadata and mentioned issues |
 | create_document | project, title, content, slug?, position?, author? | |
 | update_document | slug, title?, content?, edits?, project?, position?, author? | prefer `edits` for small changes to long docs; `content` replaces everything |
@@ -128,6 +135,10 @@ Tool descriptions must say: docs are markdown; mention issues by identifier (e.g
 - Issue page: a "Docs" section listing documents that mention the issue.
 - New doc: modal with project and title, then opens straight into edit mode.
 - Routes served as index.html: add `/docs`, `/doc/*` (and `/p/*` already covers `/p/:key/docs`).
+
+## Workspaces
+
+Migration 3 (additive): creates `workspaces`, inserts `default` / "Default", adds the nullable `projects.workspace` column (SQLite can't add a NOT NULL column with a foreign key) and assigns every existing project to `default`. `Workspace` includes `projectCount`. Mutations publish `{ type: "changed", entity: "workspace", id: key }`.
 
 ## Deploy
 

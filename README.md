@@ -1,6 +1,6 @@
 # Docket
 
-A nano issue tracker: projects, issues, comments, and markdown docs. A web UI for humans and an MCP server for agents, on Bun + SQLite. It has no auth and is meant to be reachable only over Tailscale. See [SPEC.md](SPEC.md) for the data model, REST API and MCP tools.
+A nano issue tracker: workspaces, projects, issues, comments, and markdown docs. A web UI for humans and an MCP server for agents, on Bun + SQLite. It has no auth and is meant to be reachable only over Tailscale. See [SPEC.md](SPEC.md) for the data model, REST API and MCP tools.
 
 It's installable as a PWA (Add to Home Screen / Add to Dock) on iPhone, iPad, Mac Safari and Chrome, with offline support for the last-seen issues and docs.
 
@@ -36,4 +36,4 @@ It's then at `https://docket.<tailnet>.ts.net:7100`.
 claude mcp add --transport http --scope user docket https://docket.<tailnet>.ts.net:7100/mcp
 ```
 
-Tools: `list_projects`, `create_project`, `list_issues`, `get_issue`, `create_issue`, `update_issue`, `comment_issue`, `list_documents`, `get_document`, `create_document`, `update_document`, `comment_document`.
+Tools: `list_workspaces`, `create_workspace`, `list_projects`, `create_project`, `list_issues`, `get_issue`, `create_issue`, `update_issue`, `comment_issue`, `list_documents`, `get_document`, `create_document`, `update_document`, `comment_document`.

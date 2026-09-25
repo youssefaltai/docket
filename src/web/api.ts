@@ -2,6 +2,7 @@
 import type {
   ApiError,
   Document,
+  DocumentFilter,
   DocumentInput,
   DocumentPatch,
   DocumentSummary,
@@ -15,6 +16,8 @@ import type {
   Project,
   ProjectInput,
   ServerEvent,
+  Workspace,
+  WorkspaceInput,
 } from "../shared/types";
 
 export class HttpError extends Error {
@@ -36,7 +39,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   return data as T;
 }
 
-function query(filter: IssueFilter | Record<string, string | undefined>): string {
+function query(filter: IssueFilter | DocumentFilter | Record<string, string | undefined>): string {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(filter)) {
     if (value == null || value === "" || (Array.isArray(value) && value.length === 0)) continue;
@@ -49,6 +52,9 @@ function query(filter: IssueFilter | Record<string, string | undefined>): string
 const enc = encodeURIComponent;
 
 export const api = {
+  workspaces: () => request<Workspace[]>("GET", "/api/workspaces"),
+  createWorkspace: (input: WorkspaceInput) => request<Workspace>("POST", "/api/workspaces", input),
+
   projects: () => request<Project[]>("GET", "/api/projects"),
   createProject: (input: ProjectInput) => request<Project>("POST", "/api/projects", input),
   updateProject: (key: string, patch: { name?: string; description?: string }) =>
@@ -64,7 +70,7 @@ export const api = {
 
   labels: () => request<string[]>("GET", "/api/labels"),
 
-  documents: (filter: { project?: string; q?: string } = {}) =>
+  documents: (filter: DocumentFilter = {}) =>
     request<DocumentSummary[]>("GET", `/api/documents${query(filter)}`),
   document: (slug: string) => request<Document>("GET", `/api/documents/${enc(slug)}`),
   createDocument: (input: DocumentInput) => request<Document>("POST", "/api/documents", input),

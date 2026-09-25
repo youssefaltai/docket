@@ -17,7 +17,7 @@ import {
 import { createPortal } from "react-dom";
 import { Marked } from "marked";
 import { api } from "./api";
-import type { IssueInput, IssueSummary, Priority, Project, Status } from "../shared/types";
+import type { IssueInput, IssueSummary, Priority, Project, Status, Workspace } from "../shared/types";
 
 export const cls = (...xs: (string | false | null | undefined)[]) => xs.filter(Boolean).join(" ");
 export const MOD = /Mac|iPhone|iPad/.test(navigator.userAgent) ? "⌘" : "Ctrl";
@@ -80,15 +80,23 @@ export function Link({ to, onClick, ...rest }: { to: string } & AnchorHTMLAttrib
 // ---------- App context ----------
 
 export interface AppState {
+  workspaces: Workspace[] | null;
+  /** The current workspace: remembered, following deep links, else the first. */
+  workspace: Workspace | null;
+  /** Every project, in any workspace (identifier chips, issue and doc pages). */
   projects: Project[] | null;
+  /** Projects in the current workspace (sidebar, pickers, new issue/doc defaults). */
+  workspaceProjects: Project[] | null;
   labels: string[];
   people: string[];
   /** Refresh labels + known assignees (called when a picker opens). */
   loadDirectory: () => void;
+  /** Refetch projects and workspaces now, without waiting for the live update. */
   reloadProjects: () => void;
   newIssue: (defaults?: Partial<IssueInput>) => void;
   newDoc: (project?: string) => void;
   newProject: () => void;
+  newWorkspace: () => void;
   /** The doc page reports its project so the sidebar and "new" defaults follow it. */
   setDocProject: (key: string | null) => void;
   openNav: () => void;

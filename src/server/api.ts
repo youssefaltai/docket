@@ -1,5 +1,12 @@
 import type { BunRequest } from "bun";
-import type { DocumentInput, IssueFilter, IssueInput, ProjectInput, Status } from "../shared/types.ts";
+import type {
+  DocumentInput,
+  IssueFilter,
+  IssueInput,
+  ProjectInput,
+  Status,
+  WorkspaceInput,
+} from "../shared/types.ts";
 import * as db from "./db.ts";
 
 /** Wraps a handler: its return value becomes the JSON body (unless it's a Response); errors become `{ error }`. */
@@ -30,6 +37,7 @@ function issueFilter(url: string): IssueFilter {
   const params = new URL(url).searchParams;
   const get = (name: string) => params.get(name) || undefined;
   return {
+    workspace: get("workspace"),
     project: get("project"),
     status: get("status")?.split(",") as Status[] | undefined,
     label: get("label"),
@@ -39,9 +47,18 @@ function issueFilter(url: string): IssueFilter {
   };
 }
 
+const param = (req: Request, name: string) => new URL(req.url).searchParams.get(name) || undefined;
+
 export const apiRoutes = {
+  "/api/workspaces": {
+    GET: handle(() => db.listWorkspaces()),
+    POST: handle(async (req) => db.createWorkspace((await body(req)) as unknown as WorkspaceInput), 201),
+  },
+  "/api/workspaces/:key": {
+    PATCH: handle<"/api/workspaces/:key">(async (req) => db.updateWorkspace(req.params.key, await body(req))),
+  },
   "/api/projects": {
-    GET: handle(() => db.listProjects()),
+    GET: handle((req) => db.listProjects({ workspace: param(req, "workspace") })),
     POST: handle(async (req) => db.createProject((await body(req)) as unknown as ProjectInput), 201),
   },
   "/api/projects/:key": {
@@ -66,10 +83,9 @@ export const apiRoutes = {
     }, 201),
   },
   "/api/documents": {
-    GET: handle((req) => {
-      const params = new URL(req.url).searchParams;
-      return db.listDocuments({ project: params.get("project") || undefined, q: params.get("q") || undefined });
-    }),
+    GET: handle((req) =>
+      db.listDocuments({ workspace: param(req, "workspace"), project: param(req, "project"), q: param(req, "q") }),
+    ),
     POST: handle(async (req) => db.createDocument({ author: "anonymous", ...(await body(req)) } as DocumentInput), 201),
   },
   "/api/documents/:slug": {

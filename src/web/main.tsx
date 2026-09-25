@@ -1,14 +1,16 @@
 // App shell: sidebar, routing, live updates, global shortcuts.
 import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import type { IssueInput, Project } from "../shared/types";
+import type { IssueInput, Project, Workspace } from "../shared/types";
 import { api, subscribe } from "./api";
 import { DocPage, DocsView } from "./docs";
 import { IssuePage } from "./issue";
 import { IssuesView } from "./issues";
-import { NewDocModal, NewIssueModal, NewProjectModal } from "./modals";
+import { NewDocModal, NewIssueModal, NewProjectModal, NewWorkspaceModal } from "./modals";
+import { Picker } from "./pickers";
 import {
   AppContext,
+  ChevronDownIcon,
   ComposeIcon,
   DocIcon,
   IssuesIcon,
@@ -37,14 +39,25 @@ type ModalState =
   | { kind: "issue"; defaults: Partial<IssueInput> }
   | { kind: "doc"; project: string }
   | { kind: "project" }
+  | { kind: "workspace" }
   | null;
 
 const DEFAULT_PEOPLE = ["anonymous", "claude"];
+
+function storedWorkspace(): string | null {
+  try {
+    return localStorage.getItem("docket.workspace");
+  } catch {
+    return null;
+  }
+}
 
 function App() {
   const path = usePath();
   const route = parseRoute(path);
   const [live, setLive] = useState(0);
+  const [workspaces, setWorkspaces] = useState<Workspace[] | null>(null);
+  const [workspaceKey, setWorkspaceKey] = useState(storedWorkspace);
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [projectsTick, setProjectsTick] = useState(0);
   const [labels, setLabels] = useState<string[]>([]);
@@ -76,6 +89,7 @@ function App() {
   }, []);
 
   useEffect(() => {
+    api.workspaces().then(setWorkspaces, errorToast);
     api.projects().then(setProjects, errorToast);
   }, [live, projectsTick]);
 
@@ -92,12 +106,36 @@ function App() {
     );
   }, []);
 
+  const workspace = workspaces?.find((w) => w.key === workspaceKey) ?? workspaces?.[0] ?? null;
+  const workspaceProjects = projects && workspace ? projects.filter((p) => p.workspace === workspace.key) : null;
+  const setWorkspace = useCallback((key: string) => {
+    setWorkspaceKey(key);
+    try {
+      localStorage.setItem("docket.workspace", key);
+    } catch {}
+  }, []);
+  const switchWorkspace = (key: string) => {
+    setWorkspace(key);
+    navigate(route.view === "docs" || route.view === "doc" ? "/docs" : "/");
+  };
+
   const currentProject = routeProject(route, docProject);
-  const known = (key: string | null | undefined) => (key && projects?.some((p) => p.key === key) ? key : undefined);
-  const pickProject = (key?: string | null) => known(key) ?? known(currentProject) ?? projects?.[0]?.key;
+
+  // Opening a project, issue or doc from another workspace switches to that workspace.
+  const owner = projects?.find((p) => p.key === currentProject)?.workspace;
+  useEffect(() => {
+    if (owner) setWorkspace(owner);
+  }, [owner, setWorkspace]);
+
+  const known = (key: string | null | undefined) =>
+    key && workspaceProjects?.some((p) => p.key === key) ? key : undefined;
+  const pickProject = (key?: string | null) => known(key) ?? known(currentProject) ?? workspaceProjects?.[0]?.key;
 
   const app: AppState = {
+    workspaces,
+    workspace,
     projects,
+    workspaceProjects,
     labels,
     people,
     loadDirectory,
@@ -113,6 +151,7 @@ function App() {
       setModal(project ? { kind: "doc", project } : { kind: "project" });
     },
     newProject: () => setModal({ kind: "project" }),
+    newWorkspace: () => setModal({ kind: "workspace" }),
     setDocProject,
     openNav: () => setNavOpen(true),
   };
@@ -148,7 +187,7 @@ function App() {
     <AppContext.Provider value={app}>
       <LiveContext.Provider value={live}>
         <div className={cls("app", navOpen && "nav-open")}>
-          <Sidebar route={route} active={currentProject} />
+          <Sidebar route={route} active={currentProject} onSwitch={switchWorkspace} />
           <div className="nav-backdrop" onClick={() => setNavOpen(false)} />
           <main className="main">
             {route.view === "issue" ? (
@@ -165,6 +204,15 @@ function App() {
         {modal?.kind === "issue" && <NewIssueModal defaults={modal.defaults} onClose={() => setModal(null)} />}
         {modal?.kind === "doc" && <NewDocModal project={modal.project} onClose={() => setModal(null)} />}
         {modal?.kind === "project" && <NewProjectModal onClose={() => setModal(null)} />}
+        {modal?.kind === "workspace" && (
+          <NewWorkspaceModal
+            onCreate={(w) => {
+              setWorkspaces((list) => list && [...list, w]);
+              switchWorkspace(w.key);
+            }}
+            onClose={() => setModal(null)}
+          />
+        )}
         <Toaster />
       </LiveContext.Provider>
     </AppContext.Provider>
@@ -177,16 +225,29 @@ function routeProject(route: Route, docProject: string | null): string | null {
   return route.project;
 }
 
-function Sidebar({ route, active }: { route: Route; active: string | null }) {
-  const { projects, newIssue, newProject } = useApp();
+function Sidebar({ route, active, onSwitch }: { route: Route; active: string | null; onSwitch: (key: string) => void }) {
+  const { workspaces, workspace, workspaceProjects: projects, newIssue, newProject, newWorkspace } = useApp();
   const total = projects?.reduce((n, p) => n + openCount(p), 0) ?? 0;
   const docs = projects?.reduce((n, p) => n + (p.docCount ?? 0), 0) ?? 0;
+  const options = [
+    ...(workspaces ?? []).map((w) => ({ value: w.key, label: w.name, icon: <ProjectMark id={w.name.toUpperCase()} /> })),
+    { value: "", label: "New workspace", icon: <PlusIcon /> },
+  ];
   return (
     <aside className="sidebar">
-      <Link to="/" className="brand">
+      <Picker
+        label="Switch workspace"
+        options={options}
+        selected={workspace ? [workspace.key] : []}
+        onPick={(key) => (key ? key !== workspace?.key && onSwitch(key) : newWorkspace())}
+        className="brand"
+      >
         <Logo />
-        <span>Docket</span>
-      </Link>
+        <span className="brand-name" dir="auto">
+          {workspace?.name ?? "Docket"}
+        </span>
+        <ChevronDownIcon className="brand-chevron" />
+      </Picker>
       <button className="new-issue" onClick={() => newIssue()}>
         <ComposeIcon />
         <span>New issue</span>
