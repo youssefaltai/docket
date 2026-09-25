@@ -586,7 +586,7 @@ export function createIssue(input: IssueInput): Issue {
   };
   const blockers = input.blockedBy === undefined ? [] : blockerIds(input.blockedBy);
   const time = now();
-  const identifier = db.transaction(() => {
+  const { identifier, docs } = db.transaction(() => {
     const { number } = db
       .query<{ number: number }, [string]>(
         "UPDATE projects SET next_number = next_number + 1 WHERE key = ? RETURNING next_number - 1 AS number",
@@ -607,19 +607,20 @@ export function createIssue(input: IssueInput): Issue {
       )
       .get(...Object.values(row))!;
     setBlockers(id, blockers);
-    return `${project}-${number}`;
+    const identifier = `${project}-${number}`;
+    // Docs that mentioned this identifier before the issue existed now link to it.
+    const mention = new RegExp(`\\b${identifier}\\b`);
+    const docs = db
+      .query<{ id: number; slug: string; content: string }, [string]>(
+        "SELECT id, slug, content FROM documents WHERE content LIKE ?",
+      )
+      .all(`%${identifier}%`)
+      .filter((doc) => mention.test(doc.content));
+    for (const doc of docs) saveRefs(doc.id, doc.content);
+    return { identifier, docs };
   })();
   changed("issue", identifier);
-  // Docs that mentioned this identifier before the issue existed now link to it.
-  const mentions = db
-    .query<{ id: number; slug: string; content: string }, [string]>(
-      "SELECT id, slug, content FROM documents WHERE content LIKE ?",
-    )
-    .all(`%${identifier}%`);
-  for (const doc of mentions) {
-    saveRefs(doc.id, doc.content);
-    changed("document", doc.slug);
-  }
+  for (const doc of docs) changed("document", doc.slug);
   return getIssue(identifier);
 }
 
@@ -639,13 +640,37 @@ export function updateIssue(identifier: string, patch: IssuePatch): Issue {
     if (closing !== isClosed(current.status)) cols.completed_at = closing ? time : null;
   }
   cols.updated_at = time;
-  db.transaction(() => {
+  // The old and new parent and any blocker added or removed change too.
+  const related = new Set<number>();
+  if (cols.parent_id !== undefined) {
+    const { parent_id } = db
+      .query<{ parent_id: number | null }, [number]>("SELECT parent_id FROM issues WHERE id = ?")
+      .get(id)!;
+    if (parent_id !== cols.parent_id) {
+      if (parent_id !== null) related.add(parent_id);
+      if (cols.parent_id !== null) related.add(cols.parent_id as number);
+    }
+  }
+  if (blockers) {
+    const before = db
+      .query<{ blocker_id: number }, [number]>("SELECT blocker_id FROM issue_blocks WHERE blocked_id = ?")
+      .all(id)
+      .map((b) => b.blocker_id);
+    for (const b of before) if (!blockers.includes(b)) related.add(b);
+    for (const b of blockers) if (!before.includes(b)) related.add(b);
+  }
+  const refs = db.transaction(() => {
     const assignments = Object.keys(cols).map((c) => `${c} = ?`);
     db.query(`UPDATE issues SET ${assignments.join(", ")} WHERE id = ?`).run(...Object.values(cols), id);
     if (blockers) setBlockers(id, blockers);
+    const bump = db.query<{ ref: string }, [string, number]>(
+      `UPDATE issues SET updated_at = ? WHERE id = ? RETURNING ${ident("issues")} AS ref`,
+    );
+    return [...related].map((r) => bump.get(time, r)!.ref);
   })();
   const issue = getIssue(identifier);
   changed("issue", issue.id);
+  for (const ref of refs) changed("issue", ref);
   return issue;
 }
 
