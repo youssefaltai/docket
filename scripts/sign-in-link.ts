@@ -11,7 +11,7 @@ if (!username) {
 }
 try {
   const { code, expiresAt } = recoverySignInLink(username);
-  const origin = (process.env.DOCKET_URL ?? `http://localhost:${process.env.PORT ?? 7100}`).replace(/\/+$/, "");
+  const origin = (process.env.DOCKET_URL || `http://localhost:${process.env.PORT || 7100}`).replace(/\/+$/, "");
   console.log(`${origin}/login#${code}`);
   console.log(`One-time link for ${username}, valid until ${expiresAt}.`);
 } catch (err) {
