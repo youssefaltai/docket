@@ -45,7 +45,7 @@ describe("with DOCKET_TOKEN", () => {
   afterAll(() => s.stop());
 
   test("root is an admin with no name, and creates members with one-time tokens", async () => {
-    expect((await s.api("GET", "/api/me")).body).toEqual({ member: null, admin: true });
+    expect((await s.api("GET", "/api/me")).body).toEqual({ member: null, admin: true, open: false });
     expect((await s.api("GET", "/api/members")).body).toEqual([]);
 
     const created = await s.api("POST", "/api/members", { name: "Ana", kind: "human", role: "admin" });
@@ -124,7 +124,7 @@ describe("with DOCKET_TOKEN", () => {
     // The root cookie is unchanged: still an HMAC of DOCKET_TOKEN alone.
     const rootLogin = await as(s, null, "POST", "/api/login", { token: ROOT });
     const rootCookie = rootLogin.res.headers.get("set-cookie")!.split(";")[0]!;
-    expect((await as(s, null, "GET", "/api/me", undefined, { Cookie: rootCookie })).body).toEqual({ member: null, admin: true });
+    expect((await as(s, null, "GET", "/api/me", undefined, { Cookie: rootCookie })).body).toEqual({ member: null, admin: true, open: false });
 
     // Rotating signs out the old token and cookie.
     const rotated = await s.api("POST", "/api/members/claude-a/token");
@@ -132,6 +132,14 @@ describe("with DOCKET_TOKEN", () => {
     expect((await as(s, null, "GET", "/api/me", undefined, { Cookie: cookie })).status).toBe(401);
     bot = rotated.body.token;
     expect((await as(s, bot, "GET", "/api/me")).status).toBe(200);
+  });
+
+  test("logout clears the cookie, with the same Host and JSON checks as login", async () => {
+    const out = await as(s, null, "POST", "/api/logout", {});
+    expect(out.status).toBe(200);
+    expect(out.res.headers.get("set-cookie")).toMatch(/^docket_token=; Path=\/; HttpOnly; SameSite=Lax; Max-Age=0/);
+    expect((await as(s, null, "POST", "/api/logout", undefined, { "Content-Type": "text/plain" })).status).toBe(415);
+    expect((await as(s, null, "POST", "/api/logout", {}, { Host: "evil.example" })).status).toBe(403);
   });
 
   test("revoking signs a member out but keeps the name reserved; rotating reinstates", async () => {
@@ -172,12 +180,19 @@ describe("open mode (no DOCKET_TOKEN)", () => {
   afterAll(() => s.stop());
 
   test("anyone is root; a member token only says who you are", async () => {
-    expect((await as(s, null, "GET", "/api/me")).body).toEqual({ member: null, admin: true });
+    expect((await as(s, null, "GET", "/api/me")).body).toEqual({ member: null, admin: true, open: true });
+    // With no members yet, a stray bearer is ignored, as before members existed.
     expect((await as(s, "stale-or-random", "GET", "/api/me")).status).toBe(200);
     const { token } = (await as(s, null, "POST", "/api/members", { name: "claude-b", kind: "agent" })).body;
     expect((await as(s, token, "GET", "/api/me")).body.member.name).toBe("claude-b");
+    // Once members exist, a wrong or revoked token is refused rather than becoming root.
+    expect((await as(s, "stale-or-random", "GET", "/api/me")).status).toBe(401);
+    await as(s, null, "DELETE", "/api/members/claude-b");
+    expect((await as(s, token, "GET", "/api/me")).status).toBe(401);
+    expect((await as(s, null, "GET", "/api/me")).status).toBe(200);
+    const back = (await as(s, null, "POST", "/api/members/claude-b/token")).body.token;
 
-    const login = await as(s, null, "POST", "/api/login", { token });
+    const login = await as(s, null, "POST", "/api/login", { token: back });
     expect(login.res.headers.get("set-cookie")).toContain("docket_token=");
     const other = await as(s, null, "POST", "/api/login", { token: "anything" });
     expect(other.status).toBe(200);

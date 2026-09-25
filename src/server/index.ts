@@ -3,7 +3,7 @@ import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import index from "../web/index.html";
 import { apiRoutes } from "./api.ts";
-import { guard, login } from "./auth.ts";
+import { guard, login, logout } from "./auth.ts";
 import { onChange } from "./db.ts";
 import { handleMcp } from "./mcp.ts";
 
@@ -41,6 +41,7 @@ const server = Bun.serve({
         ]),
     ),
     "/api/login": { POST: login },
+    "/api/logout": { POST: logout },
     ...(Object.fromEntries(Object.entries(apiRoutes).map(([path, route]) => [path, guard(route)])) as typeof apiRoutes),
     "/mcp": guard(handleMcp),
     "/ws": guard((req: Request, server: Bun.Server<undefined>) =>

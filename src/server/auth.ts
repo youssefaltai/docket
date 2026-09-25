@@ -6,6 +6,8 @@ import type { Member } from "../shared/types.ts";
 import * as db from "./db.ts";
 
 const TOKEN = process.env.DOCKET_TOKEN || "";
+/** No DOCKET_TOKEN: anyone who can reach the server is root. */
+export const OPEN = !TOKEN;
 const COOKIE = "docket_token";
 // Cookies hold a value derived from a token, never the token itself (which also works as an MCP bearer).
 const ROOT_SESSION = createHmac("sha256", TOKEN).update("docket session").digest("hex");
@@ -52,6 +54,9 @@ function identify(req: Request): Viewer | null {
     if (TOKEN && same(bearer, TOKEN)) return ROOT;
     const credential = db.memberByToken(bearer);
     if (credential) return { member: credential.member };
+    // In open mode a revoked or mistyped member token must not quietly become root. With no members yet,
+    // stray bearers are ignored as they always were.
+    if (!TOKEN && db.hasMembers()) return null;
   }
   const cookie = req.headers.get("cookie")?.match(new RegExp(`(?:^|;\\s*)${COOKIE}=([^;]+)`))?.[1];
   const upgrade = req.headers.get("upgrade")?.toLowerCase() === "websocket";
@@ -146,7 +151,17 @@ export async function login(req: Request, server: Bun.Server<undefined>): Promis
     recordFailure(ip);
     return unauthorized();
   }
+  return Response.json({ ok: true }, { headers: { "Set-Cookie": cookie(req, value, 31536000) } });
+}
+
+/** POST /api/logout: clears the login cookie, which the page can't since it's HttpOnly. */
+export function logout(req: Request): Response {
+  if (!hostAllowed(req)) return forbiddenHost();
+  if (!isJson(req)) return Response.json({ error: "Expected Content-Type: application/json" }, { status: 415 });
+  return Response.json({ ok: true }, { headers: { "Set-Cookie": cookie(req, "", 0) } });
+}
+
+function cookie(req: Request, value: string, maxAge: number): string {
   const https = new URL(req.url).protocol === "https:" || req.headers.get("x-forwarded-proto") === "https";
-  const cookie = `${COOKIE}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000${https ? "; Secure" : ""}`;
-  return Response.json({ ok: true }, { headers: { "Set-Cookie": cookie } });
+  return `${COOKIE}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${https ? "; Secure" : ""}`;
 }

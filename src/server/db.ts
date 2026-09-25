@@ -389,6 +389,9 @@ function memberRow(name: unknown): MemberRow {
   return row;
 }
 
+/** Whether any member was ever created (revoked ones count). */
+export const hasMembers = () => db.query("SELECT 1 FROM members LIMIT 1").get() !== null;
+
 function activeMemberNames(): string[] {
   return db
     .query<{ name: string }, []>("SELECT name FROM members WHERE revoked_at IS NULL ORDER BY name COLLATE NOCASE")

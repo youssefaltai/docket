@@ -207,6 +207,7 @@ export interface MemberToken {
 export interface Me {
   member: Member | null;
   admin: boolean;
+  open: boolean; // no DOCKET_TOKEN: anyone is root, and signing out means nothing
 }
 
 // Pushed over the WebSocket at /ws after every mutation.

@@ -9,7 +9,7 @@ import type {
   Status,
   WorkspaceInput,
 } from "../shared/types.ts";
-import { authorFor, isAdmin, isJson, requireAdmin, viewerOf } from "./auth.ts";
+import { OPEN, authorFor, isAdmin, isJson, requireAdmin, viewerOf } from "./auth.ts";
 import * as db from "./db.ts";
 
 /** Wraps a handler: its return value becomes the JSON body (unless it's a Response); errors become `{ error }`. */
@@ -164,7 +164,7 @@ export const apiRoutes = {
   "/api/me": {
     GET: handle((req): Me => {
       const viewer = viewerOf(req);
-      return { member: viewer.member, admin: isAdmin(viewer) };
+      return { member: viewer.member, admin: isAdmin(viewer), open: OPEN };
     }),
   },
   "/api/members": {
