@@ -125,3 +125,61 @@ test("an admin's unused invites die when they're suspended or demoted", async ()
   const kept = await mint("admin");
   expect((await redeem(kept, "fresh")).status).toBe(200);
 });
+
+test("a sign-in link for someone else ends the session it replaces, and stale tabs are refused", async () => {
+  await s.user("ada");
+  await s.user("ben");
+  const ada = s.as("ada", "cookie");
+  const socket = ada.ws();
+  expect(await socket.opened).toBeTrue();
+  const code = (await s.cli("sign-in-link", "ben")).stdout.match(/\/login#(\S+)/)![1]!;
+
+  // Peeking says who's signed in and whose account the link opens, so the page can ask first.
+  expect((await ada.api("POST", "/api/auth/peek", { code })).body).toMatchObject({ kind: "sign-in", username: "ben", you: { username: "ada" } });
+  const switched = await ada.api("POST", "/api/auth/redeem", { code });
+  expect(switched.body.user.username).toBe("ben");
+  // Ada's session is gone: her cookie is dead and her socket closed.
+  expect((await ada.api("GET", "/api/me")).status).toBe(401);
+  expect(await socket.closed).toBe(4401);
+
+  // A tab still showing someone else is refused (and told why), so it reloads as the real account.
+  const ben = s.as("ben", "cookie");
+  const asTab = (believed: string) =>
+    fetch(new URL("/api/me", s.url), { headers: { Cookie: ben.cookie!, Origin: s.url, "x-docket-user": believed } });
+  const stale = await asTab("ada");
+  expect(stale.status).toBe(401);
+  expect((await stale.json()).switched).toBeTrue();
+  expect((await asTab("ben")).status).toBe(200);
+
+  // Your own link while signed in just adds a session; the current one stays.
+  const own = (await ben.api("POST", "/api/sign-in-links")).body.code;
+  expect((await ben.api("POST", "/api/auth/redeem", { code: own })).status).toBe(200);
+  expect((await ben.api("GET", "/api/me")).status).toBe(200);
+});
+
+test("keys, sessions and sign-in links are managed only from a signed-in session", async () => {
+  const key = s.as("ben", "bearer");
+  const cookie = s.as("ben", "cookie");
+  for (const [method, path] of [
+    ["GET", "/api/api-keys"],
+    ["POST", "/api/api-keys"],
+    ["GET", "/api/sessions"],
+    ["DELETE", "/api/sessions"],
+    ["POST", "/api/sign-in-links"],
+  ] as const) {
+    expect((await key.api(method, path, method === "POST" ? { name: "x" } : undefined)).status).toBe(403);
+  }
+  const spare = (await cookie.api("POST", "/api/api-keys", { name: "spare" })).body;
+  expect((await key.api("DELETE", `/api/api-keys/${spare.apiKey.id}`)).status).toBe(403);
+  expect((await cookie.api("DELETE", `/api/api-keys/${spare.apiKey.id}`)).status).toBeLessThan(300);
+  expect((await cookie.api("GET", "/api/sessions")).status).toBe(200);
+});
+
+test("emails are unique across accounts, whatever their case", async () => {
+  const ben = s.as("ben", "cookie");
+  expect((await ben.api("PATCH", "/api/me", { email: "Ben@Example.com" })).status).toBe(200);
+  expect((await ben.api("PATCH", "/api/me", { email: "ben@example.com" })).status).toBe(200); // keeping your own is fine
+  expect((await s.as("ana", "cookie").api("PATCH", "/api/me", { email: "BEN@example.COM" })).status).toBe(409);
+  const { code } = (await s.as("admin", "cookie").api("POST", `/api/workspaces/${s.workspace}/invites`, { role: "member" })).body;
+  expect((await s.anon.api("POST", "/api/auth/redeem", { code, name: "Copy", username: "copycat", email: "ben@EXAMPLE.com" })).status).toBe(409);
+});

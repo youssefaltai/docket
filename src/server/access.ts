@@ -97,11 +97,16 @@ function checkName(value: unknown): string {
   return name;
 }
 
-/** Optional contact info: never verified (there's no mail) and never used to find an account. */
-function checkEmail(value: unknown): string | null {
+/**
+ * Optional contact info, unique across accounts (stored lowercased, so case-insensitively). Never
+ * verified yet (there's no mail) and never used to find an account. `self` is the account keeping it.
+ */
+function checkEmail(value: unknown, self?: number): string | null {
   if (value == null || value === "") return null;
   const email = typeof value === "string" ? value.trim().toLowerCase() : "";
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new AppError(`Invalid email "${value}"`);
+  const taken = db.query("SELECT 1 FROM users WHERE email = ? AND id != ?").get(email, self ?? -1);
+  if (taken) throw new AppError("That email is already used by another account", 409);
   return email;
 }
 
@@ -151,7 +156,7 @@ export function updateMe(a: Actor, patch: { name?: unknown; username?: unknown; 
       ? row.username
       : checkUsername(patch.username);
   const name = patch.name === undefined ? row.name : checkName(patch.name);
-  const email = patch.email === undefined ? row.email : checkEmail(patch.email);
+  const email = patch.email === undefined ? row.email : checkEmail(patch.email, a.id);
   db.query("UPDATE users SET username = ?, name = ?, email = ? WHERE id = ?").run(username, name, email, a.id);
   for (const workspace of a.workspaces.keys()) changed("member", workspace, username);
   return me(a);
@@ -315,6 +320,7 @@ export function endSession(token: string) {
 }
 
 export function listSessions(a: Actor): Session[] {
+  requireSession(a);
   return db
     .query<{ id: number; created_at: string; last_seen_at: string; user_agent: string; ip: string }, [number]>(
       "SELECT id, created_at, last_seen_at, user_agent, ip FROM sessions WHERE user_id = ? ORDER BY last_seen_at DESC",
@@ -376,6 +382,7 @@ function insertApiKey(userId: number, name: string, scope: ApiKeyScope): { apiKe
 }
 
 export function listApiKeys(a: Actor): ApiKey[] {
+  requireSession(a);
   return db
     .query<ApiKeyRow, [number]>(
       "SELECT id, name, scope, created_at, last_used_at FROM api_keys WHERE user_id = ? AND revoked_at IS NULL ORDER BY id",
@@ -392,6 +399,7 @@ export function createApiKey(a: Actor, input: { name?: unknown; scope?: unknown 
 }
 
 export function revokeApiKey(a: Actor, id: unknown) {
+  requireSession(a);
   const row = db
     .query("UPDATE api_keys SET revoked_at = ? WHERE id = ? AND user_id = ? AND revoked_at IS NULL RETURNING id")
     .get(now(), Number(id), a.id);
@@ -452,34 +460,43 @@ function codeRow(code: unknown): CodeRow {
 }
 
 /** `signedIn`: the user whose session came with the request, if any (an invite joins them). */
-export function peekCode(code: unknown, signedIn: number | null): CodeInfo {
+/** Who's signed in on the request redeeming or peeking a code: their account and this session. */
+export type SignedIn = { userId: number; sessionId: number } | null;
+
+export function peekCode(code: unknown, signedIn: SignedIn): CodeInfo {
   const row = codeRow(code);
   const workspace = row.workspace
     ? db.query<{ name: string }, [string]>("SELECT name FROM workspaces WHERE key = ?").get(row.workspace)?.name ?? null
     : null;
   const username = row.user_id ? db.query<{ username: string }, [number]>("SELECT username FROM users WHERE id = ?").get(row.user_id)!.username : null;
   const invite = row.purpose === "invite";
-  // Who would join: redeeming an invite while signed in adds that account, so the page asks first.
-  const you = invite && signedIn !== null ? toRef(db.query<UserRow, [number]>("SELECT * FROM users WHERE id = ?").get(signedIn)!) : null;
+  // Who's signed in: an invite would add that account, a sign-in link for someone else would replace it,
+  // so the page asks first either way.
+  const you = signedIn ? toRef(userById(signedIn.userId)) : null;
   return { kind: row.purpose, workspace, username, you, needsProfile: invite && signedIn === null };
 }
 
 /**
- * Uses a code and signs in. A sign-in link opens the account it was made for. An invite is a code the
- * admin hands over, never tied to an email: redeemed while signed in, it adds you to the workspace;
- * signed out, it creates a new account from `profile`.
+ * Uses a code and signs in. A sign-in link opens the account it was made for; if this browser was signed
+ * in as someone else, that session ends, so no tab keeps acting as them. An invite is a code the admin
+ * hands over, never tied to an email: redeemed while signed in, it adds you to the workspace; signed
+ * out, it creates a new account from `profile`.
  */
 export function redeemCode(
   code: unknown,
   profile: { name?: unknown; username?: unknown; email?: unknown },
   client: Client,
-  signedIn: number | null,
+  signedIn: SignedIn,
 ): { user: User; token: string } {
   return db.transaction(() => {
     const row = codeRow(code);
     let userId = row.user_id;
+    if (row.purpose === "sign-in" && signedIn && signedIn.userId !== userId) {
+      db.query("DELETE FROM sessions WHERE id = ?").run(signedIn.sessionId);
+      revoked(signedIn);
+    }
     if (row.purpose === "invite") {
-      userId = signedIn ?? insertUser("person", profile);
+      userId = signedIn?.userId ?? insertUser("person", profile);
       const member = db
         .query<{ suspended_at: string | null }, [string, number]>(
           "SELECT suspended_at FROM workspace_members WHERE workspace = ? AND user_id = ?",

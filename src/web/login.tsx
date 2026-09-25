@@ -164,7 +164,9 @@ export function Login() {
     setError("");
     auth.peek(value).then(
       (found) => {
-        if (found.kind === "invite") {
+        // A sign-in link for someone else replaces who's signed in here, so ask first.
+        const switching = found.kind === "sign-in" && found.you && found.you.username !== found.username;
+        if (found.kind === "invite" || switching) {
           setCode(value);
           setInfo(found);
           setBusy(false);
@@ -185,6 +187,7 @@ export function Login() {
     else auth.needsSetup().then((needed) => needed && location.replace("/setup"), () => {});
   }, []);
 
+  if (info?.kind === "sign-in") return <Switch code={code} info={info} you={info.you!} onError={fail} />;
   if (info?.you) return <Accept code={code} info={info} you={info.you} onError={fail} />;
   if (info) return <Join code={code} info={info} onError={fail} />;
   return (
@@ -206,6 +209,29 @@ export function Login() {
         disabled={busy}
       />
     </AuthForm>
+  );
+}
+
+/** A sign-in link for another account: signing in ends this one here (the server deletes its session). */
+function Switch({ code, info, you, onError }: { code: string; info: CodeInfo; you: UserRef; onError: (err: unknown) => void }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <AuthForm
+      title={`Sign in as @${info.username}?`}
+      intro={`This signs ${you.name} (@${you.username}) out here, in every tab of this browser.`}
+      error=""
+      action={busy ? "Signing in…" : `Sign out ${you.name} and sign in`}
+      ready={!busy}
+      onSubmit={() => {
+        setBusy(true);
+        auth.redeem(code).then(enter, onError);
+      }}
+      after={
+        <button type="button" className="btn btn-ghost" onClick={enter}>
+          Cancel
+        </button>
+      }
+    />
   );
 }
 
