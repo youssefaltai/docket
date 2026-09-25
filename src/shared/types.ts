@@ -153,6 +153,24 @@ export interface IssueSummary {
   createdAt: string;
   updatedAt: string;
   completedAt: string | null; // set when status becomes done/canceled
+  deletedAt: string | null; // in the trash since then; purged 30 days later
+}
+
+/** One page of a list, Linear-style: pass `endCursor` as `after` for the next. */
+export interface PageInfo {
+  hasNextPage: boolean;
+  endCursor: string | null;
+}
+
+export interface IssuePage {
+  issues: IssueSummary[];
+  pageInfo: PageInfo;
+}
+
+/** A team's trash: deleted issues and docs, restorable for 30 days, newest first. */
+export interface Trash {
+  issues: IssueSummary[];
+  documents: DocumentSummary[];
 }
 
 export interface Comment {
@@ -185,6 +203,7 @@ export interface DocumentSummary {
   createdAt: string;
   updatedAt: string;
   updatedBy: UserRef;
+  deletedAt: string | null; // in the trash since then; purged 30 days later
 }
 
 export interface Document extends DocumentSummary {
@@ -233,7 +252,7 @@ export interface IssueInput {
   team: string;
   title: string;
   description?: string;
-  status?: Status; // default "todo"
+  status?: Status; // default "backlog", as in Linear
   priority?: Priority; // default 0
   labels?: string[];
   assignee?: string | null; // a person's username, or "me"

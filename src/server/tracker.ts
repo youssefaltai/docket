@@ -16,6 +16,7 @@ import {
   type Issue,
   type IssueFilter,
   type IssueInput,
+  type IssuePage,
   type IssuePatch,
   type IssueSummary,
   type LabelCount,
@@ -24,6 +25,7 @@ import {
   type Team,
   type TeamInput,
   type TeamPatch,
+  type Trash,
   type UserKind,
   type UserRef,
 } from "../shared/types.ts";
@@ -53,8 +55,16 @@ function checkLabels(value: unknown): string[] {
   return [...new Set(value.map((l) => l.trim()).filter(Boolean))];
 }
 
-/** The one workspace asked for (if the actor is in it), else all of the actor's. */
-const scopeWorkspaces = (a: Actor, workspace?: string) => (workspace ? [requireMember(a, workspace)] : [...a.workspaces.keys()]);
+/**
+ * The one workspace a filter asks for, else all of the actor's. A filter naming something unknown (or
+ * outside your workspaces) is 400, not an empty list, so a typo can't pass for "nothing here".
+ */
+function scopeWorkspaces(a: Actor, workspace?: string): string[] {
+  if (!workspace) return [...a.workspaces.keys()];
+  const key = workspace.trim().toLowerCase();
+  if (!a.workspaces.has(key)) throw new AppError(`Unknown workspace "${workspace}"`);
+  return [key];
+}
 /** Placeholders for `IN (…)`; never empty, so the SQL stays valid. */
 const inList = (values: unknown[]) => (values.length ? values.map(() => "?").join(", ") : "NULL");
 
@@ -144,9 +154,9 @@ interface TeamRow {
 const TEAM_SELECT = `
   SELECT t.*,
     (SELECT json_group_object(status, n) FROM (
-      SELECT status, COUNT(*) AS n FROM issues WHERE team_key = t.key GROUP BY status
+      SELECT status, COUNT(*) AS n FROM issues WHERE team_key = t.key AND deleted_at IS NULL GROUP BY status
     )) AS counts,
-    (SELECT COUNT(*) FROM documents WHERE team_key = t.key) AS doc_count
+    (SELECT COUNT(*) FROM documents WHERE team_key = t.key AND deleted_at IS NULL) AS doc_count
   FROM teams t`;
 
 const toTeam = (row: TeamRow): Team => ({
@@ -223,6 +233,7 @@ type IssueRow = Record<string, unknown> & {
   created_at: string;
   updated_at: string;
   completed_at: string | null;
+  deleted_at: string | null;
 };
 
 const ident = (alias: string) => `${alias}.team_key || '-' || ${alias}.number`;
@@ -232,7 +243,7 @@ const ISSUE_SELECT = `
     ${userCols("ua", "assignee")}, ${userCols("ud", "delegate")}, ${userCols("uc", "creator")},
     (SELECT json_group_array(ref) FROM (
       SELECT ${ident("b")} AS ref FROM issue_blocks x JOIN issues b ON b.id = x.blocker_id
-      WHERE x.blocked_id = i.id ORDER BY b.team_key, b.number
+      WHERE x.blocked_id = i.id AND b.deleted_at IS NULL ORDER BY b.team_key, b.number
     )) AS blocked_by
   FROM issues i
   JOIN teams t ON t.key = i.team_key
@@ -241,11 +252,12 @@ const ISSUE_SELECT = `
   LEFT JOIN users ud ON ud.id = i.delegate_id
   LEFT JOIN issues p ON p.id = i.parent_id`;
 
-// Status order, then priority 1→4 with 0 (none) last, then most recently updated.
-const ISSUE_ORDER = `ORDER BY
-  CASE i.status ${STATUSES.map((s, n) => `WHEN '${s}' THEN ${n}`).join(" ")} END,
-  CASE i.priority WHEN 0 THEN 5 ELSE i.priority END,
-  i.updated_at DESC, i.id DESC`;
+// Status order, then priority 1→4 with 0 (none) last, then most recently updated. The first two keys are
+// also what a page cursor records (with updated_at and id), so pages resume exactly where they stopped.
+const STATUS_RANK = `CASE i.status ${STATUSES.map((s, n) => `WHEN '${s}' THEN ${n}`).join(" ")} END`;
+const PRIORITY_RANK = "CASE i.priority WHEN 0 THEN 5 ELSE i.priority END";
+const ISSUE_ORDER = `ORDER BY ${STATUS_RANK}, ${PRIORITY_RANK}, i.updated_at DESC, i.id DESC`;
+const LIVE = "i.deleted_at IS NULL";
 
 const toSummary = (row: IssueRow): IssueSummary => ({
   id: `${row.team_key}-${row.number}`,
@@ -262,27 +274,39 @@ const toSummary = (row: IssueRow): IssueSummary => ({
   createdAt: row.created_at,
   updatedAt: row.updated_at,
   completedAt: row.completed_at,
+  deletedAt: row.deleted_at,
 });
 
-/** Resolves an identifier like "brd-12" to the issue's row id and workspace; 404 outside the actor's. */
-function issueRef(a: Actor, identifier: unknown): { id: number; workspace: string } {
+/**
+ * Resolves an identifier like "brd-12" to the issue's row id and workspace; 404 outside the actor's.
+ * Trashed issues resolve too (to read or restore them); `liveIssue` is for everything that changes one.
+ */
+function issueRef(a: Actor, identifier: unknown): { id: number; workspace: string; deleted_at: string | null; ref: string } {
   const match = typeof identifier === "string" ? /^([a-z]{2,5})-(\d+)$/i.exec(identifier.trim()) : null;
   if (!match) throw new AppError(`Invalid issue identifier "${identifier}" (expected e.g. BRD-12)`);
   const key = match[1]!.toUpperCase();
   const number = Number(match[2]);
   const row = db
-    .query<{ id: number; workspace: string }, [string, number]>(
-      "SELECT i.id, t.workspace FROM issues i JOIN teams t ON t.key = i.team_key WHERE i.team_key = ? AND i.number = ?",
+    .query<{ id: number; workspace: string; deleted_at: string | null }, [string, number]>(
+      "SELECT i.id, t.workspace, i.deleted_at FROM issues i JOIN teams t ON t.key = i.team_key WHERE i.team_key = ? AND i.number = ?",
     )
     .get(key, number);
   if (!row || !a.workspaces.has(row.workspace)) throw new AppError(`Issue ${key}-${number} not found`, 404);
-  return row;
+  return { ...row, ref: `${key}-${number}` };
+}
+
+/** An issue that isn't in the trash: a trashed one can be read and restored, nothing else. */
+function liveIssue(a: Actor, identifier: unknown) {
+  const issue = issueRef(a, identifier);
+  if (issue.deleted_at) throw new AppError(`${issue.ref} is in the trash; restore it first`, 409);
+  return issue;
 }
 
 /** An issue in `workspace`: relations never cross workspaces, where their members couldn't see both ends. */
 function relatedId(a: Actor, identifier: unknown, workspace: string, field: string): number {
   const other = issueRef(a, identifier);
   if (other.workspace !== workspace) throw new AppError(`${field}: ${identifier} is in another workspace`);
+  if (other.deleted_at) throw new AppError(`${field}: ${other.ref} is in the trash`);
   return other.id;
 }
 
@@ -342,9 +366,13 @@ function listScope(a: Actor, alias: string, filter: { workspace?: string; team?:
   const workspaces = scopeWorkspaces(a, filter.workspace);
   where.push(`${alias}.team_key IN (SELECT key FROM teams WHERE workspace IN (${inList(workspaces)}))`);
   params.push(...workspaces);
+  where.push(`${alias}.deleted_at IS NULL`);
   if (filter.team) {
+    const key = filter.team.trim().toUpperCase();
+    const team = db.query<{ workspace: string }, [string]>("SELECT workspace FROM teams WHERE key = ?").get(key);
+    if (!team || !workspaces.includes(team.workspace)) throw new AppError(`Unknown team "${filter.team}"`);
     where.push(`${alias}.team_key = ?`);
-    params.push(teamRow(a, filter.team).key);
+    params.push(key);
   }
   if (filter.q) {
     where.push(`(${searched.map((column) => `${column} LIKE ? ESCAPE '\\'`).join(" OR ")})`);
@@ -356,14 +384,57 @@ function listScope(a: Actor, alias: string, filter: { workspace?: string; team?:
 /** `listScope` always adds the workspace condition, so there's always a WHERE. */
 const whereClause = (where: string[]) => `WHERE ${where.join(" AND ")}`;
 
-/** A username filter ("me" is the actor) as a user id; an unknown name matches nothing. */
-function userFilterId(a: Actor, value: string): number {
+/**
+ * A username filter ("me" is the actor) as a user id. It must name someone who is or was in one of the
+ * workspaces searched; anyone else is 400 (a typo shouldn't look like "no issues").
+ */
+function userFilterId(a: Actor, value: string, workspaces: SQLQueryBindings[], field: string): number {
   const username = value.trim().toLowerCase();
   if (username === "me") return a.id;
-  return db.query<{ id: number }, [string]>("SELECT id FROM users WHERE username = ?").get(username)?.id ?? -1;
+  const row = db
+    .query<{ id: number }, SQLQueryBindings[]>(
+      `SELECT u.id FROM users u WHERE u.username = ?
+       AND EXISTS (SELECT 1 FROM workspace_members m WHERE m.user_id = u.id AND m.workspace IN (${inList(workspaces)}))`,
+    )
+    .get(username, ...workspaces);
+  if (!row) throw new AppError(`Unknown ${field} "${value}"`);
+  return row.id;
+}
+
+/** Page cursors: the last row's sort keys (status rank, priority rank, updated_at, id), opaque to clients. */
+const cursorOf = (issue: IssueSummary, id: number) =>
+  Buffer.from(JSON.stringify([STATUSES.indexOf(issue.status), issue.priority || 5, issue.updatedAt, id])).toString("base64url");
+
+function parseCursor(cursor: string): [number, number, string, number] {
+  try {
+    const keys = JSON.parse(Buffer.from(cursor, "base64url").toString());
+    if (Array.isArray(keys) && keys.length === 4 && typeof keys[2] === "string" && [0, 1, 3].every((i) => Number.isInteger(keys[i]))) {
+      return keys as [number, number, string, number];
+    }
+  } catch {}
+  throw new AppError("Invalid cursor: pass an endCursor from a previous page");
 }
 
 export function listIssues(a: Actor, filter: IssueFilter): IssueSummary[] {
+  return queryIssues(a, filter).rows.map(toSummary);
+}
+
+/**
+ * One page of issues, Linear-style: `first` (1–500) from after the `after` cursor, in list order. Keyset
+ * paging: the cursor holds the last row's sort keys, so pages don't shift when earlier rows change.
+ */
+export function listIssuesPage(a: Actor, filter: IssueFilter, page: { first?: unknown; after?: unknown }): IssuePage {
+  const first = page.first === undefined ? 50 : Number(page.first);
+  if (!Number.isInteger(first) || first < 1 || first > 500) throw new AppError("first must be a whole number from 1 to 500");
+  const after = page.after === undefined || page.after === "" ? undefined : parseCursor(String(page.after));
+  const { rows } = queryIssues(a, filter, after, first + 1);
+  const hasNextPage = rows.length > first;
+  const issues = rows.slice(0, first);
+  const last = issues.at(-1);
+  return { issues: issues.map(toSummary), pageInfo: { hasNextPage, endCursor: last ? cursorOf(toSummary(last), last.id) : null } };
+}
+
+function queryIssues(a: Actor, filter: IssueFilter, after?: [number, number, string, number], limit?: number) {
   const { where, params } = listScope(a, "i", filter, ["i.title", "i.description", ident("i")]);
   if (filter.status?.length) {
     where.push(`i.status IN (${inList(filter.status)})`);
@@ -373,38 +444,50 @@ export function listIssues(a: Actor, filter: IssueFilter): IssueSummary[] {
     where.push("EXISTS (SELECT 1 FROM json_each(i.labels) WHERE value = ? COLLATE NOCASE)");
     params.push(filter.label);
   }
+  const workspaces = scopeWorkspaces(a, filter.workspace);
   if (filter.assignee) {
     where.push("i.assignee_id = ?");
-    params.push(userFilterId(a, filter.assignee));
+    params.push(userFilterId(a, filter.assignee, workspaces, "assignee"));
   }
   if (filter.delegate) {
     where.push("i.delegate_id = ?");
-    params.push(userFilterId(a, filter.delegate));
+    params.push(userFilterId(a, filter.delegate, workspaces, "delegate"));
   }
   if (filter.parent) {
+    let parent: number;
+    try {
+      parent = issueRef(a, filter.parent).id;
+    } catch {
+      throw new AppError(`Unknown parent issue "${filter.parent}"`);
+    }
     where.push("i.parent_id = ?");
-    params.push(issueRef(a, filter.parent).id);
+    params.push(parent);
   }
-  return db
-    .query<IssueRow, SQLQueryBindings[]>(`${ISSUE_SELECT} ${whereClause(where)} ${ISSUE_ORDER}`)
-    .all(...params)
-    .map(toSummary);
+  if (after) {
+    const [s, p, u, id] = after;
+    where.push(`(${STATUS_RANK} > ? OR (${STATUS_RANK} = ? AND (${PRIORITY_RANK} > ? OR (${PRIORITY_RANK} = ? AND (i.updated_at < ? OR (i.updated_at = ? AND i.id < ?))))))`);
+    params.push(s, s, p, p, u, u, id);
+  }
+  const rows = db
+    .query<IssueRow, SQLQueryBindings[]>(`${ISSUE_SELECT} ${whereClause(where)} ${ISSUE_ORDER}${limit ? ` LIMIT ${limit}` : ""}`)
+    .all(...params);
+  return { rows };
 }
 
 export function getIssue(a: Actor, identifier: string): Issue {
   const { id } = issueRef(a, identifier);
   const row = db.query<IssueRow, [number]>(`${ISSUE_SELECT} WHERE i.id = ?`).get(id)!;
-  const children = db.query<IssueRow, [number]>(`${ISSUE_SELECT} WHERE i.parent_id = ? ${ISSUE_ORDER}`).all(id).map(toSummary);
+  const children = db.query<IssueRow, [number]>(`${ISSUE_SELECT} WHERE i.parent_id = ? AND ${LIVE} ${ISSUE_ORDER}`).all(id).map(toSummary);
   const blocks = db
     .query<{ ref: string }, [number]>(
       `SELECT ${ident("b")} AS ref FROM issue_blocks x JOIN issues b ON b.id = x.blocked_id
-       WHERE x.blocker_id = ? ORDER BY b.team_key, b.number`,
+       WHERE x.blocker_id = ? AND b.deleted_at IS NULL ORDER BY b.team_key, b.number`,
     )
     .all(id)
     .map((r) => r.ref);
   const docs = db
     .query<DocumentRow, [number]>(
-      `${DOC_SELECT} JOIN document_refs r ON r.document_id = d.id WHERE r.issue_id = ? ORDER BY d.team_key, d.position, d.id`,
+      `${DOC_SELECT} JOIN document_refs r ON r.document_id = d.id WHERE r.issue_id = ? AND d.deleted_at IS NULL ORDER BY d.team_key, d.position, d.id`,
     )
     .all(id)
     .map(toDocSummary);
@@ -429,7 +512,7 @@ export function createIssue(a: Actor, input: IssueInput): Issue {
   const team = teamRow(a, input.team);
   const cols = {
     description: "",
-    status: "todo",
+    status: "backlog",
     priority: 0,
     labels: "[]",
     assignee_id: null,
@@ -479,7 +562,7 @@ export function createIssue(a: Actor, input: IssueInput): Issue {
 }
 
 export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Issue {
-  const { id, workspace } = issueRef(a, identifier);
+  const { id, workspace } = liveIssue(a, identifier);
   const cols = issueColumns(a, workspace, patch);
   const current = db.query<{ status: Status; parent_id: number | null }, [number]>("SELECT status, parent_id FROM issues WHERE id = ?").get(id)!;
   // A new parent must not be the issue itself or one of its descendants.
@@ -524,10 +607,9 @@ export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Is
   return issue;
 }
 
-export function deleteIssue(a: Actor, identifier: string) {
-  const { id, workspace } = issueRef(a, identifier);
-  // Issues that lose their parent, a blocker link or a sub-issue, and docs that lose a ref, change too.
-  const issues = db
+/** Issues that gain or lose a relation when `id` enters or leaves the trash: its parent, sub-issues and blockers. */
+function relatives(id: number): number[] {
+  return db
     .query<{ id: number }, [number, number, number, number]>(
       `SELECT i.id FROM issues i
        WHERE i.parent_id = ? OR i.id = (SELECT parent_id FROM issues WHERE id = ?)
@@ -536,28 +618,68 @@ export function deleteIssue(a: Actor, identifier: string) {
     )
     .all(id, id, id, id)
     .map((r) => r.id);
-  const docs = db
-    .query<{ slug: string }, [number]>("SELECT d.slug FROM document_refs r JOIN documents d ON d.id = r.document_id WHERE r.issue_id = ?")
-    .all(id);
-  const time = now();
-  const { ref: gone, refs } = db.transaction(() => {
-    const refs = bumpIssues(issues, time);
-    const { ref } = db.query<{ ref: string }, [number]>(`DELETE FROM issues WHERE id = ? RETURNING ${ident("issues")} AS ref`).get(id)!;
-    return { ref, refs };
-  })();
-  changed("issue", workspace, gone);
-  for (const r of refs) changed("issue", workspace, r);
-  for (const doc of docs) changed("document", workspace, doc.slug);
 }
 
 /**
- * Takes an open issue: a person as its assignee, an agent as its delegate; either way it moves to
- * in_progress. Refused (409, naming them) if it's closed or another active member holds that slot.
- * IMMEDIATE takes the write lock before the read, so of two claims racing for a free issue exactly one
- * wins. Claiming your own is a no-op.
+ * Moves an issue to the trash or back (Linear's delete): it leaves lists, search, relations and doc refs,
+ * but keeps its links, so restoring puts everything back. Sub-issues stay where they are, pointing at it.
+ */
+function trashIssue(a: Actor, identifier: string, trash: boolean): Issue {
+  const issue = issueRef(a, identifier);
+  if (!!issue.deleted_at === trash) throw new AppError(trash ? `${issue.ref} is already in the trash` : `${issue.ref} isn't in the trash`, 409);
+  purgeTrash();
+  const docs = db
+    .query<{ slug: string }, [number]>("SELECT d.slug FROM document_refs r JOIN documents d ON d.id = r.document_id WHERE r.issue_id = ?")
+    .all(issue.id);
+  const time = now();
+  const refs = db.transaction(() => {
+    db.query(`UPDATE issues SET deleted_at = ?, ${BUMPED_AT} WHERE id = ?`).run(trash ? time : null, time, time, issue.id);
+    return bumpIssues(relatives(issue.id), time);
+  })();
+  changed("issue", issue.workspace, issue.ref);
+  for (const r of refs) changed("issue", issue.workspace, r);
+  for (const doc of docs) changed("document", issue.workspace, doc.slug);
+  return getIssue(a, identifier);
+}
+
+export const deleteIssue = (a: Actor, identifier: string) => trashIssue(a, identifier, true);
+export const restoreIssue = (a: Actor, identifier: string) => trashIssue(a, identifier, false);
+
+const TRASH_DAYS = 30;
+
+/** Deletes for good whatever has been in the trash for 30 days (cascading to comments, versions, refs). */
+export function purgeTrash() {
+  const cutoff = new Date(Date.now() - TRASH_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  db.transaction(() => {
+    db.query("DELETE FROM issues WHERE deleted_at IS NOT NULL AND deleted_at < ?").run(cutoff);
+    db.query("DELETE FROM documents WHERE deleted_at IS NOT NULL AND deleted_at < ?").run(cutoff);
+  })();
+}
+
+/** A team's trash, newest first. */
+export function listTrash(a: Actor, team: string): Trash {
+  const key = teamRow(a, team).key;
+  purgeTrash();
+  const issues = db
+    .query<IssueRow, [string]>(`${ISSUE_SELECT} WHERE i.team_key = ? AND i.deleted_at IS NOT NULL ORDER BY i.deleted_at DESC, i.id DESC`)
+    .all(key)
+    .map(toSummary);
+  const documents = db
+    .query<DocumentRow, [string]>(`${DOC_SELECT} WHERE d.team_key = ? AND d.deleted_at IS NOT NULL ORDER BY d.deleted_at DESC, d.id DESC`)
+    .all(key)
+    .map(toDocSummary);
+  return { issues, documents };
+}
+
+/**
+ * Takes an open issue: a person as its assignee, an agent as its delegate. An unstarted one (backlog,
+ * todo) moves to in_progress; one already started (in_progress, in_review) keeps its status, as in
+ * Linear. Refused (409, naming them) if it's closed or another active member holds that slot. IMMEDIATE
+ * takes the write lock before the read, so of two claims racing for a free issue exactly one wins.
+ * Claiming your own started issue is a no-op.
  */
 export function claimIssue(a: Actor, identifier: string): Issue {
-  const { id, workspace } = issueRef(a, identifier);
+  const { id, workspace } = liveIssue(a, identifier);
   const slot = a.kind === "person" ? "assignee_id" : "delegate_id";
   const time = now();
   const claimed = db.transaction(() => {
@@ -572,8 +694,9 @@ export function claimIssue(a: Actor, identifier: string): Issue {
     if (row.holder !== null && row.holder !== a.id && row.active) {
       throw new AppError(`${row.ref} is claimed by ${row.username}`, 409);
     }
-    if (row.holder === a.id && row.status === "in_progress") return false;
-    db.query(`UPDATE issues SET ${slot} = ?, status = 'in_progress', ${BUMPED_AT} WHERE id = ?`).run(a.id, time, time, id);
+    const started = row.status === "in_progress" || row.status === "in_review";
+    if (row.holder === a.id && started) return false;
+    db.query(`UPDATE issues SET ${slot} = ?, status = ?, ${BUMPED_AT} WHERE id = ?`).run(a.id, started ? row.status : "in_progress", time, time, id);
     return true;
   }).immediate();
   const issue = getIssue(a, identifier);
@@ -583,7 +706,7 @@ export function claimIssue(a: Actor, identifier: string): Issue {
 
 /** Runs a change to an issue's comments, bumping the issue in the same transaction. */
 function changeIssueComments(a: Actor, identifier: string, change: (id: number, time: string) => void): Issue {
-  const { id, workspace } = issueRef(a, identifier);
+  const { id, workspace } = liveIssue(a, identifier);
   const time = now();
   db.transaction(() => {
     change(id, time);
@@ -627,9 +750,10 @@ type DocumentRow = Record<string, unknown> & {
   position: number;
   created_at: string;
   updated_at: string;
+  deleted_at: string | null;
 };
 
-const DOC_COLUMNS = `d.id, d.slug, d.team_key, t.workspace, d.title, d.position, d.created_at, d.updated_at, ${userCols("u", "by")}`;
+const DOC_COLUMNS = `d.id, d.slug, d.team_key, t.workspace, d.title, d.position, d.created_at, d.updated_at, d.deleted_at, ${userCols("u", "by")}`;
 const DOC_FROM = "FROM documents d JOIN teams t ON t.key = d.team_key JOIN users u ON u.id = d.updated_by_id";
 const DOC_SELECT = `SELECT ${DOC_COLUMNS} ${DOC_FROM}`; // lists leave out the content
 
@@ -644,7 +768,15 @@ const toDocSummary = (row: DocumentRow): DocumentSummary => ({
   createdAt: row.created_at,
   updatedAt: row.updated_at,
   updatedBy: ref(row, "by")!,
+  deletedAt: row.deleted_at,
 });
+
+/** A doc that isn't in the trash: a trashed one can be read and restored, nothing else. */
+function liveDocument(a: Actor, slug: unknown): DocumentRow {
+  const row = documentRow(a, slug);
+  if (row.deleted_at) throw new AppError(`Document ${row.slug} is in the trash; restore it first`, 409);
+  return row;
+}
 
 function documentRow(a: Actor, slug: unknown): DocumentRow {
   const row =
@@ -746,7 +878,7 @@ export function listDocuments(a: Actor, filter: DocumentFilter): DocumentSummary
 export function getDocument(a: Actor, slug: string): Document {
   const row = documentRow(a, slug);
   const issues = db
-    .query<IssueRow, [number]>(`${ISSUE_SELECT} JOIN document_refs r ON r.issue_id = i.id WHERE r.document_id = ? ORDER BY r.ord`)
+    .query<IssueRow, [number]>(`${ISSUE_SELECT} JOIN document_refs r ON r.issue_id = i.id WHERE r.document_id = ? AND ${LIVE} ORDER BY r.ord`)
     .all(row.id)
     .map(toSummary);
   const { n: versionCount } = db.query<{ n: number }, [number]>("SELECT COUNT(*) AS n FROM document_versions WHERE document_id = ?").get(row.id)!;
@@ -776,7 +908,7 @@ export function createDocument(a: Actor, input: DocumentInput): Document {
 }
 
 export function updateDocument(a: Actor, slug: string, patch: DocumentPatch): Document {
-  const row = documentRow(a, slug);
+  const row = liveDocument(a, slug);
   if (patch.baseUpdatedAt !== undefined && patch.baseUpdatedAt !== row.updated_at) {
     throw new AppError("Document changed since you started editing", 409);
   }
@@ -810,15 +942,22 @@ export function updateDocument(a: Actor, slug: string, patch: DocumentPatch): Do
   return getDocument(a, row.slug);
 }
 
-export function deleteDocument(a: Actor, slug: string) {
+/** Moves a doc to the trash or back; its versions, comments and refs stay until it's purged. */
+function trashDocument(a: Actor, slug: string, trash: boolean): Document {
   const row = documentRow(a, slug);
-  db.query("DELETE FROM documents WHERE id = ?").run(row.id);
+  if (!!row.deleted_at === trash) throw new AppError(trash ? `Document ${row.slug} is already in the trash` : `Document ${row.slug} isn't in the trash`, 409);
+  purgeTrash();
+  db.query("UPDATE documents SET deleted_at = ? WHERE id = ?").run(trash ? now() : null, row.id);
   changed("document", row.workspace, row.slug);
+  return getDocument(a, row.slug);
 }
+
+export const deleteDocument = (a: Actor, slug: string) => trashDocument(a, slug, true);
+export const restoreDocument = (a: Actor, slug: string) => trashDocument(a, slug, false);
 
 /** Runs a change to a doc's comments. It leaves the doc's updated_at alone, so an open editor sees no conflict. */
 function changeDocumentComments(a: Actor, slug: string, change: (id: number) => void): Document {
-  const row = documentRow(a, slug);
+  const row = liveDocument(a, slug);
   change(row.id);
   changed("document", row.workspace, row.slug);
   return getDocument(a, row.slug);
@@ -853,3 +992,6 @@ export function getDocumentVersion(a: Actor, slug: string, id: unknown): Documen
   if (!r) throw new AppError(`Version ${id} of ${slug} not found`, 404);
   return { id: r.id as number, author: ref(r, "a")!, title: r.title as string, content: r.content as string, createdAt: r.created_at as string };
 }
+
+// Anything that expired while the server was down goes now; later deletes and trash views purge as they go.
+purgeTrash();

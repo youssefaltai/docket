@@ -73,6 +73,7 @@ function details(issue: Issue): string {
     `updated ${issue.updatedAt}`,
   ];
   const parts = [line(issue), meta.filter(Boolean).join(" · "), issue.description || "_No description._"];
+  if (issue.deletedAt) parts.unshift(`**In the trash** since ${issue.deletedAt}: read-only until someone restores it.`);
   if (issue.children.length) parts.push(`## Sub-issues\n${issue.children.map(line).join("\n")}`);
   if (issue.docs.length) parts.push(`## Docs\n${issue.docs.map(docLine).join("\n")}`);
   if (issue.comments.length) parts.push(commentsSection(issue.comments));
@@ -275,7 +276,7 @@ function createServer(a: Actor): McpServer {
     "list_issues",
     {
       description:
-        "List issues, one line each: identifier · status · priority · title · @assignee · →@delegate · #labels. Sorted by status, then priority (urgent first, none last), then most recently updated. Only open issues (backlog, todo, in_progress, in_review) unless you pass `status`. Use get_issue for the description, comments, sub-issues and blockers.",
+        "List issues, one line each: identifier · status · priority · title · @assignee · →@delegate · #labels. Sorted by status, then priority (urgent first, none last), then most recently updated. Only open issues (backlog, todo, in_progress, in_review) unless you pass `status`. Pages of `limit` (default 50): when there are more, the output ends with a cursor to pass as `after` for the next page. Unknown team, assignee, delegate or parent is an error, not an empty list. Use get_issue for the description, comments, sub-issues and blockers.",
       inputSchema: {
         workspace: workspaceKey.optional().describe("Only issues in this workspace's teams"),
         team: teamKey.optional(),
@@ -285,16 +286,16 @@ function createServer(a: Actor): McpServer {
         delegate: delegate.optional(),
         parent: identifier.optional().describe("Only sub-issues of this issue, e.g. BRD-12"),
         query: z.string().optional().describe("Text to find in identifier, title or description"),
-        limit: z.number().int().min(1).max(500).optional().describe("Maximum issues to return (default 50)"),
+        limit: z.number().int().min(1).max(500).optional().describe("Page size (default 50)"),
+        after: z.string().optional().describe("The cursor from the end of the previous page"),
       },
       annotations: { readOnlyHint: true },
     },
-    ({ status, query, limit = 50, ...filter }) => {
-      const all = tracker.listIssues(a, { ...filter, status: status ?? OPEN_STATUSES, q: query });
-      const issues = all.slice(0, limit);
+    ({ status, query, limit = 50, after, ...filter }) => {
+      const { issues, pageInfo } = tracker.listIssuesPage(a, { ...filter, status: status ?? OPEN_STATUSES, q: query }, { first: limit, after });
       const lines = issues.map(line);
-      if (all.length > limit) lines.push(`…and ${all.length - limit} more (raise limit or narrow the filters)`);
-      return result(lines.join("\n") || "No matching issues.", { issues, total: all.length });
+      if (pageInfo.hasNextPage) lines.push(`…more: call again with after: "${pageInfo.endCursor}"`);
+      return result(lines.join("\n") || "No matching issues.", { issues, pageInfo });
     },
   );
 
@@ -316,12 +317,12 @@ function createServer(a: Actor): McpServer {
     "create_issue",
     {
       description:
-        "Create an issue in a team; returns its identifier (e.g. BRD-13). Defaults: status todo, priority 0 (none). Set parent to make it a sub-issue, blockedBy for issues that must be finished first.",
+        "Create an issue in a team; returns its identifier (e.g. BRD-13). Defaults: status backlog (as in Linear; pass todo when it's ready to be picked up), priority 0 (none). Set parent to make it a sub-issue, blockedBy for issues that must be finished first.",
       inputSchema: {
         team: teamKey,
         title,
         description: description.optional(),
-        status: status.optional().describe("Default todo"),
+        status: status.optional().describe("Default backlog"),
         priority: priority.optional().describe("0 none (default), 1 urgent, 2 high, 3 medium, 4 low"),
         labels: labels.optional(),
         assignee: assignee.optional().describe('The person who owns it: a username, or "me"'),
@@ -368,7 +369,7 @@ function createServer(a: Actor): McpServer {
     "claim_issue",
     {
       description:
-        "Take an issue to work on, in one step no one else can interleave with: an agent becomes its delegate, a person its assignee, and it moves to in_progress. Fails if the issue is done or canceled, or someone else holds it (the error names them): then pick another issue rather than working on it too. Claiming your own again is fine. To hand it back, update_issue with delegate (or assignee) null and status todo.",
+        "Take an issue to work on, in one step no one else can interleave with: an agent becomes its delegate, a person its assignee, and an unstarted issue (backlog, todo) moves to in_progress; one already in_progress or in_review keeps its status. Fails if the issue is done or canceled, or someone else holds it (the error names them): then pick another issue rather than working on it too. Claiming your own again is fine. To hand it back, update_issue with delegate (or assignee) null and status todo.",
       inputSchema: { id: identifier },
     },
     writes(({ id }) => {
@@ -540,13 +541,13 @@ function createServer(a: Actor): McpServer {
     "delete_document",
     {
       description:
-        "Permanently delete a document with its versions and comments. Only when asked to, or to remove a duplicate you just created; otherwise edit it.",
+        "Move a document to the trash (with its versions and comments); a person can restore it for 30 days, then it's gone. Only when asked to, or to remove a duplicate you just created; otherwise edit it.",
       inputSchema: { slug },
       annotations: { destructiveHint: true },
     },
     writes(({ slug }) => {
       tracker.deleteDocument(a, slug);
-      return result(`Deleted document ${slug}`, { ok: true });
+      return result(`Moved document ${slug} to the trash`, { ok: true });
     }),
   );
 

@@ -30,6 +30,21 @@ async function body<T = Record<string, unknown>>(req: Request): Promise<T> {
   return data as T;
 }
 
+/**
+ * A PATCH body with only the fields that can change: anything else is 400 naming it, so a typo or an
+ * unsupported change (moving an issue to another team) doesn't pass as a silent 200.
+ */
+async function patch(req: Request, what: string, fields: readonly string[], why: Record<string, string> = {}) {
+  const data = await body(req);
+  for (const field of Object.keys(data)) {
+    if (!fields.includes(field)) throw new AppError(why[field] ?? `Unknown field "${field}" for ${what}: use ${fields.join(", ")}`);
+  }
+  return data;
+}
+
+const ISSUE_FIELDS = ["title", "description", "status", "priority", "labels", "assignee", "delegate", "parent", "blockedBy", "baseUpdatedAt"];
+const DOCUMENT_FIELDS = ["title", "content", "edits", "team", "position", "checkpoint", "baseUpdatedAt"];
+
 const param = (req: Request, name: string) => new URL(req.url).searchParams.get(name) || undefined;
 
 const issueFilter = (req: Request): IssueFilter => ({
@@ -60,7 +75,7 @@ export const apiRoutes = {
   // --- You ---
   "/api/me": {
     GET: handle((req) => access.me(actorOf(req))),
-    PATCH: handle(async (req) => access.updateMe(actorOf(req), await body(req))),
+    PATCH: handle(async (req) => access.updateMe(actorOf(req), await patch(req, "your profile", ["name", "username", "email"]))),
   },
   "/api/sessions": {
     GET: handle((req) => access.listSessions(actorOf(req))),
@@ -86,14 +101,16 @@ export const apiRoutes = {
     POST: handle(async (req) => access.createWorkspace(actorOf(req), await body<WorkspaceInput>(req)), 201),
   },
   "/api/workspaces/:key": {
-    PATCH: handle<"/api/workspaces/:key">(async (req) => access.updateWorkspace(actorOf(req), req.params.key, await body(req))),
+    PATCH: handle<"/api/workspaces/:key">(async (req) =>
+      access.updateWorkspace(actorOf(req), req.params.key, await patch(req, "a workspace", ["name"], { key: "A workspace's key never changes" })),
+    ),
   },
   "/api/workspaces/:key/members": {
     GET: handle<"/api/workspaces/:key/members">((req) => access.listMembers(actorOf(req), req.params.key)),
   },
   "/api/workspaces/:key/members/:username": {
     PATCH: handle<"/api/workspaces/:key/members/:username">(async (req) =>
-      access.updateMember(actorOf(req), req.params.key, req.params.username, await body(req)),
+      access.updateMember(actorOf(req), req.params.key, req.params.username, await patch(req, "a member", ["role", "suspended"])),
     ),
   },
   "/api/workspaces/:key/invites": {
@@ -119,16 +136,36 @@ export const apiRoutes = {
     POST: handle(async (req) => tracker.createTeam(actorOf(req), await body<TeamInput>(req)), 201),
   },
   "/api/teams/:key": {
-    PATCH: handle<"/api/teams/:key">(async (req) => tracker.updateTeam(actorOf(req), req.params.key, await body(req))),
+    PATCH: handle<"/api/teams/:key">(async (req) =>
+      tracker.updateTeam(
+        actorOf(req),
+        req.params.key,
+        await patch(req, "a team", ["name", "description"], { workspace: "Teams can't move between workspaces", key: "A team's key never changes" }),
+      ),
+    ),
+  },
+  "/api/teams/:key/trash": {
+    GET: handle<"/api/teams/:key/trash">((req) => tracker.listTrash(actorOf(req), req.params.key)),
   },
   "/api/issues": {
-    GET: handle((req) => tracker.listIssues(actorOf(req), issueFilter(req))),
+    // Without first/after, the whole list (as before); with them, a page: { issues, pageInfo }.
+    GET: handle((req) => {
+      const first = param(req, "first");
+      const after = param(req, "after");
+      if (first === undefined && after === undefined) return tracker.listIssues(actorOf(req), issueFilter(req));
+      return tracker.listIssuesPage(actorOf(req), issueFilter(req), { first, after });
+    }),
     POST: handle(async (req) => tracker.createIssue(actorOf(req), await body<IssueInput>(req)), 201),
   },
   "/api/issues/:id": {
     GET: handle<"/api/issues/:id">((req) => tracker.getIssue(actorOf(req), req.params.id)),
-    PATCH: handle<"/api/issues/:id">(async (req) => tracker.updateIssue(actorOf(req), req.params.id, await body(req))),
+    PATCH: handle<"/api/issues/:id">(async (req) =>
+      tracker.updateIssue(actorOf(req), req.params.id, await patch(req, "an issue", ISSUE_FIELDS, { team: "Issues can't move between teams" })),
+    ),
     DELETE: handle<"/api/issues/:id">((req) => tracker.deleteIssue(actorOf(req), req.params.id)),
+  },
+  "/api/issues/:id/restore": {
+    POST: handle<"/api/issues/:id/restore">((req) => tracker.restoreIssue(actorOf(req), req.params.id)),
   },
   "/api/issues/:id/claim": {
     POST: handle<"/api/issues/:id/claim">((req) => tracker.claimIssue(actorOf(req), req.params.id)),
@@ -138,7 +175,7 @@ export const apiRoutes = {
   },
   "/api/issues/:id/comments/:cid": {
     PATCH: handle<"/api/issues/:id/comments/:cid">(async (req) =>
-      tracker.updateIssueComment(actorOf(req), req.params.id, req.params.cid, (await body(req)).body),
+      tracker.updateIssueComment(actorOf(req), req.params.id, req.params.cid, (await patch(req, "a comment", ["body"])).body),
     ),
     DELETE: handle<"/api/issues/:id/comments/:cid">((req) => tracker.deleteIssueComment(actorOf(req), req.params.id, req.params.cid)),
   },
@@ -155,8 +192,13 @@ export const apiRoutes = {
   },
   "/api/documents/:slug": {
     GET: handle<"/api/documents/:slug">((req) => tracker.getDocument(actorOf(req), req.params.slug)),
-    PATCH: handle<"/api/documents/:slug">(async (req) => tracker.updateDocument(actorOf(req), req.params.slug, await body(req))),
+    PATCH: handle<"/api/documents/:slug">(async (req) =>
+      tracker.updateDocument(actorOf(req), req.params.slug, await patch(req, "a document", DOCUMENT_FIELDS, { slug: "A document's slug never changes" })),
+    ),
     DELETE: handle<"/api/documents/:slug">((req) => tracker.deleteDocument(actorOf(req), req.params.slug)),
+  },
+  "/api/documents/:slug/restore": {
+    POST: handle<"/api/documents/:slug/restore">((req) => tracker.restoreDocument(actorOf(req), req.params.slug)),
   },
   "/api/documents/:slug/raw": {
     GET: handle<"/api/documents/:slug/raw">(
@@ -174,7 +216,7 @@ export const apiRoutes = {
   },
   "/api/documents/:slug/comments/:cid": {
     PATCH: handle<"/api/documents/:slug/comments/:cid">(async (req) =>
-      tracker.updateDocumentComment(actorOf(req), req.params.slug, req.params.cid, (await body(req)).body),
+      tracker.updateDocumentComment(actorOf(req), req.params.slug, req.params.cid, (await patch(req, "a comment", ["body"])).body),
     ),
     DELETE: handle<"/api/documents/:slug/comments/:cid">((req) =>
       tracker.deleteDocumentComment(actorOf(req), req.params.slug, req.params.cid),

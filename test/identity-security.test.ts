@@ -58,7 +58,11 @@ test("everyone writes as themselves over REST, whatever author they claim", asyn
     const me = s.as(who);
     await me.api("POST", "/api/issues/SEC-1/comments", { body: `by ${who}`, author: "admin" });
     await me.api("POST", "/api/documents", { team: "SEC", title: `Doc by ${who}`, author: "admin" });
-    await me.api("PATCH", "/api/documents/spec", { content: who, author: "admin" });
+    // A PATCH names its fields exactly, so an "author" there is refused outright.
+    const patched = await me.api("PATCH", "/api/documents/spec", { content: who, author: "admin" });
+    expect(patched.status).toBe(400);
+    expect(patched.body.error).toContain('"author"');
+    await me.api("PATCH", "/api/documents/spec", { content: who });
     await me.api("POST", "/api/documents/spec/comments", { body: `by ${who}`, author: "admin", updatedBy: "admin" });
   }
   const issue = (await s.api("GET", "/api/issues/SEC-1")).body;

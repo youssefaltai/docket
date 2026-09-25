@@ -169,6 +169,17 @@ const MIGRATIONS = [
   );
   CREATE INDEX document_comments_document ON document_comments(document_id);
   `,
+  // Trash: deleting an issue or doc sets deleted_at; it's restorable for 30 days, then purged.
+  // Emails become unique in the schema too (the app already refused clashes); older duplicates lose theirs.
+  `
+  ALTER TABLE issues ADD COLUMN deleted_at TEXT;
+  ALTER TABLE documents ADD COLUMN deleted_at TEXT;
+  CREATE INDEX issues_deleted ON issues(deleted_at) WHERE deleted_at IS NOT NULL;
+  CREATE INDEX documents_deleted ON documents(deleted_at) WHERE deleted_at IS NOT NULL;
+  UPDATE users SET email = NULL WHERE email IS NOT NULL
+    AND id NOT IN (SELECT MIN(id) FROM users WHERE email IS NOT NULL GROUP BY lower(email));
+  CREATE UNIQUE INDEX users_email ON users(lower(email)) WHERE email IS NOT NULL;
+  `,
 ];
 
 const { user_version } = db.query("PRAGMA user_version").get() as { user_version: number };

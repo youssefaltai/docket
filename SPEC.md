@@ -85,7 +85,7 @@ Linear's model: sign-in is always required, accounts are global, each workspace 
 
 ## Data
 
-One migration creates the schema (`db.ts`; the runner stays for future changes). WAL mode on.
+Migration 1 creates the schema (`db.ts`); migration 2 adds `deleted_at` to issues and documents (the trash) and a unique index on `lower(users.email)` (older duplicates keep the email on the oldest account). WAL mode on.
 
 - **users**, **workspaces**, **workspace_members**, **sessions**, **api_keys**, **codes**: see Access.
 - **teams**: key (PK, 2–5 uppercase letters, unique across all workspaces), workspace, name, description, next_number, created_at, updated_at.
@@ -94,26 +94,30 @@ One migration creates the schema (`db.ts`; the runner stays for future changes).
 - **comments** / **document_comments**: id, issue_id / document_id, author_id, body, created_at, edited_at.
 - **documents**, **document_versions**, **document_refs**: see Documents.
 
-Identifier = `${team_key}-${number}`, parsed case-insensitively. Issues can't move between teams. Parents, blockers and doc refs never cross workspaces. Any change to an issue or its comments bumps `updated_at`, strictly forward (at least 1 ms past its previous value, even within one millisecond), since it doubles as the version token for `baseUpdatedAt`; `db.ts` keeps that rule in one place per layer (`bumpedAt` in JS, `BUMPED_AT` in SQL), shared with documents. Creating an issue with a parent or blockers bumps and publishes them. Deleting an issue also bumps and publishes its sub-issues (parent cleared), its parent, and the issues it blocked or was blocked by; docs that mentioned it get a `document` event. Changing an issue's parent or blockers likewise bumps and publishes the old and new parent and each blocker added or removed. `completed_at` is set when status enters done/canceled, cleared when it leaves. List order: status order, then priority (1→4, then 0 last), then `updated_at` desc.
+Identifier = `${team_key}-${number}`, parsed case-insensitively. Issues can't move between teams. Parents, blockers and doc refs never cross workspaces. Any change to an issue or its comments bumps `updated_at`, strictly forward (at least 1 ms past its previous value, even within one millisecond), since it doubles as the version token for `baseUpdatedAt`; `db.ts` keeps that rule in one place per layer (`bumpedAt` in JS, `BUMPED_AT` in SQL), shared with documents. Creating an issue with a parent or blockers bumps and publishes them. Moving an issue to or from the trash also bumps and publishes its sub-issues, its parent, and the issues it blocked or was blocked by; docs that mentioned it get a `document` event. Changing an issue's parent or blockers likewise bumps and publishes the old and new parent and each blocker added or removed. `completed_at` is set when status enters done/canceled, cleared when it leaves. New issues start in `backlog` (as in Linear). List order: status order, then priority (1→4, then 0 last), then `updated_at` desc.
+
+**Trash** (Linear's delete): deleting an issue or doc sets `deleted_at` (`deletedAt` in the API). It leaves lists, search, labels, team counts, relations (`blockedBy`, `blocks`, sub-issues) and doc refs, but keeps its links, so restoring (`POST …/restore`) puts everything back. Sub-issues of a trashed issue stay, still pointing at it. A trashed item can be read (with `deletedAt`) and restored, nothing else: edits, comments, claims and new relations to it answer 409 or 400. After 30 days in the trash it's deleted for good (with its comments, versions and refs), at startup and whenever something is trashed, restored or the trash is listed. Deleting or restoring twice is 409.
 
 **Assignee and delegate** (Linear's model): the assignee is a person who owns the issue; the delegate is an agent working on it for them. Each must be an active member of the issue's workspace of the right kind (400 otherwise, e.g. "claude-a is an agent; set it as the delegate"). `me` means the caller, in values and filters.
 
-**Claim** (`POST /api/issues/:id/claim`, MCP `claim_issue`): a person takes the assignee slot, an agent the delegate slot, and the issue moves to `in_progress`. One IMMEDIATE transaction reads and writes, so of two claims racing for a free issue exactly one wins. A done or canceled issue is 409 `"<ID> is done"`; one whose slot another active member holds is 409 `"<ID> is claimed by <username>"` (a suspended holder doesn't count). Claiming your own again changes nothing. To hand it back, clear the slot and set status todo.
+**Claim** (`POST /api/issues/:id/claim`, MCP `claim_issue`): a person takes the assignee slot, an agent the delegate slot; an unstarted issue (`backlog`, `todo`) moves to `in_progress`, one already started (`in_progress`, `in_review`) keeps its status. One IMMEDIATE transaction reads and writes, so of two claims racing for a free issue exactly one wins. A done or canceled issue is 409 `"<ID> is done"`; one whose slot another active member holds is 409 `"<ID> is claimed by <username>"` (a suspended holder doesn't count). Claiming your own again changes nothing. To hand it back, clear the slot and set status todo.
 
 **Issue versions**: `IssuePatch.baseUpdatedAt`: if present and different from the current `updatedAt`, the PATCH (or `update_issue`) answers 409 `{ "error": "Issue changed since you read it" }` and changes nothing; the check and the write share one IMMEDIATE transaction. Comments bump `updatedAt` too, so send it where lost updates happen (description, and the whole-list `labels` and `blockedBy`), not for single-field changes like status or priority.
 
 ## REST (JSON; errors are `{ "error": string }` with 4xx)
 
-Plus the Access routes above. Lists only ever include your workspaces.
+Plus the Access routes above. Lists only ever include your workspaces. A filter naming something unknown (a workspace or team you can't see, a username who isn't in the workspaces searched, a parent that doesn't exist) is 400 `Unknown …`, not an empty list; a label nobody uses yet just finds nothing. PATCH bodies take only the fields listed for them: anything else is 400 naming the field (e.g. `"team"`: issues can't move between teams).
 
 | Method | Path | Body / query | Returns |
 |---|---|---|---|
 | GET | /api/teams | `?workspace` | `Team[]` |
 | POST | /api/teams | `TeamInput` (workspace required) | 201 `Team` |
 | PATCH | /api/teams/:key | `{ name?, description? }` (teams never change workspace: 400) | `Team` |
-| GET | /api/issues | `?workspace&team&status=a,b&label&assignee&delegate&parent&q` | `IssueSummary[]` |
+| GET | /api/issues | `?workspace&team&status=a,b&label&assignee&delegate&parent&q`, plus `first` (1–500) and `after` to page | `IssueSummary[]`; with `first`/`after`, `IssuePage` `{ issues, pageInfo: { hasNextPage, endCursor } }` |
 | POST | /api/issues | `IssueInput` | 201 `Issue` |
-| GET / PATCH / DELETE | /api/issues/:id | `IssuePatch` | `Issue` / `{ ok: true }` |
+| GET / PATCH / DELETE | /api/issues/:id | `IssuePatch` (title, description, status, priority, labels, assignee, delegate, parent, blockedBy, baseUpdatedAt) | `Issue` (DELETE moves it to the trash) |
+| POST | /api/issues/:id/restore | | `Issue` |
+| GET | /api/teams/:key/trash | | `Trash` `{ issues, documents }`, newest first |
 | POST | /api/issues/:id/claim | | `Issue` |
 | POST | /api/issues/:id/comments | `{ body }` | 201 `Issue` |
 | PATCH / DELETE | /api/issues/:id/comments/:cid | `{ body }` | `Issue` (own comments only; a `:cid` not on that issue is 404) |
@@ -141,7 +145,7 @@ Tools return short markdown text (one line per issue: `BRD-3 · todo · high · 
 | create_team | key, name, workspace?, description? | workspace required when you're in more than one |
 | update_team | key, name?, description? | |
 | list_labels | workspace? | `label · N open`, so agents reuse existing labels |
-| list_issues | workspace?, team?, status?[], label?, assignee?, delegate?, parent?, query?, limit? (default 50) | excludes done/canceled unless `status` given |
+| list_issues | workspace?, team?, status?[], label?, assignee?, delegate?, parent?, query?, limit? (page size, default 50), after? | excludes done/canceled unless `status` given; a page ends with `after: "<cursor>"` when there's more |
 | get_issue | id | full issue with description, creator, sub-issues, blockers, docs, comments |
 | create_issue | team, title, description?, status?, priority?, labels?, assignee?, delegate?, parent?, blockedBy? | |
 | update_issue | id + any of title, description, status, priority, labels, assignee, delegate, parent, blockedBy, baseUpdatedAt | |
@@ -179,14 +183,15 @@ Linear-style docs inside teams. Markdown is the source of truth (agents write vi
 - **documents**: id, slug (unique), team_key, title, content, position, created_at, updated_at, updated_by_id.
 - **document_versions**: id, document_id, title, content, author_id, created_at. A version is written on every title/content change. Autosave-friendly: if the latest version has the same author and was first saved < 10 min ago, overwrite its title and content instead of inserting. Its `created_at` stays the first save's time, so a long session still gets a new version every 10 minutes. The first version (creation) and checkpoints (restores) are never merged into.
 - **document_refs**: document_id, issue_id, ord. Recomputed on every content change from `\b[A-Z]{2,5}-\d+\b` matches that resolve to real issues in the doc's workspace (first-mention order).
-- Slugs are stable: renaming a doc never changes its slug. A doc can move to another team of the same workspace. Deleting a doc deletes its versions, refs and comments.
+- Slugs are stable: renaming a doc never changes its slug. A doc can move to another team of the same workspace. Deleting a doc moves it to the trash (see Trash); purging it deletes its versions, refs and comments.
 - Search (`q`) matches title and content. Like issue search, it's a literal substring match: `%`, `_` and `\` in the query are escaped, not wildcards.
 
 | Method | Path | Body / query | Returns |
 |---|---|---|---|
 | GET | /api/documents | `?workspace&team&q` | `DocumentSummary[]` (team key, then position) |
 | POST | /api/documents | `DocumentInput` | 201 `Document` |
-| GET / PATCH / DELETE | /api/documents/:slug | `DocumentPatch` | `Document` / `{ ok: true }` |
+| GET / PATCH / DELETE | /api/documents/:slug | `DocumentPatch` | `Document` (DELETE moves it to the trash) |
+| POST | /api/documents/:slug/restore | | `Document` |
 | GET | /api/documents/:slug/raw | | `text/markdown; charset=utf-8` (the content) |
 | POST | /api/documents/:slug/comments | `{ body }` | 201 `Document` |
 | PATCH / DELETE | /api/documents/:slug/comments/:cid | `{ body }` | `Document` |
@@ -195,7 +200,7 @@ Linear-style docs inside teams. Markdown is the source of truth (agents write vi
 
 `DocumentPatch.baseUpdatedAt` (optional) is the document's `updatedAt` the client started editing from: if present and different from the current one, the PATCH answers 409 `{ "error": "Document changed since you started editing" }` and changes nothing. Every save moves `updatedAt` strictly forward, so it works as a version token even for saves in the same millisecond. The web editor sends it with every save; MCP `update_document` accepts it too. `edits` errors (400) name the failing edit and whether `oldText` matched 0 or many times (overlapping occurrences count: `aa` matches `aaa` twice); nothing is applied unless every edit applies. `GET /api/issues/:id` includes `docs` (documents mentioning it). `Team` includes `docCount`.
 
-MCP: `list_documents` (workspace?, team?, query?; one line per doc: `slug · Title · TEAM · updated 2h ago by @alice`), `get_document` (slug), `create_document` (team, title, content, slug?, position?), `update_document` (slug, title?, content?, edits?, team?, position?, baseUpdatedAt?; prefer `edits` for small changes to long docs), `comment_document` (slug, body), `delete_document` (slug; permanent, `destructiveHint`). Tool descriptions must say: docs are markdown; mention issues by identifier (e.g. BRD-2) and they auto-link; link other docs with `[Title](/doc/slug)`; use `edits` for targeted changes.
+MCP: `list_documents` (workspace?, team?, query?; one line per doc: `slug · Title · TEAM · updated 2h ago by @alice`), `get_document` (slug), `create_document` (team, title, content, slug?, position?), `update_document` (slug, title?, content?, edits?, team?, position?, baseUpdatedAt?; prefer `edits` for small changes to long docs), `comment_document` (slug, body), `delete_document` (slug; to the trash, restorable by a person for 30 days, `destructiveHint`). Tool descriptions must say: docs are markdown; mention issues by identifier (e.g. BRD-2) and they auto-link; link other docs with `[Title](/doc/slug)`; use `edits` for targeted changes.
 
 UI:
 - A team's page has two tabs: Issues, Docs (`/t/:key` and `/t/:key/docs`).

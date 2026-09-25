@@ -30,7 +30,7 @@ test("workspaces and teams", async () => {
 test("issue lifecycle", async () => {
   const created = await s.api("POST", "/api/issues", { team: "API", title: "First", priority: 2, labels: ["bug"] });
   expect(created.status).toBe(201);
-  expect(created.body).toMatchObject({ id: "API-1", status: "todo", priority: 2, labels: ["bug"] });
+  expect(created.body).toMatchObject({ id: "API-1", status: "backlog", priority: 2, labels: ["bug"] });
 
   const child = await s.api("POST", "/api/issues", { team: "API", title: "Child", parent: "API-1", blockedBy: ["API-1"] });
   expect(child.body).toMatchObject({ id: "API-2", parent: "API-1", blockedBy: ["API-1"] });
@@ -48,7 +48,7 @@ test("issue lifecycle", async () => {
   // s.api acts as the setup admin, so the comment's author is admin's UserRef.
   expect(issue.comments.map((c: any) => [c.author.username, c.body])).toEqual([["admin", "Shipped"]]);
 
-  const { body: open } = await s.api("GET", "/api/issues?team=API&status=todo");
+  const { body: open } = await s.api("GET", "/api/issues?team=API&status=backlog");
   expect(open.map((i: any) => i.id)).toEqual(["API-2"]);
 
   const { body: labels } = await s.api("GET", "/api/labels");
@@ -58,7 +58,8 @@ test("issue lifecycle", async () => {
 test("deleted issue numbers are never reused", async () => {
   const { body: temp } = await s.api("POST", "/api/issues", { team: "API", title: "Temp" });
   expect((await s.api("DELETE", `/api/issues/${temp.id}`)).status).toBe(200);
-  expect((await s.api("GET", `/api/issues/${temp.id}`)).status).toBe(404);
+  // Deleting moves it to the trash; the number stays taken either way.
+  expect((await s.api("GET", `/api/issues/${temp.id}`)).body.deletedAt).toBeString();
   const { body: next } = await s.api("POST", "/api/issues", { team: "API", title: "Next" });
   expect(next.number).toBe(temp.number + 1);
 });
