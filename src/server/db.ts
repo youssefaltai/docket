@@ -1,9 +1,12 @@
 import { Database, type SQLQueryBindings } from "bun:sqlite";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { xdgDataHome } from "./paths.ts";
 import {
   CLOSED_STATUSES,
+  MEMBER_KINDS,
+  MEMBER_ROLES,
   PRIORITIES,
   STATUSES,
   type Comment,
@@ -20,6 +23,11 @@ import {
   type IssuePatch,
   type IssueSummary,
   type LabelCount,
+  type Member,
+  type MemberInput,
+  type MemberKind,
+  type MemberRole,
+  type MemberToken,
   type Priority,
   type Project,
   type ProjectInput,
@@ -155,6 +163,18 @@ const MIGRATIONS = [
   ALTER TABLE comments ADD COLUMN edited_at TEXT;
   ALTER TABLE document_comments ADD COLUMN edited_at TEXT;
   `,
+  // Members: people and agents with their own token (only its hash is stored).
+  `
+  CREATE TABLE members (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    kind TEXT NOT NULL,
+    role TEXT NOT NULL,
+    token_hash TEXT UNIQUE,
+    created_at TEXT NOT NULL,
+    revoked_at TEXT
+  );
+  `,
 ];
 
 const { user_version } = db.query("PRAGMA user_version").get() as { user_version: number };
@@ -196,12 +216,12 @@ function optionalText(value: unknown, field: string): string {
   return value.trim();
 }
 
-function checkStatus(value: unknown): Status {
-  if (!STATUSES.includes(value as Status)) {
-    throw new AppError(`Invalid status "${value}". Use one of: ${STATUSES.join(", ")}`);
-  }
-  return value as Status;
+function checkOneOf<T extends string>(value: unknown, allowed: readonly T[], field: string): T {
+  if (!allowed.includes(value as T)) throw new AppError(`Invalid ${field} "${value}". Use one of: ${allowed.join(", ")}`);
+  return value as T;
 }
+
+const checkStatus = (value: unknown) => checkOneOf(value, STATUSES, "status");
 
 function checkPriority(value: unknown): Priority {
   if (!PRIORITIES.includes(value as Priority)) {
@@ -217,9 +237,16 @@ function checkLabels(value: unknown): string[] {
   return [...new Set(value.map((l) => l.trim()).filter(Boolean))];
 }
 
+/** Free text until the first member exists; from then on a new assignee must be an active member. */
 function checkAssignee(value: unknown): string | null {
   if (value !== null && typeof value !== "string") throw new AppError("assignee must be a string or null");
-  return value?.trim() || null;
+  const name = value?.trim();
+  if (!name) return null;
+  const active = activeMemberNames();
+  if (!active.length) return name;
+  const member = active.find((m) => m.toLowerCase() === name.toLowerCase());
+  if (!member) throw new AppError(`Unknown assignee "${name}". Members: ${active.join(", ")}`);
+  return member;
 }
 
 /** "Q3 Roadmap: Café!" → "q3-roadmap-cafe"; "" when nothing Latin is left (e.g. an Arabic title). */
@@ -310,6 +337,110 @@ function updateComment(owner: CommentOwner, ownerId: number, commentId: unknown,
 function deleteComment(owner: CommentOwner, ownerId: number, commentId: unknown, author: unknown) {
   const id = ownComment(owner, ownerId, commentId, author);
   db.query(`DELETE FROM ${COMMENTS[owner].table} WHERE id = ?`).run(id);
+}
+
+// --- Members ---
+
+interface MemberRow {
+  id: number;
+  name: string;
+  kind: MemberKind;
+  role: MemberRole;
+  token_hash: string | null;
+  created_at: string;
+  revoked_at: string | null;
+}
+
+/** An active member as auth sees it: the id and token hash sign their session cookie. */
+export interface Credential {
+  id: number;
+  tokenHash: string;
+  member: Member;
+}
+
+const toMember = (row: MemberRow): Member => ({
+  name: row.name,
+  kind: row.kind,
+  role: row.role,
+  createdAt: row.created_at,
+  revokedAt: row.revoked_at,
+});
+
+const toCredential = (row: MemberRow | null): Credential | null =>
+  row?.token_hash ? { id: row.id, tokenHash: row.token_hash, member: toMember(row) } : null;
+
+/** Tokens are 256 random bits. Only their SHA-256 is stored, so the database holds nothing that signs in. */
+export const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
+
+// Reserved: "anonymous" is who token-less REST writes are credited to; "me" will mean the caller.
+const RESERVED_NAMES = ["anonymous", "me"];
+
+function checkMemberName(value: unknown): string {
+  const name = requireText(value, "name");
+  if (name.length > 40 || /[\r\n]/.test(name)) throw new AppError("name must be one line of at most 40 characters");
+  if (RESERVED_NAMES.includes(name.toLowerCase())) throw new AppError(`"${name}" is reserved`);
+  return name;
+}
+
+function memberRow(name: unknown): MemberRow {
+  const row =
+    typeof name === "string" ? db.query<MemberRow, [string]>("SELECT * FROM members WHERE name = ?").get(name.trim()) : null;
+  if (!row) throw new AppError(`Member ${name} not found`, 404);
+  return row;
+}
+
+function activeMemberNames(): string[] {
+  return db
+    .query<{ name: string }, []>("SELECT name FROM members WHERE revoked_at IS NULL ORDER BY name COLLATE NOCASE")
+    .all()
+    .map((r) => r.name);
+}
+
+export function listMembers(): Member[] {
+  return db.query<MemberRow, []>("SELECT * FROM members ORDER BY name COLLATE NOCASE").all().map(toMember);
+}
+
+export function memberByToken(token: string): Credential | null {
+  return toCredential(db.query<MemberRow, [string]>("SELECT * FROM members WHERE token_hash = ?").get(hashToken(token)));
+}
+
+export function memberById(id: number): Credential | null {
+  return toCredential(db.query<MemberRow, [number]>("SELECT * FROM members WHERE id = ?").get(id));
+}
+
+/** Sets a fresh token (which also reinstates a revoked member) and returns it; it's never readable again. */
+function issueToken(row: MemberRow): MemberToken {
+  const token = randomBytes(32).toString("hex");
+  db.query("UPDATE members SET token_hash = ?, revoked_at = NULL WHERE id = ?").run(hashToken(token), row.id);
+  changed("member", row.name);
+  return { member: toMember(memberRow(row.name)), token };
+}
+
+export function createMember(input: MemberInput): MemberToken {
+  const name = checkMemberName(input.name);
+  if (db.query("SELECT 1 FROM members WHERE name = ?").get(name)) throw new AppError(`Member "${name}" already exists`, 409);
+  const kind = checkOneOf(input.kind, MEMBER_KINDS, "kind");
+  const role = input.role === undefined ? "member" : checkOneOf(input.role, MEMBER_ROLES, "role");
+  db.query("INSERT INTO members (name, kind, role, created_at) VALUES (?, ?, ?, ?)").run(name, kind, role, now());
+  return issueToken(memberRow(name));
+}
+
+export function updateMember(name: string, patch: { role?: unknown }): Member {
+  const row = memberRow(name);
+  if (patch.role !== undefined) {
+    db.query("UPDATE members SET role = ? WHERE id = ?").run(checkOneOf(patch.role, MEMBER_ROLES, "role"), row.id);
+  }
+  changed("member", row.name);
+  return toMember(memberRow(row.name));
+}
+
+export const rotateMemberToken = (name: string): MemberToken => issueToken(memberRow(name));
+
+export function revokeMember(name: string): Member {
+  const row = memberRow(name);
+  db.query("UPDATE members SET token_hash = NULL, revoked_at = COALESCE(revoked_at, ?) WHERE id = ?").run(now(), row.id);
+  changed("member", row.name);
+  return toMember(memberRow(row.name));
 }
 
 // --- Workspaces ---

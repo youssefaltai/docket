@@ -177,11 +177,43 @@ export interface IssueFilter {
   q?: string; // matches identifier, title, description
 }
 
+// A person or agent with their own token. Humans and agents alike write under their name.
+export const MEMBER_KINDS = ["human", "agent"] as const;
+export type MemberKind = (typeof MEMBER_KINDS)[number];
+export const MEMBER_ROLES = ["admin", "member"] as const;
+export type MemberRole = (typeof MEMBER_ROLES)[number];
+
+export interface Member {
+  name: string;
+  kind: MemberKind;
+  role: MemberRole;
+  createdAt: string;
+  revokedAt: string | null; // revoked members can't sign in; their name stays reserved
+}
+
+export interface MemberInput {
+  name: string;
+  kind: MemberKind;
+  role?: MemberRole; // default "member"
+}
+
+/** A member plus their new token, shown once (on create and rotate). */
+export interface MemberToken {
+  member: Member;
+  token: string;
+}
+
+/** GET /api/me. `member` is null for the shared DOCKET_TOKEN, or no token in open mode ("root", an admin). */
+export interface Me {
+  member: Member | null;
+  admin: boolean;
+}
+
 // Pushed over the WebSocket at /ws after every mutation.
 export interface ServerEvent {
   type: "changed";
-  entity: "workspace" | "project" | "issue" | "document";
-  id: string; // workspace key, project key, issue identifier or document slug
+  entity: "workspace" | "project" | "issue" | "document" | "member";
+  id: string; // workspace key, project key, issue identifier, document slug or member name
 }
 
 export interface ApiError {

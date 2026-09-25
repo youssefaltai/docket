@@ -23,7 +23,7 @@ One container. One SQLite file. No accounts, no SaaS.
 
 Agents are good at doing work and bad at keeping track of it. Docket gives them a place to do that: they pick up issues, post progress, write the spec and move things to review, while you watch it happen in the browser.
 
-- **Built for agents and humans together.** 20 MCP tools for issues, comments and docs. What an agent does shows up in your UI right away over WebSocket.
+- **Built for agents and humans together.** 21 MCP tools for issues, comments and docs. What an agent does shows up in your UI right away over WebSocket.
 - **Linear-style, but tiny.** List and board views, priorities, labels, sub-issues, blockers, keyboard shortcuts (`C`, `/`, `⌘↵`).
 - **Docs next to your issues.** Markdown docs with version history. Write `API-1` and it links to the issue, with its status shown inline.
 - **Yours.** Self-hosted, a single SQLite file, five runtime dependencies. Back it up live with `./backup.sh`.
@@ -85,7 +85,7 @@ Schema changes apply by themselves on startup and never drop data. Keep the back
 <details>
 <summary><b>Access token</b></summary>
 
-Docket has one shared access token, off by default.
+Docket has one shared access token, off by default, and optional tokens per person or agent.
 
 - **Private network only** (VPN, LAN): leave `DOCKET_TOKEN` unset. Anyone who can reach it can use it.
 - **Anywhere else**: set `DOCKET_TOKEN` to a long random secret (e.g. `openssl rand -hex 32`), in the environment or in a `.env` file next to `docker-compose.yml`. Then `/api`, `/mcp` and `/ws` need `Authorization: Bearer <token>`. The web UI asks for the token once and keeps it in an HttpOnly cookie. Always serve it over HTTPS.
@@ -96,6 +96,15 @@ Connect Claude Code with the token:
 claude mcp add --transport http --scope user docket https://docket.example.com/mcp \
   --header "Authorization: Bearer $DOCKET_TOKEN"
 ```
+
+**One token per person or agent.** As an admin (the `DOCKET_TOKEN` holder), create members over the API. Each gets a token, shown once:
+
+```sh
+curl -X POST https://docket.example.com/api/members -H "Authorization: Bearer $DOCKET_TOKEN" \
+  -H "Content-Type: application/json" -d '{"name":"claude-frontend","kind":"agent"}'
+```
+
+Connect each agent with its own token and it writes under its own name, so two agents are no longer both "claude". People sign in to the web UI with theirs. Once members exist, assignees must be member names. Without `DOCKET_TOKEN`, member tokens only label who is writing: anyone on the network can still do anything.
 
 </details>
 
@@ -118,7 +127,7 @@ You can also use an optional config file at `$XDG_CONFIG_HOME/docket/config` or 
 <details>
 <summary><b>MCP tools</b></summary>
 
-`list_workspaces`, `create_workspace`, `update_workspace`, `list_projects`, `create_project`, `update_project`, `list_issues`, `list_labels`, `get_issue`, `create_issue`, `update_issue`, `comment_issue`, `list_documents`, `get_document`, `create_document`, `update_document`, `comment_document`, `delete_document`, `update_comment`, `delete_comment`.
+`list_workspaces`, `create_workspace`, `update_workspace`, `list_projects`, `create_project`, `update_project`, `list_issues`, `list_labels`, `list_members`, `get_issue`, `create_issue`, `update_issue`, `comment_issue`, `list_documents`, `get_document`, `create_document`, `update_document`, `comment_document`, `delete_document`, `update_comment`, `delete_comment`.
 
 The full REST API and data model are in [SPEC.md](SPEC.md).
 
