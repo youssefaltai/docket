@@ -27,10 +27,30 @@ export const PRIORITY_LABELS: Record<Priority, string> = {
   4: "Low",
 };
 
+/** Who did or owns something: a person or an agent. */
+export const USER_KINDS = ["person", "agent"] as const;
+export type UserKind = (typeof USER_KINDS)[number];
+
+export interface UserRef {
+  username: string; // lowercase a-z 0-9 . _ -, 2–32 chars, unique across people and agents
+  name: string;
+  kind: UserKind;
+}
+
+export interface User extends UserRef {
+  email: string | null; // people only
+  createdAt: string;
+}
+
+// Workspace roles. Agents are members with role "agent": they work in teams but manage nothing.
+export const ROLES = ["admin", "member", "agent"] as const;
+export type Role = (typeof ROLES)[number];
+
 export interface Workspace {
   key: string; // URL-safe lowercase slug, e.g. "acme"
   name: string;
-  projectCount: number;
+  role: Role; // yours
+  teamCount: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -42,8 +62,65 @@ export interface WorkspaceInput {
 
 export type WorkspacePatch = Partial<Omit<WorkspaceInput, "key">>; // the key never changes
 
-export interface Project {
-  key: string; // 2–5 uppercase letters, e.g. "BRD"; globally unique across workspaces
+export interface WorkspaceMember {
+  user: UserRef;
+  email: string | null;
+  role: Role;
+  joinedAt: string;
+  suspendedAt: string | null; // suspended members can't reach the workspace; their history stays theirs
+}
+
+/** GET /api/me. */
+export interface Me {
+  user: User;
+  workspaces: { key: string; name: string; role: Role }[];
+}
+
+export interface Session {
+  id: number;
+  createdAt: string;
+  lastSeenAt: string;
+  userAgent: string;
+  ip: string;
+  current: boolean;
+}
+
+export const API_KEY_SCOPES = ["read", "write"] as const;
+export type ApiKeyScope = (typeof API_KEY_SCOPES)[number];
+
+export interface ApiKey {
+  id: number;
+  name: string;
+  scope: ApiKeyScope;
+  createdAt: string;
+  lastUsedAt: string | null;
+}
+
+/** A one-time sign-in link or invite: `url` is `<origin>/login#<code>`; both expire after 15 minutes. */
+export interface CodeLink {
+  code: string; // XXXXX-XXXXX
+  url: string;
+  expiresAt: string;
+}
+
+/** What a code is for, without using it up (POST /api/auth/peek). */
+export interface CodeInfo {
+  kind: "invite" | "sign-in";
+  email: string | null;
+  workspace: string | null; // invite: the workspace's name
+  needsProfile: boolean; // an invite for an email with no account: redeem needs name and username
+}
+
+export interface SetupInput {
+  code: string;
+  email: string;
+  name: string;
+  username: string;
+  workspace: WorkspaceInput;
+}
+
+export interface Team {
+  key: string; // 2–5 uppercase letters, e.g. "BRD"; globally unique; prefixes its issue identifiers
   workspace: string; // workspace key
   name: string;
   description: string;
@@ -53,15 +130,25 @@ export interface Project {
   updatedAt: string;
 }
 
+export interface TeamInput {
+  key: string;
+  workspace: string;
+  name: string;
+  description?: string;
+}
+
+export type TeamPatch = Partial<Omit<TeamInput, "key">>; // the key never changes; workspace moves it (you must be in both)
+
 export interface IssueSummary {
   id: string; // identifier, e.g. "BRD-12"
-  project: string; // project key
+  team: string; // team key
   number: number;
   title: string;
   status: Status;
   priority: Priority;
   labels: string[];
-  assignee: string | null;
+  assignee: UserRef | null; // a person: who owns it
+  delegate: UserRef | null; // an agent working on it for the assignee (Linear's delegate)
   parent: string | null; // identifier
   blockedBy: string[]; // identifiers
   createdAt: string;
@@ -71,7 +158,7 @@ export interface IssueSummary {
 
 export interface Comment {
   id: number;
-  author: string;
+  author: UserRef;
   body: string; // markdown
   createdAt: string;
   editedAt: string | null; // set when the body was last edited
@@ -84,6 +171,7 @@ export interface LabelCount {
 
 export interface Issue extends IssueSummary {
   description: string; // markdown
+  creator: UserRef;
   children: IssueSummary[];
   blocks: string[]; // identifiers this issue blocks
   comments: Comment[];
@@ -92,12 +180,12 @@ export interface Issue extends IssueSummary {
 
 export interface DocumentSummary {
   slug: string; // globally unique, stable, URL-safe: "architecture", "spec-customer"
-  project: string; // project key
+  team: string; // team key
   title: string;
-  position: number; // manual order within the project, ascending
+  position: number; // manual order within the team, ascending
   createdAt: string;
   updatedAt: string;
-  updatedBy: string;
+  updatedBy: UserRef;
 }
 
 export interface Document extends DocumentSummary {
@@ -109,7 +197,7 @@ export interface Document extends DocumentSummary {
 
 export interface DocumentVersionSummary {
   id: number;
-  author: string;
+  author: UserRef;
   title: string;
   createdAt: string;
 }
@@ -120,109 +208,62 @@ export interface DocumentVersion extends DocumentVersionSummary {
 
 export interface DocumentFilter {
   workspace?: string;
-  project?: string;
+  team?: string;
   q?: string; // matches title and content
 }
 
 export interface DocumentInput {
-  project: string;
+  team: string;
   title: string;
   content?: string;
   slug?: string; // default: slugified title (a-z, 0-9, "-"), deduped with -2, -3…; "doc-<n>" if empty
-  position?: number; // default: last in the project
-  author?: string; // REST default "anonymous" (the web UI sends the viewer's name), MCP default "claude"
+  position?: number; // default: last in the team
 }
 
 export interface DocumentPatch {
   title?: string;
   content?: string; // full replacement; mutually exclusive with edits
   edits?: { oldText: string; newText: string }[]; // exact find/replace, applied in order; each oldText must match once
-  project?: string; // docs can move between projects; the slug stays
+  team?: string; // docs can move between teams of the same workspace; the slug stays
   position?: number;
-  author?: string;
   checkpoint?: boolean; // always record a new version instead of merging into the latest (e.g. a restore)
   baseUpdatedAt?: string; // the updatedAt this edit started from; if the doc has changed since, 409 and nothing is applied
 }
 
-export interface ProjectInput {
-  key: string;
-  workspace: string;
-  name: string;
-  description?: string;
-}
-
-export type ProjectPatch = Partial<Omit<ProjectInput, "key">>; // the key never changes; workspace moves it
-
 export interface IssueInput {
-  project: string;
+  team: string;
   title: string;
   description?: string;
   status?: Status; // default "todo"
   priority?: Priority; // default 0
   labels?: string[];
-  assignee?: string | null;
+  assignee?: string | null; // a person's username, or "me"
+  delegate?: string | null; // an agent's username, or "me" (as an agent)
   parent?: string | null;
   blockedBy?: string[];
 }
 
-export type IssuePatch = Partial<Omit<IssueInput, "project">> & {
+export type IssuePatch = Partial<Omit<IssueInput, "team">> & {
   baseUpdatedAt?: string; // the updatedAt you read; if the issue changed since, the patch is refused (409)
 };
 
 export interface IssueFilter {
   workspace?: string;
-  project?: string;
+  team?: string;
   status?: Status[];
   label?: string;
-  assignee?: string;
+  assignee?: string; // username or "me"
+  delegate?: string; // username or "me"
   parent?: string;
   q?: string; // matches identifier, title, description
 }
 
-// A person or agent with their own token. Humans and agents alike write under their name.
-export const MEMBER_KINDS = ["human", "agent"] as const;
-export type MemberKind = (typeof MEMBER_KINDS)[number];
-export const MEMBER_ROLES = ["admin", "member"] as const;
-export type MemberRole = (typeof MEMBER_ROLES)[number];
-
-export interface Member {
-  name: string;
-  kind: MemberKind;
-  role: MemberRole;
-  createdAt: string;
-  revokedAt: string | null; // revoked members can't sign in; their name stays reserved
-}
-
-export interface MemberInput {
-  name: string;
-  kind: MemberKind;
-  role?: MemberRole; // default "member"
-}
-
-/**
- * How names compare wherever identity matters (member uniqueness, comment ownership, assignees):
- * Unicode-aware, so "Émile" and "émile" are the same person.
- */
-export const nameKey = (name: string) => name.normalize("NFKC").toLowerCase();
-
-/** A member plus their new token, shown once (on create and rotate). */
-export interface MemberToken {
-  member: Member;
-  token: string;
-}
-
-/** GET /api/me. `member` is null for the shared DOCKET_TOKEN, or no token in open mode ("root", an admin). */
-export interface Me {
-  member: Member | null;
-  admin: boolean;
-  open: boolean; // no DOCKET_TOKEN: anyone is root, and signing out means nothing
-}
-
-// Pushed over the WebSocket at /ws after every mutation.
+// Pushed over the WebSocket at /ws after every mutation, to the workspace's members.
 export interface ServerEvent {
   type: "changed";
-  entity: "workspace" | "project" | "issue" | "document" | "member";
-  id: string; // workspace key, project key, issue identifier, document slug or member name
+  entity: "workspace" | "member" | "team" | "issue" | "document";
+  workspace: string;
+  id: string; // workspace key, username, team key, issue identifier or document slug
 }
 
 export interface ApiError {

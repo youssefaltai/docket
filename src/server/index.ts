@@ -2,19 +2,22 @@ import "./config.ts";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import index from "../web/index.html";
+import { formatCode, needsSetup, onRevoke, setupCode } from "./access.ts";
 import { apiRoutes } from "./api.ts";
-import { nameKey } from "../shared/types.ts";
-import { guard, login, logout, viewerOf } from "./auth.ts";
-import { onChange, onSignOut } from "./db.ts";
+import { actorOf, authRoutes, guard } from "./auth.ts";
+import { onChange } from "./db.ts";
 import { handleMcp } from "./mcp.ts";
 
-const TOPIC = "changes";
-
-/** Whose login each socket rides on, so revoking or rotating a member's token closes theirs. */
+/** Whose credentials each socket rides on, so signing out, revoking or suspending closes it. */
 interface SocketData {
-  member: string | null;
+  userId: number;
+  sessionId: number | null;
+  keyId: number | null;
+  workspaces: string[];
 }
-const sockets = new Map<string, Set<Bun.ServerWebSocket<SocketData>>>();
+const sockets = new Map<number, Set<Bun.ServerWebSocket<SocketData>>>();
+const topic = (workspace: string) => `workspace:${workspace}`;
+
 const publicDir = join(import.meta.dir, "..", "..", "public");
 const iconsDir = join(publicDir, "icons");
 
@@ -23,7 +26,11 @@ const server = Bun.serve({
   development: process.env.NODE_ENV !== "production",
   routes: {
     "/": index,
+    "/login": index,
+    "/setup": index,
+    "/settings/*": index,
     "/p/*": index,
+    "/t/*": index,
     "/issue/*": index,
     "/docs": index,
     "/doc/*": index,
@@ -47,32 +54,38 @@ const server = Bun.serve({
             }),
         ]),
     ),
-    "/api/login": { POST: login },
-    "/api/logout": { POST: logout },
+    ...authRoutes,
     ...(Object.fromEntries(Object.entries(apiRoutes).map(([path, route]) => [path, guard(route)])) as typeof apiRoutes),
-    "/mcp": guard(handleMcp),
-    "/ws": guard((req: Request, server: Bun.Server<SocketData>) =>
-      server.upgrade(req, { data: { member: viewerOf(req).member?.name ?? null } })
-        ? undefined
-        : new Response("Expected a WebSocket", { status: 400 }),
-    ),
+    "/mcp": guard(handleMcp, { bearerOnly: true, readCheck: false }),
+    "/ws": guard((req: Request, server: Bun.Server<SocketData>) => {
+      const a = actorOf(req);
+      const data = { userId: a.id, sessionId: a.sessionId, keyId: a.keyId, workspaces: [...a.workspaces.keys()] };
+      return server.upgrade(req, { data }) ? undefined : new Response("Expected a WebSocket", { status: 400 });
+    }),
   },
   websocket: {
     data: {} as SocketData,
     open(ws) {
-      ws.subscribe(TOPIC);
-      if (!ws.data.member) return;
-      const key = nameKey(ws.data.member);
-      sockets.set(key, (sockets.get(key) ?? new Set()).add(ws));
+      for (const workspace of ws.data.workspaces) ws.subscribe(topic(workspace));
+      sockets.set(ws.data.userId, (sockets.get(ws.data.userId) ?? new Set()).add(ws));
     },
     close(ws) {
-      if (ws.data.member) sockets.get(nameKey(ws.data.member))?.delete(ws);
+      sockets.get(ws.data.userId)?.delete(ws);
     },
     message() {},
   },
 });
 
-onChange((event) => server.publish(TOPIC, JSON.stringify(event)));
-onSignOut((name) => sockets.get(nameKey(name))?.forEach((ws) => ws.close(4401, "Signed out")));
+onChange((event) => server.publish(topic(event.workspace), JSON.stringify(event)));
+
+// A socket only hears its workspaces as of when it opened, so any change to a user's access closes
+// theirs (or just the one riding on a revoked session or key); clients reconnect with what's current.
+onRevoke(({ userId, sessionId, keyId }) => {
+  for (const ws of sockets.get(userId) ?? []) {
+    const hit = sessionId !== undefined ? ws.data.sessionId === sessionId : keyId !== undefined ? ws.data.keyId === keyId : true;
+    if (hit) ws.close(4401, "Signed out");
+  }
+});
 
 console.log(`Docket running at ${server.url}`);
+if (needsSetup()) console.log(`Setup code: ${formatCode(setupCode)} (open ${server.url}setup to create the first account)`);

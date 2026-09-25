@@ -1,110 +1,19 @@
-// Access. With DOCKET_TOKEN set, /api, /mcp and /ws need a token as `Authorization: Bearer <token>` or the
-// login cookie: DOCKET_TOKEN itself (root: an admin with no name) or a member's own token (see members in db).
-// With it unset, Docket is open (put it on a private network): anyone is root, and a member token only says who you are.
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-import { type Member, nameKey } from "../shared/types.ts";
-import * as db from "./db.ts";
+// Access to /api, /mcp and /ws. Everyone signs in: a session cookie (the web UI) or an API key
+// (`Authorization: Bearer dk_…`, for scripts, MCP clients and agents). The public routes here set up the
+// first account and turn one-time codes into sessions.
+import type { SetupInput } from "../shared/types.ts";
+import * as access from "./access.ts";
+import type { Actor, Client } from "./access.ts";
+import { AppError } from "./db.ts";
 
-const TOKEN = process.env.DOCKET_TOKEN || "";
-/** No DOCKET_TOKEN: anyone who can reach the server is root. */
-export const OPEN = !TOKEN;
-const COOKIE = "docket_token";
-// Cookies hold a value derived from a token, never the token itself (which also works as an MCP bearer).
-const ROOT_SESSION = createHmac("sha256", TOKEN).update("docket session").digest("hex");
-// A member's is `<id>.<HMAC>` over their token's hash, keyed by DOCKET_TOKEN so the database alone can't forge one.
-// Rotating or revoking the member's token, or changing DOCKET_TOKEN, signs them out.
-const memberSession = ({ id, tokenHash }: db.Credential) =>
-  `${id}.${createHmac("sha256", TOKEN).update(`docket member session ${tokenHash}`).digest("hex")}`;
-const digest = (s: string) => createHash("sha256").update(s).digest();
-const same = (candidate: string | undefined, secret: string) =>
-  !!candidate && timingSafeEqual(digest(candidate), digest(secret));
-
-/** Who a request acts as: a member, or root (`member: null`): DOCKET_TOKEN, or anyone in open mode. */
-export interface Viewer {
-  member: Member | null;
-}
-
-const ROOT: Viewer = { member: null };
-
-export const isAdmin = (viewer: Viewer) => !viewer.member || viewer.member.role === "admin";
-
-/** Members always write as themselves; root names itself (default `fallback`), as before members existed. */
-export const authorFor = (viewer: Viewer, requested: unknown, fallback: string): unknown =>
-  viewer.member ? viewer.member.name : requested === undefined ? fallback : requested;
-
-/** "me" as an assignee (a value or a filter) means the caller, which only a member token names. */
-export function resolveAssignee(viewer: Viewer, value: unknown): unknown {
-  if (typeof value !== "string" || nameKey(value.trim()) !== "me") return value;
-  if (!viewer.member) throw new db.AppError('"me" needs a member token');
-  return viewer.member.name;
-}
-
-/** Who a claim is for: a member always claims for themselves; root names someone (or "me" fails). */
-export const claimerFor = (viewer: Viewer, requested: unknown): unknown =>
-  viewer.member ? viewer.member.name : resolveAssignee(viewer, requested);
-
-/** Cookies ride along on same-site requests, so a cookie-authed WebSocket must come from our own origin. */
-function sameOrigin(req: Request): boolean {
-  const origin = req.headers.get("origin");
-  if (!origin) return true;
-  const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host");
-  try {
-    return new URL(origin).host === host;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Whether a token that doesn't verify is refused rather than ignored: always with DOCKET_TOKEN; in open mode
- * once any member exists, so a revoked or mistyped member token can't quietly become root. With no members,
- * open mode ignores stray credentials as it always did.
- */
-const strict = () => !!TOKEN || db.hasMembers();
-
-/**
- * The request's viewer, or null (401). `staleCookie` marks a login cookie that no longer verifies, so the
- * 401 can clear it. Member tokens are found by their SHA-256, which leaks nothing useful about a 256-bit
- * token even if the lookup isn't constant time.
- */
-function identify(req: Request): { viewer: Viewer | null; staleCookie?: boolean } {
-  const bearer = req.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1];
-  if (bearer) {
-    if (TOKEN && same(bearer, TOKEN)) return { viewer: ROOT };
-    const credential = db.memberByToken(bearer);
-    if (credential) return { viewer: { member: credential.member } };
-    if (!TOKEN && strict()) return { viewer: null };
-  }
-  const cookie = req.headers.get("cookie")?.match(new RegExp(`(?:^|;\\s*)${COOKIE}=([^;]+)`))?.[1];
-  const upgrade = req.headers.get("upgrade")?.toLowerCase() === "websocket";
-  if (cookie && (!upgrade || sameOrigin(req))) {
-    if (TOKEN && same(cookie, ROOT_SESSION)) return { viewer: ROOT };
-    const credential = db.memberById(Number(cookie.split(".")[0]));
-    if (credential && same(cookie, memberSession(credential))) return { viewer: { member: credential.member } };
-    // Open mode never sets a root cookie, so only a member-shaped one counts there.
-    if (strict() && (TOKEN || cookie.includes("."))) return { viewer: null, staleCookie: true };
-  }
-  return { viewer: TOKEN ? null : ROOT };
-}
-
-const viewers = new WeakMap<Request, Viewer>();
-
-/** The viewer `guard` resolved for this request. */
-export function viewerOf(req: Request): Viewer {
-  const viewer = viewers.get(req);
-  if (!viewer) throw new Error("viewerOf called on a request that didn't pass guard");
-  return viewer;
-}
-
-export function requireAdmin(req: Request) {
-  if (!isAdmin(viewerOf(req))) throw new db.AppError("Only admins can manage members", 403);
-}
+const COOKIE = "docket_session";
 
 /** Exact media type check: "text/plain;charset=application/json" is a CORS-simple request, so it must not pass. */
 export const isJson = (req: Request) =>
   req.headers.get("content-type")?.split(";")[0]!.trim().toLowerCase() === "application/json";
 
-const unauthorized = (headers?: HeadersInit) => Response.json({ error: "Unauthorized" }, { status: 401, headers });
+const json = (data: unknown, status = 200, headers?: HeadersInit) => Response.json(data, { status, headers });
+const unauthorized = (headers?: HeadersInit) => json({ error: "Unauthorized" }, 401, headers);
 
 // DNS rebinding defence: a browser tricked into resolving evil.example to us still sends Host: evil.example.
 const HOSTS = new Set([
@@ -113,74 +22,134 @@ const HOSTS = new Set([
   "[::1]",
   ...(process.env.DOCKET_HOSTS ?? "").split(",").map((h) => h.trim().toLowerCase()).filter(Boolean),
 ]);
+const hostAllowed = (req: Request) => HOSTS.has((req.headers.get("host") ?? "").toLowerCase().replace(/:\d+$/, ""));
+const forbiddenHost = () => json({ error: "Host not allowed (see DOCKET_HOSTS)" }, 403);
 
-const hostAllowed = (req: Request) =>
-  HOSTS.has((req.headers.get("host") ?? "").toLowerCase().replace(/:\d+$/, ""));
+/** Cookies ride along on same-site requests, so a cookie-authed WebSocket must come from our own origin. */
+function sameOrigin(req: Request): boolean {
+  const origin = req.headers.get("origin");
+  const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host");
+  try {
+    return !!origin && new URL(origin).host === host;
+  } catch {
+    return false;
+  }
+}
 
-const forbiddenHost = () => Response.json({ error: "Host not allowed (see DOCKET_HOSTS)" }, { status: 403 });
+const https = (req: Request) => new URL(req.url).protocol === "https:" || req.headers.get("x-forwarded-proto") === "https";
+
+function cookieHeader(req: Request, value: string, maxAge: number): string {
+  return `${COOKIE}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${https(req) ? "; Secure" : ""}`;
+}
+const signedIn = (req: Request, token: string) => ({ "Set-Cookie": cookieHeader(req, token, 30 * 24 * 60 * 60) });
+const signedOut = (req: Request) => ({ "Set-Cookie": cookieHeader(req, "", 0) });
+
+const bearerOf = (req: Request) => req.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1];
+const cookieOf = (req: Request) => req.headers.get("cookie")?.match(new RegExp(`(?:^|;\\s*)${COOKIE}=([^;]+)`))?.[1];
+
+/** The request's actor; `stale` marks a cookie that no longer signs in, so the 401 can clear it. */
+function identify(req: Request, bearerOnly: boolean): { actor: Actor | null; stale?: boolean } {
+  const bearer = bearerOf(req);
+  if (bearer) return { actor: access.keyActor(bearer) };
+  const cookie = cookieOf(req);
+  if (bearerOnly || !cookie) return { actor: null };
+  const upgrade = req.headers.get("upgrade")?.toLowerCase() === "websocket";
+  if (upgrade && !sameOrigin(req)) return { actor: null };
+  const actor = access.sessionActor(cookie);
+  return actor ? { actor } : { actor: null, stale: true };
+}
+
+const actors = new WeakMap<Request, Actor>();
+
+/** The actor `guard` resolved for this request. */
+export function actorOf(req: Request): Actor {
+  const actor = actors.get(req);
+  if (!actor) throw new Error("actorOf called on a request that didn't pass guard");
+  return actor;
+}
 
 /**
- * Wraps a route so it answers 403 for an unknown Host and 401 without a valid token, and records the
- * request's viewer for `viewerOf`. Works on handlers and method maps.
+ * Wraps a route: 403 for an unknown Host, 401 without valid credentials, and 403 for a write with a
+ * read-only key (for REST, anything but GET; /mcp passes `readCheck: false` and checks per tool).
+ * Works on handlers and method maps.
  */
-export function guard<T>(route: T): T {
+export function guard<T>(route: T, { bearerOnly = false, readCheck = true } = {}): T {
   const wrap = (fn: (req: Request, ...rest: unknown[]) => unknown) => (req: Request, ...rest: unknown[]) => {
     if (!hostAllowed(req)) return forbiddenHost();
-    const { viewer, staleCookie } = identify(req);
-    if (!viewer) return staleCookie ? unauthorized({ "Set-Cookie": cookieHeader(req, "", 0) }) : unauthorized();
-    viewers.set(req, viewer);
+    const { actor, stale } = identify(req, bearerOnly);
+    if (!actor) return unauthorized(stale ? signedOut(req) : undefined);
+    if (readCheck && actor.scope === "read" && req.method !== "GET") return json({ error: "This API key is read-only" }, 403);
+    actors.set(req, actor);
     return fn(req, ...rest);
   };
   if (typeof route === "function") return wrap(route as never) as T;
   return Object.fromEntries(Object.entries(route as object).map(([m, fn]) => [m, wrap(fn)])) as T;
 }
 
-// Failed logins per client IP in a fixed window; past the limit, login answers 429 until the window ends.
-const LOGIN_WINDOW_MS = 60_000;
-const LOGIN_MAX_FAILURES = 10;
+// --- Public routes: setup, codes, sign-out ---
+
+// Failed setup and code attempts per client IP in a fixed window; past the limit, 429 until it ends.
+const WINDOW_MS = 60_000;
+const MAX_FAILURES = 10;
 const failures = new Map<string, { count: number; until: number }>();
+
+function limited(ip: string) {
+  const f = failures.get(ip);
+  return !!f && f.until > Date.now() && f.count >= MAX_FAILURES;
+}
 
 function recordFailure(ip: string) {
   const time = Date.now();
   for (const [key, f] of failures) if (f.until <= time) failures.delete(key);
   const f = failures.get(ip);
   if (f) f.count++;
-  else failures.set(ip, { count: 1, until: time + LOGIN_WINDOW_MS });
+  else failures.set(ip, { count: 1, until: time + WINDOW_MS });
 }
 
-/**
- * POST /api/login `{ token }` (DOCKET_TOKEN or a member's token): sets an HttpOnly cookie for the web UI.
- * In open mode with no members, any other token answers ok without a cookie: there's nothing to sign in to.
- */
-export async function login(req: Request, server: Pick<Bun.Server<unknown>, "requestIP">): Promise<Response> {
-  if (!hostAllowed(req)) return forbiddenHost();
-  if (!isJson(req)) return Response.json({ error: "Expected Content-Type: application/json" }, { status: 415 });
-  const ip = server.requestIP(req)?.address ?? "";
-  const f = failures.get(ip);
-  if (f && f.until > Date.now() && f.count >= LOGIN_MAX_FAILURES) {
-    return Response.json({ error: "Too many attempts, try again in a minute" }, { status: 429 });
-  }
-  const { token } = ((await req.json().catch(() => null)) ?? {}) as { token?: unknown };
-  const candidate = typeof token === "string" && token ? token : undefined;
-  const root = !!TOKEN && same(candidate, TOKEN);
-  const credential = !root && candidate ? db.memberByToken(candidate) : null;
-  const value = root ? ROOT_SESSION : credential ? memberSession(credential) : null;
-  if (!value) {
-    if (!strict()) return Response.json({ ok: true });
-    recordFailure(ip);
-    return unauthorized();
-  }
-  return Response.json({ ok: true }, { headers: { "Set-Cookie": cookieHeader(req, value, 31536000) } });
-}
+type Server = Pick<Bun.Server<unknown>, "requestIP">;
 
-/** POST /api/logout: clears the login cookie, which the page can't since it's HttpOnly. */
-export function logout(req: Request): Response {
-  if (!hostAllowed(req)) return forbiddenHost();
-  if (!isJson(req)) return Response.json({ error: "Expected Content-Type: application/json" }, { status: 415 });
-  return Response.json({ ok: true }, { headers: { "Set-Cookie": cookieHeader(req, "", 0) } });
-}
+/** A public JSON POST: Host and JSON checks, the per-IP limit, and AppErrors as JSON (401s and 403s count). */
+const open =
+  (fn: (body: Record<string, unknown>, req: Request, client: Client) => Response) =>
+  async (req: Request, server: Server): Promise<Response> => {
+    if (!hostAllowed(req)) return forbiddenHost();
+    if (!isJson(req)) return json({ error: "Expected Content-Type: application/json" }, 415);
+    const ip = server.requestIP(req)?.address ?? "";
+    if (limited(ip)) return json({ error: "Too many attempts, try again in a minute" }, 429);
+    const body = await req.json().catch(() => null);
+    if (typeof body !== "object" || body === null || Array.isArray(body)) return json({ error: "Expected a JSON object" }, 400);
+    try {
+      return fn(body, req, { ip, userAgent: req.headers.get("user-agent") ?? "" });
+    } catch (err) {
+      if (!(err instanceof AppError)) throw err;
+      if (err.status === 401 || err.status === 403) recordFailure(ip);
+      return json({ error: err.message }, err.status);
+    }
+  };
 
-function cookieHeader(req: Request, value: string, maxAge: number): string {
-  const https = new URL(req.url).protocol === "https:" || req.headers.get("x-forwarded-proto") === "https";
-  return `${COOKIE}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${https ? "; Secure" : ""}`;
-}
+export const authRoutes = {
+  "/api/setup": {
+    GET: (req: Request) => (hostAllowed(req) ? json({ needed: access.needsSetup() }) : forbiddenHost()),
+    POST: open((body, req, client) => {
+      const { user, workspace, token } = access.setup(body as unknown as SetupInput, client);
+      return json({ user, workspace }, 201, signedIn(req, token));
+    }),
+  },
+  "/api/auth/peek": { POST: open((body) => json(access.peekCode(body.code))) },
+  "/api/auth/redeem": {
+    POST: open((body, req, client) => {
+      const { user, token } = access.redeemCode(body.code, body, client);
+      return json({ user }, 200, signedIn(req, token));
+    }),
+  },
+  // No credentials needed: it only ends the session in this cookie and clears it.
+  "/api/logout": {
+    POST: (req: Request) => {
+      if (!hostAllowed(req)) return forbiddenHost();
+      if (!isJson(req)) return json({ error: "Expected Content-Type: application/json" }, 415);
+      const cookie = cookieOf(req);
+      if (cookie) access.endSession(cookie);
+      return json({ ok: true }, 200, signedOut(req));
+    },
+  },
+};
