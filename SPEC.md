@@ -91,7 +91,8 @@ Light theme only, neutral and modern, in the spirit of Linear, Vercel, Resend. G
 - **Toolbar**: search (`/` to focus), label and assignee filters, List/Board toggle.
 - **Issue page** (`/issue/BRD-12`): inline-editable title; markdown description with edit toggle; properties panel (status, priority, assignee, labels, project, parent, blocked by) editable via small popovers; sub-issues; comments thread with composer (`⌘↵` to send).
 - **New issue modal**: project, title, description, status, priority, labels, assignee, parent. `⌘↵` creates, `Esc` closes.
-- **Workspaces**: the current workspace is remembered in localStorage (`docket.workspace`), falling back to the first. `/` and `/docs` show only its content; the new issue/doc project pickers list only its projects, and assignee/label pickers and filters only its people and labels; a new project is created in it. Opening `/p/:key`, `/issue/:id` or `/doc/:slug` of another workspace's project switches to that workspace. "New workspace" is a name-only modal. Project keys stay globally unique, so identifiers and routes don't change.
+- **Workspaces**: the current workspace is remembered in localStorage (`docket.workspace`), falling back to the first. `/` and `/docs` show only its content; the new issue/doc project pickers list only its projects, and assignee/label pickers and filters only its people and labels; a new project is created in it. Opening `/p/:key`, `/issue/:id` or `/doc/:slug` of another workspace's project switches to that workspace. "New workspace" is a name-only modal. Project keys stay globally unique, so identifiers and routes don't change. Label pickers and filters load `GET /api/labels?workspace=<current>`.
+- **Project settings**: a button next to the project title opens a dialog to edit the description, move the project to another workspace, and rename the workspace it's in (`PATCH /api/projects/:key`, `PATCH /api/workspaces/:key`). After a move the app follows the project to its new workspace.
 - Client routing with `history.pushState`: `/`, `/p/:key`, `/issue/:id`, `/docs`, `/p/:key/docs`, `/doc/:slug`. The server returns index.html for these paths.
 - Works on a phone: the sidebar collapses below 768px.
 
@@ -165,6 +166,8 @@ Migration 4 (additive): adds `projects.next_number INTEGER NOT NULL DEFAULT 1`, 
 ## Comment edits
 
 Migration 5 (additive): adds nullable `edited_at` to `comments` and `document_comments`. `Comment` includes `editedAt: string | null`.
+
+UI (issues and docs alike): comments whose author matches this browser's name (case-insensitive) show Edit and Delete on hover (always on touch screens). Edit swaps the body for the composer (`⌘↵` saves, `Esc` cancels); Delete asks first. An edited comment shows "edited" next to its time. A 403 appears as a toast.
 
 ## Deploy
 
