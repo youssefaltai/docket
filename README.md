@@ -45,3 +45,7 @@ claude mcp add --transport http --scope user docket https://docket.example.com/m
 ```
 
 Tools: `list_workspaces`, `create_workspace`, `list_projects`, `create_project`, `list_issues`, `get_issue`, `create_issue`, `update_issue`, `comment_issue`, `list_documents`, `get_document`, `create_document`, `update_document`, `comment_document`.
+
+## License
+
+[MIT](LICENSE)
