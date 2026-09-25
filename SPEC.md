@@ -32,6 +32,8 @@ Identifier = `${project_key}-${number}`, parsed case-insensitively. Issues can't
 
 ## REST (JSON; errors are `{ "error": string }` with 4xx)
 
+Request bodies (including `POST /api/login`) must be `Content-Type: application/json`, compared exactly on the media type before any `;` (so `text/plain;charset=application/json` is refused), else 415. Browsers can't send that cross-origin without a CORS preflight, which Docket never allows: this is the CSRF defence.
+
 | Method | Path | Body / query | Returns |
 |---|---|---|---|
 | GET | /api/workspaces | | `Workspace[]` (by name) |

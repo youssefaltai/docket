@@ -38,6 +38,10 @@ export function authorized(req: Request): boolean {
   return matches(decode(cookie)) && (!upgrade || sameOrigin(req));
 }
 
+/** Exact media type check: "text/plain;charset=application/json" is a CORS-simple request, so it must not pass. */
+export const isJson = (req: Request) =>
+  req.headers.get("content-type")?.split(";")[0]!.trim().toLowerCase() === "application/json";
+
 export const unauthorized = () => Response.json({ error: "Unauthorized" }, { status: 401 });
 
 /** Wraps a route so it answers 401 without a valid token. Works on handlers and method maps. */
@@ -53,6 +57,7 @@ export function guard<T>(route: T): T {
 
 /** POST /api/login `{ token }`: sets an HttpOnly cookie for the web UI. */
 export async function login(req: Request): Promise<Response> {
+  if (!isJson(req)) return Response.json({ error: "Expected Content-Type: application/json" }, { status: 415 });
   const { token } = ((await req.json().catch(() => null)) ?? {}) as { token?: unknown };
   if (!TOKEN) return Response.json({ ok: true });
   if (!matches(typeof token === "string" ? token : undefined)) return unauthorized();
