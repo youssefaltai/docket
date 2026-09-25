@@ -74,7 +74,19 @@ function App({ name, onChangeName }: { name: string; onChangeName: () => void })
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let stale = true;
-    const loadIndex = () => api.issues().then(setIssueIndex, () => {});
+    let warned = false; // surface a failure once, not on every retry
+    const loadIndex = () =>
+      api.issues().then(
+        (list) => {
+          warned = false;
+          setIssueIndex(list);
+        },
+        (e) => {
+          if (warned) return;
+          warned = true;
+          errorToast(e);
+        },
+      );
     loadIndex();
     const stop = subscribe((event) => {
       if (event?.entity !== "document") stale = true;
