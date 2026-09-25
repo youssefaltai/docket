@@ -486,6 +486,10 @@ function issueColumns(patch: IssuePatch): Record<string, SQLQueryBindings> {
 
 const isClosed = (status: Status) => CLOSED_STATUSES.includes(status);
 
+// Substring search: the query's own %, _ and \ match literally.
+const LIKE = "LIKE ? ESCAPE '\\'";
+const likePattern = (q: string) => `%${q.trim().replace(/[\\%_]/g, "\\$&")}%`;
+
 export function listIssues(filter: IssueFilter): IssueSummary[] {
   const where: string[] = [];
   const params: SQLQueryBindings[] = [];
@@ -514,8 +518,8 @@ export function listIssues(filter: IssueFilter): IssueSummary[] {
     params.push(issueId(filter.parent));
   }
   if (filter.q) {
-    where.push(`(i.title LIKE ? OR i.description LIKE ? OR ${ident("i")} LIKE ?)`);
-    const like = `%${filter.q.trim()}%`;
+    where.push(`(i.title ${LIKE} OR i.description ${LIKE} OR ${ident("i")} ${LIKE})`);
+    const like = likePattern(filter.q);
     params.push(like, like, like);
   }
   const sql = `${ISSUE_SELECT} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ${ISSUE_ORDER}`;
@@ -731,7 +735,9 @@ function applyEdits(content: string, edits: unknown): string {
     if (typeof oldText !== "string" || !oldText || typeof newText !== "string") {
       throw new AppError(`edits[${i}]: oldText (non-empty) and newText must be strings`);
     }
-    const matches = text.split(oldText).length - 1;
+    // Overlapping matches count too: "aa" occurs twice in "aaa", which is ambiguous.
+    let matches = 0;
+    for (let at = text.indexOf(oldText); at !== -1; at = text.indexOf(oldText, at + 1)) matches++;
     if (matches === 0) {
       throw new AppError(`edits[${i}]: oldText not found (0 matches). Nothing was applied. Copy the text exactly from the current content.`);
     }
@@ -794,8 +800,8 @@ export function listDocuments(filter: DocumentFilter): DocumentSummary[] {
     params.push(projectRow(filter.project).key);
   }
   if (filter.q) {
-    where.push("(d.title LIKE ? OR d.content LIKE ?)");
-    const like = `%${filter.q.trim()}%`;
+    where.push(`(d.title ${LIKE} OR d.content ${LIKE})`);
+    const like = likePattern(filter.q);
     params.push(like, like);
   }
   const sql = `SELECT ${DOC_COLUMNS("d")} FROM documents d ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
