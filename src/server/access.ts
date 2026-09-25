@@ -145,7 +145,7 @@ export function me(a: Actor): Me {
        WHERE m.user_id = ? AND m.suspended_at IS NULL ORDER BY w.name COLLATE NOCASE`,
     )
     .all(a.id);
-  return { user: toUser(userById(a.id)), workspaces };
+  return { user: { ...toUser(userById(a.id)), id: a.id }, workspaces };
 }
 
 export function updateMe(a: Actor, patch: { name?: unknown; username?: unknown; email?: unknown }): Me {

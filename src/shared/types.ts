@@ -70,7 +70,7 @@ export interface WorkspaceMember {
 
 /** GET /api/me. */
 export interface Me {
-  user: User;
+  user: User & { id: number }; // id: stable across renames, for services that key data by person (docket-chat); ids stay internal everywhere else
   workspaces: { key: string; name: string; role: Role }[];
 }
 

@@ -183,3 +183,15 @@ test("emails are unique across accounts, whatever their case", async () => {
   const { code } = (await s.as("admin", "cookie").api("POST", `/api/workspaces/${s.workspace}/invites`, { role: "member" })).body;
   expect((await s.anon.api("POST", "/api/auth/redeem", { code, name: "Copy", username: "copycat", email: "ben@EXAMPLE.com" })).status).toBe(409);
 });
+
+test("/api/me carries the user's id, stable across a rename, and nothing else exposes it", async () => {
+  const cookie = s.as("ben", "cookie");
+  const me = (await s.as("ben", "bearer").api("GET", "/api/me")).body;
+  expect(me.user.id).toBeNumber();
+  expect((await s.as("ana", "bearer").api("GET", "/api/me")).body.user.id).not.toBe(me.user.id);
+  const renamed = await cookie.api("PATCH", "/api/me", { username: "ben-renamed" });
+  expect(renamed.body.user).toMatchObject({ id: me.user.id, username: "ben-renamed" });
+  expect((await cookie.api("PATCH", "/api/me", { username: "ben" })).body.user.id).toBe(me.user.id);
+  const members = (await cookie.api("GET", `/api/workspaces/${s.workspace}/members`)).body as { user: object }[];
+  expect(members.every((m) => !("id" in m.user))).toBeTrue();
+});
