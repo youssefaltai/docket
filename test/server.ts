@@ -51,8 +51,8 @@ export interface TestServer {
   with: (creds: Creds, via?: Via) => Caller;
   /** A user made earlier by s.user or s.agent, here or on a server this one shares with. */
   as: (username: string, via?: Via) => Caller;
-  /** Invites a person into a workspace (default: setup's) and signs them in. For an existing user it adds the workspace. */
-  user: (username: string, opts?: { role?: "admin" | "member"; workspace?: string; name?: string }) => Promise<Caller>;
+  /** Invites a person into a workspace (default: setup's, invited by `by`, default admin) and signs them in. For an existing user it adds the workspace. */
+  user: (username: string, opts?: { role?: "admin" | "member"; workspace?: string; name?: string; by?: string }) => Promise<Caller>;
   /** Signs a person in again through an admin's sign-in link, with a fresh session and API key (e.g. after a suspension). */
   signIn: (username: string, opts?: { workspace?: string }) => Promise<Caller>;
   /** Creates an agent in a workspace (default: setup's). */
@@ -102,7 +102,7 @@ export async function startServer(
       async api(method, path, body) {
         const res = await fetch(new URL(path, url), {
           method,
-          headers: { "Content-Type": "application/json", ...auth },
+          headers: { "Content-Type": "application/json", Origin: new URL(url).origin, ...auth }, // browsers send Origin
           body: body === undefined ? undefined : JSON.stringify(body),
         });
         return { status: res.status, body: await parse(res), headers: res.headers };
@@ -176,13 +176,17 @@ export async function startServer(
     anon,
     with: (creds, via = "bearer") => caller(null, creds, via),
     as,
-    async user(username, { role = "member", workspace: key = workspace!, name = username } = {}) {
-      const invite = await admin.api("POST", `/api/workspaces/${key}/invites`, { email: `${username}@example.com`, role });
+    async user(username, { role = "member", workspace: key = workspace!, name = username, by = "admin" } = {}) {
+      const invite = await as(by).api("POST", `/api/workspaces/${key}/invites`, { email: `${username}@example.com`, role });
       if (invite.status >= 300) throw new Error(`invite ${username}: ${invite.status} ${JSON.stringify(invite.body)}`);
-      const profile = users.has(username) ? {} : { name, username };
-      const redeemed = await anon.api("POST", "/api/auth/redeem", { code: invite.body.code, ...profile });
+      // An existing user accepts while signed in; a new one creates an account.
+      const known = users.get(username);
+      const redeemed = known
+        ? await caller(username, known, "cookie").api("POST", "/api/auth/redeem", { code: invite.body.code })
+        : await anon.api("POST", "/api/auth/redeem", { code: invite.body.code, name, username });
       if (redeemed.status >= 300) throw new Error(`redeem ${username}: ${redeemed.status} ${JSON.stringify(redeemed.body)}`);
-      return signedIn(username, sessionCookie(redeemed.headers));
+      const fresh = redeemed.headers.getSetCookie().some((c) => c.startsWith("docket_session="));
+      return signedIn(username, fresh ? sessionCookie(redeemed.headers) : known!.cookie!);
     },
     async signIn(username, { workspace: key = workspace! } = {}) {
       const link = await admin.api("POST", `/api/workspaces/${key}/members/${username}/sign-in-links`);
