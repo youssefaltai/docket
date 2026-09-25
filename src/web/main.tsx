@@ -6,7 +6,7 @@ import { HttpError, api, getName, setName, setOnUnauthorized, store, subscribe }
 import { DocPage, DocsView } from "./docs";
 import { IssuePage } from "./issue";
 import { IssuesView } from "./issues";
-import { NewDocModal, NewIssueModal, NewProjectModal, NewWorkspaceModal } from "./modals";
+import { NewDocModal, NewIssueModal, NewProjectModal, NewWorkspaceModal, ProjectSettingsModal } from "./modals";
 import { Picker } from "./pickers";
 import {
   AppContext,
@@ -42,6 +42,7 @@ type ModalState =
   | { kind: "doc"; project: string }
   | { kind: "project" }
   | { kind: "workspace" }
+  | { kind: "settings"; project: string }
   | null;
 
 function defaultPeople(name: string): string[] {
@@ -105,15 +106,15 @@ function App({ name, onChangeName }: { name: string; onChangeName: () => void })
 
   const workspace = workspaces?.find((w) => w.key === workspaceKey) ?? workspaces?.[0] ?? null;
 
-  // Labels and assignees for pickers/filters: scoped to the current workspace, derived
-  // from its issues (the /api/labels endpoint isn't workspace-scoped server-side).
+  // Labels and assignees for pickers and filters, scoped to the current workspace.
+  // There's no people endpoint, so assignees come from its issues.
   const workspaceKeyForDirectory = workspace?.key;
   const loadDirectory = useCallback(() => {
+    api.labels(workspaceKeyForDirectory).then(setLabels, () => {});
     api.issues(workspaceKeyForDirectory ? { workspace: workspaceKeyForDirectory } : {}).then(
       (list) => {
         const names = list.map((i) => i.assignee).filter((a): a is string => !!a);
         setPeople([...new Set([...defaultPeople(name), ...names])].sort((a, b) => a.localeCompare(b)));
-        setLabels([...new Set(list.flatMap((i) => i.labels))].sort((a, b) => a.localeCompare(b)));
       },
       () => {},
     );
@@ -163,6 +164,7 @@ function App({ name, onChangeName }: { name: string; onChangeName: () => void })
     },
     newProject: () => setModal({ kind: "project" }),
     newWorkspace: () => setModal({ kind: "workspace" }),
+    projectSettings: (project) => setModal({ kind: "settings", project }),
     setDocProject,
     openNav: () => setNavOpen(true),
   };
@@ -209,6 +211,7 @@ function App({ name, onChangeName }: { name: string; onChangeName: () => void })
         {modal?.kind === "issue" && <NewIssueModal defaults={modal.defaults} onClose={() => setModal(null)} />}
         {modal?.kind === "doc" && <NewDocModal project={modal.project} onClose={() => setModal(null)} />}
         {modal?.kind === "project" && <NewProjectModal onClose={() => setModal(null)} />}
+        {modal?.kind === "settings" && <ProjectSettingsModal projectKey={modal.project} onClose={() => setModal(null)} />}
         {modal?.kind === "workspace" && (
           <NewWorkspaceModal
             onCreate={(w) => {

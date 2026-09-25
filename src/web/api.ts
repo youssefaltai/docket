@@ -19,6 +19,7 @@ import type {
   ServerEvent,
   Workspace,
   WorkspaceInput,
+  WorkspacePatch,
 } from "../shared/types";
 
 export class HttpError extends Error {
@@ -52,6 +53,9 @@ export const store = {
 /** Per-browser display name, used as the `author` on writes. */
 export const getName = () => store.get("name");
 export const setName = (name: string) => store.set("name", name);
+
+/** Whether this browser wrote a comment, so it may edit or delete it (the server checks too). */
+export const isMine = (author: string) => author.toLowerCase() === getName()?.toLowerCase();
 
 /** Stamps a write body with the stored name, unless it already has an author. */
 function withAuthor<T extends object>(body: T & { author?: string }): T & { author?: string } {
@@ -88,6 +92,8 @@ export const api = {
 
   workspaces: () => request<Workspace[]>("GET", "/api/workspaces"),
   createWorkspace: (input: WorkspaceInput) => request<Workspace>("POST", "/api/workspaces", input),
+  updateWorkspace: (key: string, patch: WorkspacePatch) =>
+    request<Workspace>("PATCH", `/api/workspaces/${enc(key)}`, patch),
 
   projects: () => request<Project[]>("GET", "/api/projects"),
   createProject: (input: ProjectInput) => request<Project>("POST", "/api/projects", input),
@@ -100,6 +106,12 @@ export const api = {
   updateIssue: (id: string, patch: IssuePatch) => request<Issue>("PATCH", `/api/issues/${enc(id)}`, patch),
   deleteIssue: (id: string) => request<{ ok: true }>("DELETE", `/api/issues/${enc(id)}`),
   comment: (id: string, body: string) => request<Issue>("POST", `/api/issues/${enc(id)}/comments`, withAuthor({ body })),
+  editComment: (id: string, cid: number, body: string) =>
+    request<Issue>("PATCH", `/api/issues/${enc(id)}/comments/${cid}`, withAuthor({ body })),
+  deleteComment: (id: string, cid: number) =>
+    request<Issue>("DELETE", `/api/issues/${enc(id)}/comments/${cid}`, withAuthor({})),
+
+  labels: (workspace?: string) => request<string[]>("GET", `/api/labels${query({ workspace })}`),
 
   documents: (filter: DocumentFilter = {}) =>
     request<DocumentSummary[]>("GET", `/api/documents${query(filter)}`),
@@ -110,6 +122,10 @@ export const api = {
   deleteDocument: (slug: string) => request<{ ok: true }>("DELETE", `/api/documents/${enc(slug)}`),
   commentDocument: (slug: string, body: string) =>
     request<Document>("POST", `/api/documents/${enc(slug)}/comments`, withAuthor({ body })),
+  editDocumentComment: (slug: string, cid: number, body: string) =>
+    request<Document>("PATCH", `/api/documents/${enc(slug)}/comments/${cid}`, withAuthor({ body })),
+  deleteDocumentComment: (slug: string, cid: number) =>
+    request<Document>("DELETE", `/api/documents/${enc(slug)}/comments/${cid}`, withAuthor({})),
   versions: (slug: string) => request<DocumentVersionSummary[]>("GET", `/api/documents/${enc(slug)}/versions`),
   version: (slug: string, id: number) => request<DocumentVersion>("GET", `/api/documents/${enc(slug)}/versions/${id}`),
 };
