@@ -15,7 +15,7 @@ jobs:
           bun-version-file: package.json
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
-      - run: bun test
+      - run: bun test --rerun-each 3 # surface flaky tests in CI, not on main
 
   docker:
     runs-on: ubuntu-latest
