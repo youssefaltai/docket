@@ -9,7 +9,7 @@ import type {
   Status,
   WorkspaceInput,
 } from "../shared/types.ts";
-import { OPEN, authorFor, isAdmin, isJson, requireAdmin, viewerOf } from "./auth.ts";
+import { OPEN, authorFor, claimerFor, isAdmin, isJson, requireAdmin, resolveAssignee, viewerOf } from "./auth.ts";
 import * as db from "./db.ts";
 
 /** Wraps a handler: its return value becomes the JSON body (unless it's a Response); errors become `{ error }`. */
@@ -50,6 +50,12 @@ const authored = async <T = Record<string, unknown>>(req: Request) => {
   return { ...data, author: authorFor(viewerOf(req), data.author, "anonymous") as string };
 };
 
+/** The body with an assignee of "me" resolved to the caller. */
+const assigned = async <T = Record<string, unknown>>(req: Request) => {
+  const data = await body<T & { assignee?: unknown }>(req);
+  return data.assignee === undefined ? data : { ...data, assignee: resolveAssignee(viewerOf(req), data.assignee) as string };
+};
+
 /** Runs `fn` for admins only (403 otherwise). */
 const admin =
   <R extends Request>(fn: (req: R) => unknown) =>
@@ -65,7 +71,7 @@ const issueFilter = (req: Request): IssueFilter => ({
   project: param(req, "project"),
   status: param(req, "status")?.split(",") as Status[] | undefined,
   label: param(req, "label"),
-  assignee: param(req, "assignee"),
+  assignee: resolveAssignee(viewerOf(req), param(req, "assignee")) as string | undefined,
   parent: param(req, "parent"),
   q: param(req, "q"),
 });
@@ -87,14 +93,20 @@ export const apiRoutes = {
   },
   "/api/issues": {
     GET: handle((req) => db.listIssues(issueFilter(req))),
-    POST: handle(async (req) => db.createIssue(await body<IssueInput>(req)), 201),
+    POST: handle(async (req) => db.createIssue(await assigned<IssueInput>(req)), 201),
   },
   "/api/issues/:id": {
     GET: handle<"/api/issues/:id">((req) => db.getIssue(req.params.id)),
-    PATCH: handle<"/api/issues/:id">(async (req) => db.updateIssue(req.params.id, await body(req))),
+    PATCH: handle<"/api/issues/:id">(async (req) => db.updateIssue(req.params.id, await assigned(req))),
     DELETE: handle<"/api/issues/:id">((req) => {
       db.deleteIssue(req.params.id);
       return { ok: true };
+    }),
+  },
+  "/api/issues/:id/claim": {
+    POST: handle<"/api/issues/:id/claim">(async (req) => {
+      const { assignee } = await body(req);
+      return db.claimIssue(req.params.id, claimerFor(viewerOf(req), assignee));
     }),
   },
   "/api/issues/:id/comments": {

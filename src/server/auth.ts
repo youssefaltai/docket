@@ -2,7 +2,7 @@
 // login cookie: DOCKET_TOKEN itself (root: an admin with no name) or a member's own token (see members in db).
 // With it unset, Docket is open (put it on a private network): anyone is root, and a member token only says who you are.
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-import type { Member } from "../shared/types.ts";
+import { type Member, nameKey } from "../shared/types.ts";
 import * as db from "./db.ts";
 
 const TOKEN = process.env.DOCKET_TOKEN || "";
@@ -31,6 +31,17 @@ export const isAdmin = (viewer: Viewer) => !viewer.member || viewer.member.role 
 /** Members always write as themselves; root names itself (default `fallback`), as before members existed. */
 export const authorFor = (viewer: Viewer, requested: unknown, fallback: string): unknown =>
   viewer.member ? viewer.member.name : requested === undefined ? fallback : requested;
+
+/** "me" as an assignee (a value or a filter) means the caller, which only a member token names. */
+export function resolveAssignee(viewer: Viewer, value: unknown): unknown {
+  if (typeof value !== "string" || nameKey(value.trim()) !== "me") return value;
+  if (!viewer.member) throw new db.AppError('"me" needs a member token');
+  return viewer.member.name;
+}
+
+/** Who a claim is for: a member always claims for themselves; root names someone (or "me" fails). */
+export const claimerFor = (viewer: Viewer, requested: unknown): unknown =>
+  viewer.member ? viewer.member.name : resolveAssignee(viewer, requested);
 
 /** Cookies ride along on same-site requests, so a cookie-authed WebSocket must come from our own origin. */
 function sameOrigin(req: Request): boolean {

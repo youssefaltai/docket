@@ -204,6 +204,15 @@ function changed(entity: ServerEvent["entity"], id: string) {
 
 const now = () => new Date().toISOString();
 
+/**
+ * updated_at doubles as a version token (baseUpdatedAt), so every change moves it strictly forward, even
+ * within a millisecond. One rule, two forms that must agree: `bumpedAt(prev)` for a value computed in JS,
+ * and `BUMPED_AT`, a SET clause for rows bumped in SQL (bind the current time to both `?`).
+ */
+const bumpedAt = (prev: string, time = now()) => (time > prev ? time : new Date(Date.parse(prev) + 1).toISOString());
+const BUMPED_AT =
+  "updated_at = CASE WHEN updated_at >= ? THEN strftime('%Y-%m-%dT%H:%M:%fZ', updated_at, '+0.001 seconds') ELSE ? END";
+
 const exists = (table: string, column: string, value: string) =>
   db.query(`SELECT 1 FROM ${table} WHERE ${column} = ?`).get(value) !== null;
 
@@ -754,8 +763,10 @@ export function listIssues(filter: IssueFilter): IssueSummary[] {
     params.push(filter.label);
   }
   if (filter.assignee) {
+    // A member's name matches the way names compare everywhere (nameKey); NOCASE still catches older free text.
+    const member = activeMemberNames().find((m) => nameKey(m) === nameKey(filter.assignee!.trim()));
     where.push("i.assignee = ? COLLATE NOCASE");
-    params.push(filter.assignee);
+    params.push(member ?? filter.assignee);
   }
   if (filter.parent) {
     where.push("i.parent_id = ?");
@@ -850,6 +861,7 @@ export function updateIssue(identifier: string, patch: IssuePatch): Issue {
   const current = db
     .query<{ status: Status; parent_id: number | null }, [number]>("SELECT status, parent_id FROM issues WHERE id = ?")
     .get(id)!;
+  const base = patch.baseUpdatedAt;
   // A new parent must not be the issue itself or one of its descendants.
   for (let p = cols.parent_id as number | null | undefined; p != null; ) {
     if (p === id) throw new AppError("An issue can't be its own parent or ancestor");
@@ -861,7 +873,6 @@ export function updateIssue(identifier: string, patch: IssuePatch): Issue {
     const closing = isClosed(cols.status as Status);
     if (closing !== isClosed(current.status)) cols.completed_at = closing ? time : null;
   }
-  cols.updated_at = time;
   // The old and new parent and any blocker added or removed change too.
   const related = new Set<number>();
   if (cols.parent_id !== undefined && cols.parent_id !== current.parent_id) {
@@ -876,15 +887,20 @@ export function updateIssue(identifier: string, patch: IssuePatch): Issue {
     for (const b of before) if (!blockers.includes(b)) related.add(b);
     for (const b of blockers) if (!before.includes(b)) related.add(b);
   }
+  // IMMEDIATE holds the write lock from the version check to the write, so nothing lands in between.
   const refs = db.transaction(() => {
-    const assignments = Object.keys(cols).map((c) => `${c} = ?`);
-    db.query(`UPDATE issues SET ${assignments.join(", ")} WHERE id = ?`).run(...Object.values(cols), id);
+    if (base !== undefined) {
+      const { updated_at } = db.query<{ updated_at: string }, [number]>("SELECT updated_at FROM issues WHERE id = ?").get(id)!;
+      if (base !== updated_at) throw new AppError("Issue changed since you read it", 409);
+    }
+    const assignments = [...Object.keys(cols).map((c) => `${c} = ?`), BUMPED_AT];
+    db.query(`UPDATE issues SET ${assignments.join(", ")} WHERE id = ?`).run(...Object.values(cols), time, time, id);
     if (blockers) setBlockers(id, blockers);
-    const bump = db.query<{ ref: string }, [string, number]>(
-      `UPDATE issues SET updated_at = ? WHERE id = ? RETURNING ${ident("issues")} AS ref`,
+    const bump = db.query<{ ref: string }, [string, string, number]>(
+      `UPDATE issues SET ${BUMPED_AT} WHERE id = ? RETURNING ${ident("issues")} AS ref`,
     );
-    return [...related].map((r) => bump.get(time, r)!.ref);
-  })();
+    return [...related].map((r) => bump.get(time, time, r)!.ref);
+  }).immediate();
   const issue = getIssue(identifier);
   changed("issue", issue.id);
   for (const ref of refs) changed("issue", ref);
@@ -909,7 +925,7 @@ export function deleteIssue(identifier: string) {
     .all(id);
   const time = now();
   const ref = db.transaction(() => {
-    for (const issue of issues) db.query("UPDATE issues SET updated_at = ? WHERE id = ?").run(time, issue.id);
+    for (const issue of issues) db.query(`UPDATE issues SET ${BUMPED_AT} WHERE id = ?`).run(time, time, issue.id);
     return db
       .query<{ ref: string }, [number]>(`DELETE FROM issues WHERE id = ? RETURNING ${ident("issues")} AS ref`)
       .get(id)!.ref;
@@ -919,13 +935,40 @@ export function deleteIssue(identifier: string) {
   for (const doc of docs) changed("document", doc.slug);
 }
 
+/**
+ * Takes an open issue for `claimer`: assigns it to them and sets in_progress, unless it's closed or someone
+ * else holds it (409, naming them). IMMEDIATE takes the write lock before the read, so of two claims racing
+ * for a free issue exactly one wins. Claiming your own is a no-op.
+ */
+export function claimIssue(identifier: string, claimer: unknown): Issue {
+  if (typeof claimer !== "string" || !claimer.trim()) throw new AppError("Pass assignee, or connect with a member token");
+  const id = issueId(identifier);
+  const name = checkAssignee(claimer)!;
+  const time = now();
+  const claimed = db.transaction(() => {
+    const row = db
+      .query<{ status: Status; assignee: string | null; ref: string }, [number]>(
+        `SELECT status, assignee, ${ident("issues")} AS ref FROM issues WHERE id = ?`,
+      )
+      .get(id)!;
+    if (isClosed(row.status)) throw new AppError(`${row.ref} is ${row.status}`, 409);
+    if (row.assignee && nameKey(row.assignee) !== nameKey(name)) throw new AppError(`${row.ref} is claimed by ${row.assignee}`, 409);
+    if (row.assignee === name && row.status === "in_progress") return false;
+    db.query(`UPDATE issues SET assignee = ?, status = 'in_progress', ${BUMPED_AT} WHERE id = ?`).run(name, time, time, id);
+    return true;
+  }).immediate();
+  const issue = getIssue(identifier);
+  if (claimed) changed("issue", issue.id);
+  return issue;
+}
+
 /** Runs a change to an issue's comments, bumping the issue in the same transaction. */
 function changeIssueComments(identifier: string, change: (id: number, time: string) => void): Issue {
   const id = issueId(identifier);
   const time = now();
   db.transaction(() => {
     change(id, time);
-    db.query("UPDATE issues SET updated_at = ? WHERE id = ?").run(time, id);
+    db.query(`UPDATE issues SET ${BUMPED_AT} WHERE id = ?`).run(time, time, id);
   })();
   const issue = getIssue(identifier);
   changed("issue", issue.id);
@@ -1146,8 +1189,7 @@ export function updateDocument(slug: string, patch: DocumentPatch): Document {
   }
   if (Object.keys(cols).length === 0) return getDocument(row.slug);
 
-  // updated_at is the version token for baseUpdatedAt, so it moves forward on every save, even within a millisecond.
-  const time = new Date(Math.max(Date.now(), Date.parse(row.updated_at) + 1)).toISOString();
+  const time = bumpedAt(row.updated_at);
   const next = { ...row, ...cols, updated_at: time, updated_by: author };
   db.transaction(() => {
     const names = Object.keys(cols).concat("updated_at", "updated_by");

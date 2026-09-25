@@ -23,7 +23,7 @@ One container. One SQLite file. No accounts, no SaaS.
 
 Agents are good at doing work and bad at keeping track of it. Docket gives them a place to do that: they pick up issues, post progress, write the spec and move things to review, while you watch it happen in the browser.
 
-- **Built for agents and humans together.** 21 MCP tools for issues, comments and docs. What an agent does shows up in your UI right away over WebSocket.
+- **Built for agents and humans together.** 22 MCP tools for issues, comments and docs. What an agent does shows up in your UI right away over WebSocket.
 - **Linear-style, but tiny.** List and board views, priorities, labels, sub-issues, blockers, keyboard shortcuts (`C`, `/`, `⌘↵`).
 - **Docs next to your issues.** Markdown docs with version history. Write `API-1` and it links to the issue, with its status shown inline.
 - **Yours.** Self-hosted, a single SQLite file, five runtime dependencies. Back it up live with `./backup.sh`.
@@ -127,7 +127,7 @@ You can also use an optional config file at `$XDG_CONFIG_HOME/docket/config` or 
 <details>
 <summary><b>MCP tools</b></summary>
 
-`list_workspaces`, `create_workspace`, `update_workspace`, `list_projects`, `create_project`, `update_project`, `list_issues`, `list_labels`, `list_members`, `get_issue`, `create_issue`, `update_issue`, `comment_issue`, `list_documents`, `get_document`, `create_document`, `update_document`, `comment_document`, `delete_document`, `update_comment`, `delete_comment`.
+`list_workspaces`, `create_workspace`, `update_workspace`, `list_projects`, `create_project`, `update_project`, `list_issues`, `list_labels`, `list_members`, `get_issue`, `create_issue`, `update_issue`, `claim_issue`, `comment_issue`, `list_documents`, `get_document`, `create_document`, `update_document`, `comment_document`, `delete_document`, `update_comment`, `delete_comment`.
 
 The full REST API and data model are in [SPEC.md](SPEC.md).
 
