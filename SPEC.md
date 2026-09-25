@@ -64,15 +64,17 @@ Tools return short markdown text (one line per issue: `BRD-3 · todo · high · 
 |---|---|---|
 | list_workspaces | | with project counts |
 | create_workspace | key?, name | key defaults to the slugified name |
+| update_workspace | key, name | rename; the key never changes |
 | list_projects | workspace? | with workspace and open-issue counts |
 | create_project | key, name, workspace?, description? | workspace required when more than one exists, else the only one |
+| update_project | key, name?, description?, workspace? | workspace moves it; the key never changes |
 | list_issues | workspace?, project?, status?[], label?, assignee?, parent?, query?, limit? (default 50) | excludes done/canceled unless `status` given |
 | get_issue | id | full issue with description, sub-issues, blockers, comments |
 | create_issue | project, title, description?, status?, priority?, labels?, assignee?, parent?, blockedBy? | |
 | update_issue | id + any of title, description, status, priority, labels, assignee, parent, blockedBy | |
 | comment_issue | id, body, author? (default "claude") | use for progress notes |
 
-Tool descriptions must explain the conventions (workspace → project → issue/doc, statuses, priority numbers, identifiers) so an agent can use them without reading docs. No delete tool: agents cancel instead.
+Tool descriptions must explain the conventions (workspace → project → issue/doc, statuses, priority numbers, identifiers) so an agent can use them without reading docs. No issue delete tool: agents cancel instead.
 
 ## UI
 
@@ -116,7 +118,7 @@ Linear-style docs inside projects. Markdown is the source of truth (agents write
 
 `DocumentPatch.baseUpdatedAt` (optional) is the document's `updatedAt` the client started editing from: if present and different from the current `updatedAt`, the PATCH answers 409 `{ "error": "Document changed since you started editing" }` and changes nothing. The web editor sends it with every save; MCP `update_document` accepts it too. `edits` errors (400) name the failing edit and whether `oldText` matched 0 or many times (overlapping occurrences count: `aa` matches `aaa` twice); nothing is applied unless every edit applies. `GET /api/issues/:id` now includes `docs` (documents mentioning it). `Project` includes `docCount`. Mutations publish `{ type: "changed", entity: "document", id: slug }`.
 
-**MCP tools** (added to the 9 above)
+**MCP tools** (added to the 11 above)
 
 | Tool | Input | Notes |
 |---|---|---|
@@ -125,6 +127,7 @@ Linear-style docs inside projects. Markdown is the source of truth (agents write
 | create_document | project, title, content, slug?, position?, author? | |
 | update_document | slug, title?, content?, edits?, project?, position?, baseUpdatedAt?, author? | prefer `edits` for small changes to long docs; `content` replaces everything; `baseUpdatedAt` rejects the update if the doc changed since it was read |
 | comment_document | slug, body, author? | |
+| delete_document | slug | permanent (versions and comments too); `destructiveHint` |
 
 Tool descriptions must say: docs are markdown; mention issues by identifier (e.g. BRD-2) and they auto-link; link other docs with `[Title](/doc/slug)`; use `edits` for targeted changes.
 
