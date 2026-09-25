@@ -2,13 +2,15 @@
 // the web app needs no CORS or new CSP.
 // Only a signed-in browser gets through; the service sees a short-lived read key for that session, never
 // the person's cookie. Bodies and answers stream straight through (server-sent events included).
-import { chatKey } from "./access.ts";
+import { chatKey, chatWriteKey } from "./access.ts";
 import { actorOf, isJson } from "./auth.ts";
 
 const HEADERS_TIMEOUT_MS = 90_000; // for the service to start answering (it may be waiting on a model)
 const MAX_MS = 5 * 60 * 1000; // for a whole answer
 const IDLE_S = 120; // a stream may go quiet this long between events (the service pings every 15 s)
 const MAX_BODY = 16 * 1024; // a chat message is at most 4000 characters
+// The one request that may change Docket: the person confirming an action the assistant proposed.
+const CONFIRM = /^\/api\/chat\/actions\/[^/]+\/confirm$/;
 
 // Only these pass, each way: no cookies, credentials, hop-by-hop or encoding headers.
 const REQUEST_HEADERS = ["content-type", "accept", "last-event-id"];
@@ -39,6 +41,33 @@ async function readCapped(req: Request, max: number): Promise<Blob | undefined> 
   return new Blob(chunks);
 }
 
+/** `body`, calling `done` once it ends, fails or is cancelled (the browser leaving). */
+function whenDone(body: ReadableStream<Uint8Array>, done: () => void): ReadableStream<Uint8Array> {
+  const reader = body.getReader();
+  let ended = false;
+  const end = () => {
+    if (!ended) (ended = true), done();
+  };
+  return new ReadableStream({
+    async pull(controller) {
+      try {
+        const { done: last, value } = await reader.read();
+        if (last) {
+          end();
+          controller.close();
+        } else controller.enqueue(value);
+      } catch (err) {
+        end();
+        controller.error(err);
+      }
+    },
+    cancel(reason) {
+      end();
+      return reader.cancel(reason);
+    },
+  });
+}
+
 const error = (message: string, code: string, status: number) => Response.json({ error: message, code }, { status });
 
 export async function proxyChat(req: Request, server: Bun.Server<unknown>): Promise<Response> {
@@ -55,7 +84,8 @@ export async function proxyChat(req: Request, server: Bun.Server<unknown>): Prom
     if (!body) return error("That message is too long", "invalid", 413);
     if (body.size && !isJson(req)) return error("Expected Content-Type: application/json", "invalid", 415);
   }
-  const token = chatKey(actor);
+  // Every request reads with the session's chat key, except a confirm: it writes, with a key made for it alone.
+  const key = req.method === "POST" && CONFIRM.test(url.pathname) ? chatWriteKey(actor) : { token: chatKey(actor), drop: () => {} };
 
   const target = new URL(base);
   target.pathname = target.pathname.replace(/\/+$/, "") + url.pathname.slice("/api".length);
@@ -65,7 +95,7 @@ export async function proxyChat(req: Request, server: Bun.Server<unknown>): Prom
   if (target.pathname !== root && !target.pathname.startsWith(`${root}/`)) return error("Not found", "not_found", 404);
 
   const headers = pick(req.headers, REQUEST_HEADERS);
-  headers.set("authorization", `Bearer ${token}`);
+  headers.set("authorization", `Bearer ${key.token}`);
   const started = new AbortController();
   const timer = setTimeout(() => started.abort(), HEADERS_TIMEOUT_MS);
   server.timeout(req, IDLE_S);
@@ -81,10 +111,13 @@ export async function proxyChat(req: Request, server: Bun.Server<unknown>): Prom
     const type = res.headers.get("content-type")?.split(";")[0]!.trim().toLowerCase();
     if (res.body && type !== undefined && !ANSWER_TYPES.includes(type)) {
       await res.body.cancel();
+      key.drop();
       return error("The assistant answered with something unexpected", "chat_unavailable", 502);
     }
-    return new Response(res.body, { status: res.status, headers: pick(res.headers, RESPONSE_HEADERS) });
+    if (!res.body) key.drop();
+    return new Response(res.body && whenDone(res.body, key.drop), { status: res.status, headers: pick(res.headers, RESPONSE_HEADERS) });
   } catch {
+    key.drop();
     return started.signal.aborted
       ? error("The assistant took too long to answer", "timeout", 504)
       : error("Can't reach the assistant", "chat_unavailable", 502);

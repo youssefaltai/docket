@@ -436,14 +436,34 @@ export function chatKey(a: Actor): string {
       .get(hash(held.token), a.sessionId, a.id, now());
     if (live) return held.token;
   }
-  purgeExpiredKeys();
-  const token = `dk_${randomBytes(32).toString("hex")}`;
-  const expiresAt = Date.now() + CHAT_KEY_TTL_MS;
-  db.query(
-    "INSERT INTO api_keys (user_id, name, scope, token_hash, created_at, expires_at, session_id) VALUES (?, 'Chat (automatic)', 'read', ?, ?, ?, ?)",
-  ).run(a.id, hash(token), now(), new Date(expiresAt).toISOString(), a.sessionId);
+  const { token, expiresAt } = mintChatKey(a, "read", CHAT_KEY_TTL_MS);
   chatKeys.set(a.sessionId, { token, expiresAt });
   return token;
+}
+
+const CHAT_WRITE_KEY_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * A write key for one change the person just confirmed in the assistant: minted for that request alone, and
+ * `drop` deletes it when the answer ends. Its 5 minutes are only a backstop; it never outlives the session.
+ */
+export function chatWriteKey(a: Actor): { token: string; drop: () => void } {
+  if (a.sessionId === null) throw new AppError("The assistant works from the web app, not with an API key", 403);
+  const { token, id } = mintChatKey(a, "write", CHAT_WRITE_KEY_TTL_MS);
+  return { token, drop: () => void db.query("DELETE FROM api_keys WHERE id = ?").run(id) };
+}
+
+function mintChatKey(a: Actor, scope: ApiKeyScope, ttl: number) {
+  purgeExpiredKeys();
+  const token = `dk_${randomBytes(32).toString("hex")}`;
+  const expiresAt = Date.now() + ttl;
+  const { id } = db
+    .query<{ id: number }, [number, ApiKeyScope, string, string, string, number]>(
+      `INSERT INTO api_keys (user_id, name, scope, token_hash, created_at, expires_at, session_id)
+       VALUES (?, 'Chat (automatic)', ?, ?, ?, ?, ?) RETURNING id`,
+    )
+    .get(a.id, scope, hash(token), now(), new Date(expiresAt).toISOString(), a.sessionId!)!;
+  return { token, expiresAt, id };
 }
 
 /** Revokes every session, key and unused sign-in code of a user. */
