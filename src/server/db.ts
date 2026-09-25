@@ -817,7 +817,7 @@ export function createIssue(input: IssueInput): Issue {
   };
   const blockers = input.blockedBy === undefined ? [] : blockerIds(input.blockedBy);
   const time = now();
-  const { identifier, docs } = db.transaction(() => {
+  const { identifier, docs, refs } = db.transaction(() => {
     const { number } = db
       .query<{ number: number }, [string]>(
         "UPDATE projects SET next_number = next_number + 1 WHERE key = ? RETURNING next_number - 1 AS number",
@@ -838,6 +838,12 @@ export function createIssue(input: IssueInput): Issue {
       )
       .get(...Object.values(row))!;
     setBlockers(id, blockers);
+    // Its parent and blockers change too (they gain a sub-issue or something they block), as on update and delete.
+    const bump = db.query<{ ref: string }, [string, string, number]>(
+      `UPDATE issues SET ${BUMPED_AT} WHERE id = ? RETURNING ${ident("issues")} AS ref`,
+    );
+    const related = new Set([cols.parent_id as number | null, ...blockers].filter((r): r is number => r !== null));
+    const refs = [...related].map((r) => bump.get(time, time, r)!.ref);
     const identifier = `${project}-${number}`;
     // Docs that mentioned this identifier before the issue existed now link to it.
     const mention = new RegExp(`\\b${identifier}\\b`);
@@ -848,9 +854,10 @@ export function createIssue(input: IssueInput): Issue {
       .all(`%${identifier}%`)
       .filter((doc) => mention.test(doc.content));
     for (const doc of docs) saveRefs(doc.id, doc.content);
-    return { identifier, docs };
+    return { identifier, docs, refs };
   })();
   changed("issue", identifier);
+  for (const ref of refs) changed("issue", ref);
   for (const doc of docs) changed("document", doc.slug);
   return getIssue(identifier);
 }
@@ -937,7 +944,7 @@ export function deleteIssue(identifier: string) {
 
 /**
  * Takes an open issue for `claimer`: assigns it to them and sets in_progress, unless it's closed or someone
- * else holds it (409, naming them). IMMEDIATE takes the write lock before the read, so of two claims racing
+ * else holds it (409, naming them): once members exist, only an active member can hold one. IMMEDIATE takes the write lock before the read, so of two claims racing
  * for a free issue exactly one wins. Claiming your own is a no-op.
  */
 export function claimIssue(identifier: string, claimer: unknown): Issue {
@@ -952,7 +959,10 @@ export function claimIssue(identifier: string, claimer: unknown): Issue {
       )
       .get(id)!;
     if (isClosed(row.status)) throw new AppError(`${row.ref} is ${row.status}`, 409);
-    if (row.assignee && nameKey(row.assignee) !== nameKey(name)) throw new AppError(`${row.ref} is claimed by ${row.assignee}`, 409);
+    // Once members exist, only an active member holds a claim: a revoked one or leftover free text doesn't.
+    const active = activeMemberNames();
+    const held = row.assignee && (!active.length || active.some((m) => nameKey(m) === nameKey(row.assignee!)));
+    if (held && nameKey(row.assignee!) !== nameKey(name)) throw new AppError(`${row.ref} is claimed by ${row.assignee}`, 409);
     if (row.assignee === name && row.status === "in_progress") return false;
     db.query(`UPDATE issues SET assignee = ?, status = 'in_progress', ${BUMPED_AT} WHERE id = ?`).run(name, time, time, id);
     return true;

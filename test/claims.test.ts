@@ -42,6 +42,7 @@ beforeAll(async () => {
     await s.api("POST", "/api/issues", { project: "CLM", title });
   }
   await s.api("PATCH", "/api/issues/CLM-2", { status: "done" });
+  await s.api("POST", "/api/issues", { project: "CLM", title: "Legacy", assignee: "old-bot" }); // CLM-6, free text
   alpha = (await s.api("POST", "/api/members", { name: "alpha", kind: "agent" })).body.token;
   beta = (await s.api("POST", "/api/members", { name: "beta", kind: "agent" })).body.token;
 });
@@ -108,4 +109,30 @@ test("updated_at strictly increases, even for writes within a millisecond", asyn
   for (let i = 0; i < 5; i++) seen.push((await s.api("POST", "/api/issues/CLM-4/comments", { body: `c${i}` })).body.updatedAt);
   expect([...seen].sort()).toEqual(seen);
   expect(new Set(seen).size).toBe(seen.length);
+});
+
+test("creating an issue bumps and publishes its parent and blockers", async () => {
+  const parent = (await s.api("POST", "/api/issues", { project: "CLM", title: "Parent" })).body;
+  const blocker = (await s.api("POST", "/api/issues", { project: "CLM", title: "Blocker" })).body;
+  const events: string[] = [];
+  const ws = new WebSocket(s.url.replace(/^http/, "ws") + "ws", { headers: { Authorization: `Bearer ${ROOT}` } } as any);
+  await new Promise((resolve) => (ws.onopen = resolve));
+  ws.onmessage = (e) => events.push(JSON.parse(String(e.data)).id);
+  const child = (await s.api("POST", "/api/issues", { project: "CLM", title: "Child", parent: parent.id, blockedBy: [blocker.id] })).body;
+  await Bun.sleep(50);
+  ws.close();
+  expect(events).toEqual(expect.arrayContaining([child.id, parent.id, blocker.id]));
+  expect((await s.api("GET", `/api/issues/${parent.id}`)).body.updatedAt > parent.updatedAt).toBeTrue();
+  expect((await s.api("GET", `/api/issues/${blocker.id}`)).body.updatedAt > blocker.updatedAt).toBeTrue();
+});
+
+test("an issue held by a revoked member or leftover free text can be claimed", async () => {
+  const gamma = (await s.api("POST", "/api/members", { name: "gamma", kind: "agent" })).body.token;
+  const held = (await s.api("POST", "/api/issues", { project: "CLM", title: "Held" })).body;
+  await tool(gamma, "claim_issue", { id: held.id });
+  await expect(tool(alpha, "claim_issue", { id: held.id })).rejects.toThrow("claimed by gamma");
+  await s.api("DELETE", "/api/members/gamma");
+  expect(await tool(alpha, "claim_issue", { id: held.id })).toStartWith(`Claimed ${held.id}`);
+  // Free text from before members existed doesn't hold a claim either.
+  expect(await tool(alpha, "claim_issue", { id: "CLM-6" })).toStartWith("Claimed CLM-6");
 });
