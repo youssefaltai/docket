@@ -18,7 +18,7 @@ src/web/index.html    HTML entry (Bun HTML import, bundled by Bun)
 src/web/*.tsx, *.css  React UI
 ```
 
-Env: `PORT` (default 7100), `DATABASE_PATH` (default `$XDG_DATA_HOME/docket/docket.db`), `DOCKET_TOKEN` (see Auth), `DOCKET_HOSTS` (comma-separated extra hostnames the server answers to, e.g. `docket.example.com,vps.tailnet.ts.net`; see Auth). Optional config file at `$XDG_CONFIG_HOME/docket/config` (or `$XDG_CONFIG_DIRS/docket/config`), `KEY=VALUE` lines (`#` comment lines; unquoted values drop a trailing ` # comment`; quotes are stripped); real env vars win unless empty (a set-but-empty var, as docker-compose's `${DOCKET_TOKEN:-}` passes, counts as unset). Dev: `bun run dev`. Prod: `bun run start`.
+Env: `PORT` (default 7100), `DATABASE_PATH` (default `$XDG_DATA_HOME/docket/docket.db`), `DOCKET_TOKEN` (see Auth), `DOCKET_HOSTS` (comma-separated extra hostnames the server answers to, e.g. `docket.example.com,vps.tailnet.ts.net`; see Auth). Optional config file at `$XDG_CONFIG_HOME/docket/config` (or `$XDG_CONFIG_DIRS/docket/config`), `KEY=VALUE` lines (`#` comment lines; unquoted values drop a trailing ` # comment`; quotes are stripped); real env vars win unless empty (a set-but-empty var, as docker-compose's `${DOCKET_TOKEN:-}` passes, counts as unset). Dev: `bun run dev`. Prod: `bun run start` (sets `NODE_ENV=production`, so Bun serves bundled assets and never shows its dev error page).
 
 ## Data
 
