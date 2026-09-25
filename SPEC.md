@@ -80,11 +80,11 @@ Light theme only, neutral and modern, in the spirit of Linear, Vercel, Resend. G
 
 - **Sidebar**: workspace switcher (current workspace name; popover lists workspaces plus "New workspace"), "New issue" (shortcut `C`), "All issues", projects with open counts. Everything in it is scoped to the current workspace.
 - **List view** (default): issues grouped by status with sticky headers and counts; Done and Canceled collapsed by default. Row: priority, identifier (mono, muted), status icon, title, labels, assignee initial, relative updated time.
-- **Board view**: columns by status (no Canceled), cards, drag between columns to change status.
+- **Board view**: columns by status (no Canceled), cards, drag between columns or use the card's status picker (touch, keyboard) to change status.
 - **Toolbar**: search (`/` to focus), label and assignee filters, List/Board toggle.
 - **Issue page** (`/issue/BRD-12`): inline-editable title; markdown description with edit toggle; properties panel (status, priority, assignee, labels, project, parent, blocked by) editable via small popovers; sub-issues; comments thread with composer (`⌘↵` to send).
 - **New issue modal**: project, title, description, status, priority, labels, assignee, parent. `⌘↵` creates, `Esc` closes.
-- **Workspaces**: the current workspace is remembered in localStorage (`docket.workspace`), falling back to the first. `/` and `/docs` show only its content; the new issue/doc project pickers list only its projects; a new project is created in it. Opening `/p/:key`, `/issue/:id` or `/doc/:slug` of another workspace's project switches to that workspace. "New workspace" is a name-only modal. Project keys stay globally unique, so identifiers and routes don't change.
+- **Workspaces**: the current workspace is remembered in localStorage (`docket.workspace`), falling back to the first. `/` and `/docs` show only its content; the new issue/doc project pickers list only its projects, and assignee/label pickers and filters only its people and labels; a new project is created in it. Opening `/p/:key`, `/issue/:id` or `/doc/:slug` of another workspace's project switches to that workspace. "New workspace" is a name-only modal. Project keys stay globally unique, so identifiers and routes don't change.
 - Client routing with `history.pushState`: `/`, `/p/:key`, `/issue/:id`. The server returns index.html for these paths.
 - Works on a phone: the sidebar collapses below 768px.
 
