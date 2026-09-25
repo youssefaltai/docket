@@ -7,6 +7,7 @@ RUN bun install --frozen-lockfile --production
 COPY tsconfig.json ./
 COPY public ./public
 COPY src ./src
+COPY scripts ./scripts
 
 RUN mkdir -p /app/data && chown -R bun:bun /app
 USER bun
