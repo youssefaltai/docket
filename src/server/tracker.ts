@@ -37,6 +37,7 @@ import {
   db,
   exists,
   now,
+  capLength,
   optionalText,
   pickSlug,
   requireText,
@@ -658,7 +659,7 @@ function documentRow(a: Actor, slug: unknown): DocumentRow {
 
 function checkContent(value: unknown): string {
   if (typeof value !== "string") throw new AppError("content must be a string");
-  return value;
+  return capLength(value, "content");
 }
 
 function checkPosition(value: unknown): number {
@@ -785,7 +786,7 @@ export function updateDocument(a: Actor, slug: string, patch: DocumentPatch): Do
   const cols: Record<string, SQLQueryBindings> = {};
   if (patch.title !== undefined) cols.title = requireText(patch.title, "title");
   if (patch.content !== undefined) cols.content = checkContent(patch.content);
-  if (patch.edits !== undefined) cols.content = applyEdits(row.content, patch.edits);
+  if (patch.edits !== undefined) cols.content = capLength(applyEdits(row.content, patch.edits), "content");
   if (patch.team !== undefined) {
     const team = teamRow(a, patch.team);
     if (team.workspace !== row.workspace) throw new AppError("A doc can only move to a team in the same workspace");

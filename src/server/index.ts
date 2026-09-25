@@ -1,11 +1,11 @@
 import "./config.ts";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
-import index from "../web/index.html";
 import { formatCode, needsSetup, onRevoke, setupCode } from "./access.ts";
 import { apiRoutes } from "./api.ts";
 import { actorOf, authRoutes, guard } from "./auth.ts";
 import { onChange } from "./db.ts";
+import { HARD_MAX_BODY, http, publicFile, secure, webApp } from "./http.ts";
 import { handleMcp } from "./mcp.ts";
 
 /** Whose credentials each socket rides on, so signing out, revoking or suspending closes it. */
@@ -20,48 +20,42 @@ const topic = (workspace: string) => `workspace:${workspace}`;
 
 const publicDir = join(import.meta.dir, "..", "..", "public");
 const iconsDir = join(publicDir, "icons");
+const development = process.env.NODE_ENV !== "production";
+
+// In development Bun serves the app itself, with hot reload; in production it's built once, so every file gets our headers.
+const web = development
+  ? { page: (await import("../web/index.html")).default, files: {} }
+  : await webApp(join(import.meta.dir, "..", "web", "index.html"));
+const APP_PATHS = ["/", "/login", "/setup", "/settings/*", "/t/*", "/issue/*", "/docs", "/doc/*"];
 
 const server = Bun.serve({
   port: Number(process.env.PORT ?? 7100),
-  development: process.env.NODE_ENV !== "production",
+  development,
+  maxRequestBodySize: HARD_MAX_BODY,
   routes: {
-    "/": index,
-    "/login": index,
-    "/setup": index,
-    "/settings/*": index,
-    "/t/*": index,
-    "/issue/*": index,
-    "/docs": index,
-    "/doc/*": index,
-    "/manifest.webmanifest": () =>
-      new Response(Bun.file(join(publicDir, "manifest.webmanifest")), {
-        headers: { "Content-Type": "application/manifest+json" },
-      }),
-    "/sw.js": () =>
-      new Response(Bun.file(join(publicDir, "sw.js")), {
-        headers: { "Content-Type": "text/javascript", "Cache-Control": "no-cache" },
-      }),
+    ...Object.fromEntries(APP_PATHS.map((path) => [path, web.page])),
+    ...web.files,
+    "/manifest.webmanifest": publicFile(publicDir, "manifest.webmanifest", { "Content-Type": "application/manifest+json" }),
+    "/sw.js": publicFile(publicDir, "sw.js", { "Content-Type": "text/javascript", "Cache-Control": "no-cache" }),
     // One static route per file found at startup, so anything else under /icons is a plain 404.
     ...Object.fromEntries(
       readdirSync(iconsDir, { withFileTypes: true })
         .filter((entry) => entry.isFile())
-        .map(({ name }) => [
-          `/icons/${name}`,
-          () =>
-            new Response(Bun.file(join(iconsDir, name)), {
-              headers: { "Cache-Control": "public, max-age=31536000, immutable" },
-            }),
-        ]),
+        .map(({ name }) => [`/icons/${name}`, publicFile(iconsDir, name, { "Cache-Control": "public, max-age=31536000, immutable" })]),
     ),
-    ...authRoutes,
-    ...(Object.fromEntries(Object.entries(apiRoutes).map(([path, route]) => [path, guard(route)])) as typeof apiRoutes),
-    "/mcp": guard(handleMcp, { mcp: true }),
-    "/ws": guard((req: Request, server: Bun.Server<SocketData>) => {
-      const a = actorOf(req);
-      const data = { userId: a.id, sessionId: a.sessionId, keyId: a.keyId, workspaces: [...a.workspaces.keys()] };
-      return server.upgrade(req, { data }) ? undefined : new Response("Expected a WebSocket", { status: 400 });
-    }),
+    ...(Object.fromEntries(Object.entries(authRoutes).map(([path, route]) => [path, http(route)])) as typeof authRoutes),
+    ...(Object.fromEntries(Object.entries(apiRoutes).map(([path, route]) => [path, http(guard(route))])) as typeof apiRoutes),
+    "/mcp": http(guard(handleMcp, { mcp: true })),
+    "/ws": http(
+      guard((req: Request, server: Bun.Server<SocketData>) => {
+        const a = actorOf(req);
+        const data = { userId: a.id, sessionId: a.sessionId, keyId: a.keyId, workspaces: [...a.workspaces.keys()] };
+        return server.upgrade(req, { data }) ? undefined : new Response("Expected a WebSocket", { status: 400 });
+      }),
+    ),
   },
+  // Anything unmatched: a plain 404, with the headers too.
+  fetch: (req) => secure(req, new Response("Not found", { status: 404 })),
   websocket: {
     data: {} as SocketData,
     open(ws) {

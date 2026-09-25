@@ -383,3 +383,6 @@ createRoot(document.getElementById("root")!).render(
     <Root />
   </StrictMode>,
 );
+
+// Here rather than inline in index.html, which the Content-Security-Policy doesn't allow.
+if ("serviceWorker" in navigator) addEventListener("load", () => navigator.serviceWorker.register("/sw.js"));

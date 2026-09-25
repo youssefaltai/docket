@@ -209,15 +209,24 @@ export const BUMPED_AT =
 export const exists = (table: string, column: string, value: string) =>
   db.query(`SELECT 1 FROM ${table} WHERE ${column} = ?`).get(value) !== null;
 
+/** The longest text a field takes, in characters (a huge comment would freeze every viewer's page). */
+export const MAX_LENGTH: Record<string, number> = { title: 500, name: 200, body: 100_000, description: 100_000, content: 500_000 };
+
+export function capLength(text: string, field: string): string {
+  const max = MAX_LENGTH[field];
+  if (max && text.length > max) throw new AppError(`${field} is too long: at most ${max.toLocaleString("en-US")} characters`);
+  return text;
+}
+
 export function requireText(value: unknown, field: string): string {
   if (typeof value !== "string" || !value.trim()) throw new AppError(`${field} is required`);
-  return value.trim();
+  return capLength(value.trim(), field);
 }
 
 export function optionalText(value: unknown, field: string): string {
   if (value == null) return "";
   if (typeof value !== "string") throw new AppError(`${field} must be a string`);
-  return value.trim();
+  return capLength(value.trim(), field);
 }
 
 export function checkOneOf<T extends string | number>(value: unknown, allowed: readonly T[], field: string): T {

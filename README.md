@@ -93,7 +93,7 @@ Docket copies Linear's model: everyone signs in, each workspace has its own memb
 - **Scripts** use personal API keys (**Settings → Account → API keys**), read-only or read-write. Keys can't create other keys, invites or sign-in links: that takes the web app.
 - **Removing someone** is suspending them: their access to the workspace ends at once and their history keeps their name. If it was their only workspace, their sessions and API keys are deleted too, and reinstating them means they sign in again.
 
-Serve it over HTTPS anywhere but localhost.
+Serve it over HTTPS anywhere but localhost. Give each Docket its own hostname: browsers share cookies across ports, so two Dockets on one host (say `localhost:7100` and `localhost:7200`) sign each other out, and any other app on that host can read the session cookie.
 
 **Locked out?** On the server, `docker compose exec docket bun run sign-in-link <username>` prints a one-time sign-in link. Set `DOCKET_URL` so it points at your public address.
 
