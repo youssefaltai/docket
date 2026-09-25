@@ -1,50 +1,118 @@
+<div align="center">
+
+<img src=".github/logo.svg" width="64" alt="">
+
 # Docket
 
-A nano issue tracker: workspaces, projects, issues, comments, and markdown docs. A web UI for humans and an MCP server for agents, on Bun + SQLite. Self-hosted: one container, one SQLite file. See [SPEC.md](SPEC.md) for the data model, REST API and MCP tools.
+**The issue tracker your AI agents can actually use.**
 
-It's installable as a PWA (Add to Home Screen / Add to Dock) on iPhone, iPad, Mac Safari and Chrome, with offline support for the last-seen issues and docs.
+Issues, boards and docs, with a clean web UI for you and an MCP server for Claude and other agents. Same tracker, both at the same time, live.
 
-## Run locally
+One container. One SQLite file. No accounts, no SaaS.
+
+[![MIT license](https://img.shields.io/badge/license-MIT-black)](LICENSE)
+[![Bun](https://img.shields.io/badge/runtime-Bun-black?logo=bun)](https://bun.sh)
+[![MCP](https://img.shields.io/badge/MCP-ready-black)](https://modelcontextprotocol.io)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-black)](CONTRIBUTING.md)
+
+<img src=".github/screenshots/list.png" alt="Docket issue list" width="880">
+
+</div>
+
+## Why Docket
+
+Agents are good at doing work and bad at keeping track of it. Docket gives them a place to do that: they pick up issues, post progress, write the spec and move things to review, while you watch it happen in the browser.
+
+- **Built for agents and humans together.** 14 MCP tools for issues, comments and docs. What an agent does shows up in your UI right away over WebSocket.
+- **Linear-style, but tiny.** List and board views, priorities, labels, sub-issues, blockers, keyboard shortcuts (`C`, `/`, `⌘↵`).
+- **Docs next to your issues.** Markdown docs with version history. Write `API-1` and it links to the issue, with its status shown inline.
+- **Yours.** Self-hosted, a single SQLite file, five runtime dependencies. You can back it up with `cp`.
+- **Works everywhere.** Install it as a PWA on iPhone, iPad or Mac. It works offline for the issues and docs you've already opened.
+
+<table>
+  <tr>
+    <td><img src=".github/screenshots/issue.png" alt="An issue with a comment from Claude"></td>
+    <td><img src=".github/screenshots/doc.png" alt="A markdown doc linking issues"></td>
+  </tr>
+</table>
+
+## Quick start
 
 ```sh
-bun install
-bun run dev        # http://localhost:7100, hot reload
-```
-
-Env: `PORT` (default `7100`), `DATABASE_PATH` (default `$XDG_DATA_HOME/docket/docket.db`). `NODE_ENV=production bun run start` runs it like production: UI bundled once at startup, no hot reload.
-
-Config file (optional, real env vars win): `$XDG_CONFIG_HOME/docket/config` or `$XDG_CONFIG_DIRS/docket/config`, `KEY=VALUE` lines (keep it `chmod 600` if it holds the token):
-
-```
-PORT=7100
-DOCKET_TOKEN=secret
-```
-
-## Deploy
-
-```sh
+git clone https://github.com/youssefaltai/docket && cd docket
 docker compose up -d --build
 ```
 
-SQLite data persists in `./data`. The container listens on `127.0.0.1:7100` only; put it behind whatever you already use for HTTPS — a reverse proxy (Caddy, nginx, Traefik), a tunnel, or a private network like Tailscale or WireGuard. Back up with `./backup.sh` (nightly cron: a consistent snapshot into `data/backups/`, kept 14 days).
+Open http://localhost:7100. Your data lives in `./data`.
 
-## Access
-
-Docket has a single shared access token, off by default.
-
-- **Private network only** (VPN, LAN): leave `DOCKET_TOKEN` unset. Anyone who can reach it can use it.
-- **Anywhere else**: set `DOCKET_TOKEN` to a long random secret (e.g. `openssl rand -hex 32`), in the environment or a `.env` file next to `docker-compose.yml`. Then `/api`, `/mcp` and `/ws` need `Authorization: Bearer <token>`; the web UI asks for the token once and keeps it in an HttpOnly cookie. Always serve it over HTTPS.
-
-## Connect Claude Code
+Then hand it to Claude Code:
 
 ```sh
-claude mcp add --transport http --scope user docket https://docket.example.com/mcp
-# with DOCKET_TOKEN set:
+claude mcp add --transport http --scope user docket http://localhost:7100/mcp
+```
+
+Try: *"Create a project called Website in Docket and file issues for everything in TODO.md."*
+
+## Going further
+
+<details>
+<summary><b>Put it on a server</b></summary>
+
+The container listens on `127.0.0.1:7100` only. Put it behind whatever you already use for HTTPS: a reverse proxy (Caddy, nginx, Traefik), a tunnel, or a private network like Tailscale or WireGuard.
+
+Back up with `./backup.sh`. Run it from a nightly cron: it writes a consistent snapshot into `data/backups/` and keeps 14 days.
+
+</details>
+
+<details>
+<summary><b>Access token</b></summary>
+
+Docket has one shared access token, off by default.
+
+- **Private network only** (VPN, LAN): leave `DOCKET_TOKEN` unset. Anyone who can reach it can use it.
+- **Anywhere else**: set `DOCKET_TOKEN` to a long random secret (e.g. `openssl rand -hex 32`), in the environment or in a `.env` file next to `docker-compose.yml`. Then `/api`, `/mcp` and `/ws` need `Authorization: Bearer <token>`. The web UI asks for the token once and keeps it in an HttpOnly cookie. Always serve it over HTTPS.
+
+Connect Claude Code with the token:
+
+```sh
 claude mcp add --transport http --scope user docket https://docket.example.com/mcp \
   --header "Authorization: Bearer $DOCKET_TOKEN"
 ```
 
-Tools: `list_workspaces`, `create_workspace`, `list_projects`, `create_project`, `list_issues`, `get_issue`, `create_issue`, `update_issue`, `comment_issue`, `list_documents`, `get_document`, `create_document`, `update_document`, `comment_document`.
+</details>
+
+<details>
+<summary><b>Configuration</b></summary>
+
+| Variable | Default |
+|---|---|
+| `PORT` | `7100` |
+| `DATABASE_PATH` | `$XDG_DATA_HOME/docket/docket.db` |
+| `DOCKET_TOKEN` | unset (open) |
+
+You can also use an optional config file at `$XDG_CONFIG_HOME/docket/config` or `$XDG_CONFIG_DIRS/docket/config`, with `KEY=VALUE` lines. Real env vars win. Keep it `chmod 600` if it holds the token.
+
+</details>
+
+<details>
+<summary><b>MCP tools</b></summary>
+
+`list_workspaces`, `create_workspace`, `list_projects`, `create_project`, `list_issues`, `get_issue`, `create_issue`, `update_issue`, `comment_issue`, `list_documents`, `get_document`, `create_document`, `update_document`, `comment_document`.
+
+The full REST API and data model are in [SPEC.md](SPEC.md).
+
+</details>
+
+## Contributing
+
+Contributions are welcome, from typo fixes to new features. Docket is small on purpose, so you can read the whole codebase in an afternoon.
+
+```sh
+bun install
+bun run dev   # http://localhost:7100, hot reload
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how the code is laid out and what makes a PR easy to merge. Not sure where to start? [Open an issue](https://github.com/youssefaltai/docket/issues/new) and say hi.
 
 ## License
 
