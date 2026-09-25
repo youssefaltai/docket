@@ -307,8 +307,15 @@ export function ProjectPicker({ value, onChange, children, ...rest }: Trigger & 
 }
 
 function useIssueOptions(project: string | undefined, exclude: string[]) {
+  const { workspace } = useApp();
   const [issues, setIssues] = useState<IssueSummary[]>([]);
-  const load = () => void api.issues(project ? { project } : {}).then(setIssues).catch(errorToast);
+  // A project already scopes tightly enough; otherwise (Blocked by, any project) stay
+  // within the current workspace instead of leaking every workspace's issues.
+  const load = () =>
+    void api
+      .issues(project ? { project } : workspace ? { workspace: workspace.key } : {})
+      .then(setIssues)
+      .catch(errorToast);
   const options: Option[] = issues
     .filter((i) => !exclude.includes(i.id))
     .map((i) => ({ value: i.id, label: i.title, prefix: i.id, icon: <StatusIcon status={i.status} /> }));
