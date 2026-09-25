@@ -87,4 +87,6 @@ onRevoke(({ userId, sessionId, keyId }) => {
 });
 
 console.log(`Docket running at ${server.url}`);
-if (needsSetup()) console.log(`Setup code: ${formatCode(setupCode)} (open ${server.url}setup to create the first account)`);
+// Behind a proxy the listening address isn't where people open Docket; DOCKET_URL is (as for sign-in-link).
+const publicUrl = (process.env.DOCKET_URL || server.url.href).replace(/\/+$/, "");
+if (needsSetup()) console.log(`Setup code: ${formatCode(setupCode)} (open ${publicUrl}/setup to create the first account)`);
