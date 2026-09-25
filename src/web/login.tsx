@@ -1,17 +1,16 @@
 // Signed-out screens: first-run setup, and signing in with a one-time code (a sign-in link or an invite).
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { CodeInfo } from "../shared/types";
 import { HttpError } from "./api";
 import { auth } from "./auth";
-import { Logo } from "./ui";
+import { Field, Logo } from "./ui";
 
 /** A full reload into the app, so it boots with the new session. */
 const enter = () => location.replace("/");
 
-/** "Ana María" or "ana.maria@x.io" → "ana-maria": a starting point the user can edit. */
+/** "Ana María" → "ana-maria": a starting point the user can edit. */
 const suggestUsername = (from: string) =>
   from
-    .split("@")[0]!
     .normalize("NFKD")
     .replace(/[̀-ͯ]/g, "")
     .toLowerCase()
@@ -22,19 +21,48 @@ const suggestUsername = (from: string) =>
 const message = (err: unknown) =>
   err instanceof HttpError && err.status === 401 ? "This code is invalid or has expired." : String((err as Error).message);
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+/** A signed-out screen's form: logo, title, intro, fields, error and the primary button. */
+function AuthForm({
+  title,
+  intro,
+  error,
+  action,
+  ready,
+  onSubmit,
+  children,
+}: {
+  title: string;
+  intro: string;
+  error: string;
+  action: string;
+  ready: boolean;
+  onSubmit: () => void;
+  children: ReactNode;
+}) {
   return (
-    <label className="field auth-field">
-      <span>{label}</span>
+    <form
+      className="empty login"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (ready) onSubmit();
+      }}
+    >
+      <Logo />
+      <h2 dir="auto">{title}</h2>
+      <p>{intro}</p>
       {children}
-    </label>
+      {error && <small className="login-error">{error}</small>}
+      <button className="btn btn-primary" disabled={!ready}>
+        {action}
+      </button>
+    </form>
   );
 }
 
 /** Profile fields for a new account; the username follows the name until edited. */
-function useProfile(initial: string) {
+function useProfile() {
   const [name, setName] = useState("");
-  const [username, setUsername] = useState(() => suggestUsername(initial));
+  const [username, setUsername] = useState("");
   const [edited, setEdited] = useState(false);
   const fields = (
     <>
@@ -47,7 +75,7 @@ function useProfile(initial: string) {
           value={name}
           onChange={(e) => {
             setName(e.target.value);
-            if (!edited) setUsername(suggestUsername(e.target.value) || suggestUsername(initial));
+            if (!edited) setUsername(suggestUsername(e.target.value));
           }}
         />
       </Field>
@@ -71,14 +99,12 @@ export function Setup() {
   const [code, setCode] = useState("");
   const [email, setEmail] = useState("");
   const [workspace, setWorkspace] = useState("");
-  const profile = useProfile("");
+  const profile = useProfile();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const ready = !!(code.trim() && profile.name && profile.username && workspace.trim()) && !busy;
 
-  const submit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!ready) return;
+  const submit = () => {
     setBusy(true);
     auth
       .setup({ code, email: email.trim() || undefined, name: profile.name, username: profile.username, workspace: { name: workspace.trim() } })
@@ -89,10 +115,14 @@ export function Setup() {
   };
 
   return (
-    <form className="empty login auth" onSubmit={submit}>
-      <Logo />
-      <h2>Set up Docket</h2>
-      <p>Enter the setup code from the server's log, then create your account. You'll be the admin of your first workspace.</p>
+    <AuthForm
+      title="Set up Docket"
+      intro="Enter the setup code from the server's log, then create your account. You'll be the admin of your first workspace."
+      error={error}
+      action="Create account"
+      ready={ready}
+      onSubmit={submit}
+    >
       <Field label="Setup code">
         <input className="input mono" autoFocus autoComplete="off" placeholder="XXXXX-XXXXX" value={code} onChange={(e) => setCode(e.target.value)} />
       </Field>
@@ -103,11 +133,7 @@ export function Setup() {
       <Field label="Workspace name">
         <input className="input" dir="auto" placeholder="Acme" value={workspace} onChange={(e) => setWorkspace(e.target.value)} />
       </Field>
-      {error && <small className="login-error">{error}</small>}
-      <button className="btn btn-primary" disabled={!ready}>
-        Create account
-      </button>
-    </form>
+    </AuthForm>
   );
 }
 
@@ -115,11 +141,7 @@ export function Setup() {
 function takeCode(): string {
   const raw = location.hash.slice(1);
   if (raw) history.replaceState(null, "", location.pathname + location.search);
-  try {
-    return decodeURIComponent(raw).trim();
-  } catch {
-    return raw.trim(); // a mangled fragment (e.g. "%E0") is just a bad code, which the server rejects
-  }
+  return raw.trim();
 }
 
 /** Accepts a whole link or just its code. */
@@ -161,16 +183,14 @@ export function Login() {
 
   if (info) return <Join code={code} info={info} onError={fail} />;
   return (
-    <form
-      className="empty login auth"
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (input.trim() && !busy) use(codeFrom(input));
-      }}
+    <AuthForm
+      title="Sign in to Docket"
+      intro="Paste your sign-in link or code. Ask a workspace admin for one, or make one in Settings on a device where you're signed in."
+      error={error}
+      action={busy ? "Signing in…" : "Sign in"}
+      ready={!!input.trim() && !busy}
+      onSubmit={() => use(codeFrom(input))}
     >
-      <Logo />
-      <h2>Sign in to Docket</h2>
-      <p>Paste your sign-in link or code. Ask a workspace admin for one, or make one in Settings on a device where you're signed in.</p>
       <input
         className="input mono"
         autoFocus
@@ -180,23 +200,17 @@ export function Login() {
         onChange={(e) => setInput(e.target.value)}
         disabled={busy}
       />
-      {error && <small className="login-error">{error}</small>}
-      <button className="btn btn-primary" disabled={!input.trim() || busy}>
-        {busy ? "Signing in…" : "Sign in"}
-      </button>
-    </form>
+    </AuthForm>
   );
 }
 
 /** Accepting an invite as someone new: pick a name and username, then you're in. */
 function Join({ code, info, onError }: { code: string; info: CodeInfo; onError: (err: unknown) => void }) {
-  const profile = useProfile("");
+  const profile = useProfile();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const ready = !!(profile.name && profile.username) && !busy;
-  const submit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!ready) return;
+  const submit = () => {
     setBusy(true);
     auth.redeem(code, { name: profile.name, username: profile.username }).then(enter, (err) => {
       // A taken or invalid username keeps the form; anything else (expired, used) starts over.
@@ -207,15 +221,15 @@ function Join({ code, info, onError }: { code: string; info: CodeInfo; onError: 
     });
   };
   return (
-    <form className="empty login auth" onSubmit={submit}>
-      <Logo />
-      <h2 dir="auto">Join {info.workspace ?? "Docket"}</h2>
-      <p>Create your account: choose how you appear to others. Already have one? Sign in first, then open the invite again.</p>
+    <AuthForm
+      title={`Join ${info.workspace ?? "Docket"}`}
+      intro="Create your account: choose how you appear to others. Already have one? Sign in first, then open the invite again."
+      error={error}
+      action="Join"
+      ready={ready}
+      onSubmit={submit}
+    >
       {profile.fields}
-      {error && <small className="login-error">{error}</small>}
-      <button className="btn btn-primary" disabled={!ready}>
-        Join
-      </button>
-    </form>
+    </AuthForm>
   );
 }

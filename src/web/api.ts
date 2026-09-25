@@ -73,7 +73,7 @@ function query(filter: IssueFilter | DocumentFilter): string {
   return s ? `?${s}` : "";
 }
 
-const enc = encodeURIComponent;
+export const enc = encodeURIComponent;
 
 export const api = {
   workspaces: () => request<Workspace[]>("GET", "/api/workspaces"),

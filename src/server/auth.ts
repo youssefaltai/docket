@@ -3,7 +3,7 @@
 // first account and turn one-time codes into sessions.
 import type { SetupInput } from "../shared/types.ts";
 import * as access from "./access.ts";
-import type { Actor, Client } from "./access.ts";
+import { SESSION_IDLE_MS, type Actor, type Client } from "./access.ts";
 import { AppError } from "./db.ts";
 
 const COOKIE = "docket_session";
@@ -41,16 +41,17 @@ const https = (req: Request) => new URL(req.url).protocol === "https:" || req.he
 function cookieHeader(req: Request, value: string, maxAge: number): string {
   return `${COOKIE}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${https(req) ? "; Secure" : ""}`;
 }
-const signedIn = (req: Request, token: string) => ({ "Set-Cookie": cookieHeader(req, token, 30 * 24 * 60 * 60) });
+const sessionCookie = (req: Request, token: string) => cookieHeader(req, token, SESSION_IDLE_MS / 1000);
+const signedIn = (req: Request, token: string) => ({ "Set-Cookie": sessionCookie(req, token) });
 const signedOut = (req: Request) => ({ "Set-Cookie": cookieHeader(req, "", 0) });
 
 const bearerOf = (req: Request) => req.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1];
 const cookieOf = (req: Request) => req.headers.get("cookie")?.match(new RegExp(`(?:^|;\\s*)${COOKIE}=([^;]+)`))?.[1];
 
-/** The actor behind a session cookie, if the request carries one that still signs in. */
-const sessionOf = (req: Request) => {
+/** The signed-in user of a same-origin request with a live session cookie, if any (an invite joins them). */
+const signedInId = (req: Request) => {
   const cookie = cookieOf(req);
-  return cookie ? access.sessionActor(cookie) : null;
+  return cookie && sameOrigin(req) ? (access.sessionActor(cookie)?.id ?? null) : null;
 };
 
 /**
@@ -80,21 +81,21 @@ export function actorOf(req: Request): Actor {
 
 /**
  * Wraps a route: 403 for an unknown Host, 401 without valid credentials, and 403 for a write with a
- * read-only key (for REST, anything but GET; /mcp passes `readCheck: false` and checks per tool).
+ * read-only key (anything but GET). `mcp`: API keys only, and read-only keys are checked per tool.
  * Works on handlers and method maps.
  */
-export function guard<T>(route: T, { bearerOnly = false, readCheck = true } = {}): T {
+export function guard<T>(route: T, { mcp = false } = {}): T {
   const wrap = (fn: (req: Request, ...rest: unknown[]) => unknown) => (req: Request, ...rest: unknown[]) => {
     if (!hostAllowed(req)) return forbiddenHost();
-    const { actor, stale, crossSite } = identify(req, bearerOnly);
+    const { actor, stale, crossSite } = identify(req, mcp);
     if (crossSite) return json({ error: "Cross-origin request refused" }, 403);
     if (!actor) return unauthorized(stale ? signedOut(req) : undefined);
-    if (readCheck && actor.scope === "read" && req.method !== "GET") return json({ error: "This API key is read-only" }, 403);
+    if (!mcp && actor.scope === "read" && req.method !== "GET") return json({ error: "This API key is read-only" }, 403);
     actors.set(req, actor);
     const result = fn(req, ...rest);
     if (!actor.renewCookie) return result;
     return Promise.resolve(result).then((res) => {
-      if (res instanceof Response) res.headers.append("Set-Cookie", signedIn(req, cookieOf(req)!)["Set-Cookie"]);
+      if (res instanceof Response) res.headers.append("Set-Cookie", sessionCookie(req, cookieOf(req)!));
       return res;
     });
   };
@@ -153,12 +154,11 @@ export const authRoutes = {
   },
   // An invite redeemed with a session joins that user; the Origin check keeps another site from doing it for them.
   "/api/auth/peek": {
-    POST: open((body, req) => json(access.peekCode(body.code, sameOrigin(req) ? (sessionOf(req)?.id ?? null) : null))),
+    POST: open((body, req) => json(access.peekCode(body.code, signedInId(req)))),
   },
   "/api/auth/redeem": {
     POST: open((body, req, client) => {
-      const signedInAs = sameOrigin(req) ? (sessionOf(req)?.id ?? null) : null;
-      const { user, token } = access.redeemCode(body.code, body, client, signedInAs);
+      const { user, token } = access.redeemCode(body.code, body, client, signedInId(req));
       return json({ user }, 200, signedIn(req, token));
     }),
   },

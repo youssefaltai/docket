@@ -27,7 +27,7 @@ import {
   type UserKind,
   type UserRef,
 } from "../shared/types.ts";
-import { type Actor, activeMemberId, isActiveMember, requireMember } from "./access.ts";
+import { type Actor, activeMemberId, requireMember } from "./access.ts";
 import {
   AppError,
   BUMPED_AT,
@@ -52,9 +52,10 @@ function checkLabels(value: unknown): string[] {
   return [...new Set(value.map((l) => l.trim()).filter(Boolean))];
 }
 
-/** The workspaces an actor can see, as a SQL list (never empty, so `IN (…)` stays valid). */
-const visible = (a: Actor) => [...a.workspaces.keys()];
-const inList = (values: string[]) => (values.length ? values.map(() => "?").join(", ") : "NULL");
+/** The one workspace asked for (if the actor is in it), else all of the actor's. */
+const scopeWorkspaces = (a: Actor, workspace?: string) => (workspace ? [requireMember(a, workspace)] : [...a.workspaces.keys()]);
+/** Placeholders for `IN (…)`; never empty, so the SQL stays valid. */
+const inList = (values: unknown[]) => (values.length ? values.map(() => "?").join(", ") : "NULL");
 
 /** A UserRef from joined columns `${p}_username`, `${p}_name`, `${p}_kind`, or null. */
 function ref(row: Record<string, unknown>, p: string): UserRef | null {
@@ -166,7 +167,7 @@ function teamRow(a: Actor, key: unknown): TeamRow {
 }
 
 export function listTeams(a: Actor, filter: { workspace?: string } = {}): Team[] {
-  const workspaces = filter.workspace ? [requireMember(a, filter.workspace)] : visible(a);
+  const workspaces = scopeWorkspaces(a, filter.workspace);
   return db
     .query<TeamRow, string[]>(`${TEAM_SELECT} WHERE t.workspace IN (${inList(workspaces)}) ORDER BY t.key`)
     .all(...workspaces)
@@ -337,7 +338,7 @@ const isClosed = (status: Status) => CLOSED_STATUSES.includes(status);
 function listScope(a: Actor, alias: string, filter: { workspace?: string; team?: string; q?: string }, searched: string[]) {
   const where: string[] = [];
   const params: SQLQueryBindings[] = [];
-  const workspaces = filter.workspace ? [requireMember(a, filter.workspace)] : visible(a);
+  const workspaces = scopeWorkspaces(a, filter.workspace);
   where.push(`${alias}.team_key IN (SELECT key FROM teams WHERE workspace IN (${inList(workspaces)}))`);
   params.push(...workspaces);
   if (filter.team) {
@@ -351,7 +352,8 @@ function listScope(a: Actor, alias: string, filter: { workspace?: string; team?:
   return { where, params };
 }
 
-const whereClause = (where: string[]) => (where.length ? `WHERE ${where.join(" AND ")}` : "");
+/** `listScope` always adds the workspace condition, so there's always a WHERE. */
+const whereClause = (where: string[]) => `WHERE ${where.join(" AND ")}`;
 
 /** A username filter ("me" is the actor) as a user id; an unknown name matches nothing. */
 function userFilterId(a: Actor, value: string): number {
@@ -363,7 +365,7 @@ function userFilterId(a: Actor, value: string): number {
 export function listIssues(a: Actor, filter: IssueFilter): IssueSummary[] {
   const { where, params } = listScope(a, "i", filter, ["i.title", "i.description", ident("i")]);
   if (filter.status?.length) {
-    where.push(`i.status IN (${filter.status.map(() => "?").join(", ")})`);
+    where.push(`i.status IN (${inList(filter.status)})`);
     params.push(...filter.status.map(checkStatus));
   }
   if (filter.label) {
@@ -559,13 +561,14 @@ export function claimIssue(a: Actor, identifier: string): Issue {
   const time = now();
   const claimed = db.transaction(() => {
     const row = db
-      .query<{ status: Status; holder: number | null; username: string | null; ref: string }, [number]>(
-        `SELECT i.status, i.${slot} AS holder, u.username, ${ident("i")} AS ref
+      .query<{ status: Status; holder: number | null; username: string | null; active: number; ref: string }, [string, number]>(
+        `SELECT i.status, i.${slot} AS holder, u.username, ${ident("i")} AS ref,
+           EXISTS (SELECT 1 FROM workspace_members m WHERE m.user_id = i.${slot} AND m.workspace = ? AND m.suspended_at IS NULL) AS active
          FROM issues i LEFT JOIN users u ON u.id = i.${slot} WHERE i.id = ?`,
       )
-      .get(id)!;
+      .get(workspace, id)!;
     if (isClosed(row.status)) throw new AppError(`${row.ref} is ${row.status}`, 409);
-    if (row.holder !== null && row.holder !== a.id && isActiveMember(row.holder, workspace)) {
+    if (row.holder !== null && row.holder !== a.id && row.active) {
       throw new AppError(`${row.ref} is claimed by ${row.username}`, 409);
     }
     if (row.holder === a.id && row.status === "in_progress") return false;
@@ -604,7 +607,7 @@ export function listLabels(a: Actor, filter: { workspace?: string } = {}): Label
   const { where, params } = listScope(a, "i", filter, []);
   return db
     .query<LabelCount, SQLQueryBindings[]>(
-      `SELECT l.value AS label, SUM(i.status NOT IN (${CLOSED_STATUSES.map(() => "?").join(", ")})) AS open
+      `SELECT l.value AS label, SUM(i.status NOT IN (${inList(CLOSED_STATUSES)})) AS open
        FROM issues i, json_each(i.labels) l ${whereClause(where)}
        GROUP BY l.value ORDER BY l.value COLLATE NOCASE`,
     )
@@ -625,9 +628,9 @@ type DocumentRow = Record<string, unknown> & {
   updated_at: string;
 };
 
-const DOC_SELECT = `
-  SELECT d.id, d.slug, d.team_key, t.workspace, d.title, d.position, d.created_at, d.updated_at, ${userCols("u", "by")}
-  FROM documents d JOIN teams t ON t.key = d.team_key JOIN users u ON u.id = d.updated_by_id`;
+const DOC_COLUMNS = `d.id, d.slug, d.team_key, t.workspace, d.title, d.position, d.created_at, d.updated_at, ${userCols("u", "by")}`;
+const DOC_FROM = "FROM documents d JOIN teams t ON t.key = d.team_key JOIN users u ON u.id = d.updated_by_id";
+const DOC_SELECT = `SELECT ${DOC_COLUMNS} ${DOC_FROM}`; // lists leave out the content
 
 // Saves by the same author within this window of a version's first save update that version (autosave-friendly).
 const VERSION_WINDOW_MS = 10 * 60 * 1000;
@@ -646,7 +649,7 @@ function documentRow(a: Actor, slug: unknown): DocumentRow {
   const row =
     typeof slug === "string"
       ? db
-          .query<DocumentRow, [string]>(`${DOC_SELECT.replace("SELECT d.id,", "SELECT d.content, d.id,")} WHERE d.slug = ?`)
+          .query<DocumentRow, [string]>(`SELECT d.content, ${DOC_COLUMNS} ${DOC_FROM} WHERE d.slug = ?`)
           .get(slug.trim().toLowerCase())
       : null;
   if (!row || !a.workspaces.has(row.workspace)) throw new AppError(`Document ${slug} not found`, 404);
@@ -829,25 +832,23 @@ export const updateDocumentComment = (a: Actor, slug: string, commentId: unknown
 export const deleteDocumentComment = (a: Actor, slug: string, commentId: unknown) =>
   changeDocumentComments(a, slug, (id) => deleteComment(a, "document", id, commentId));
 
-const versionAuthor = (r: Record<string, unknown>) => ref(r, "a")!;
+const VERSION_FROM = "FROM document_versions v JOIN users u ON u.id = v.author_id";
 
 export function listDocumentVersions(a: Actor, slug: string): DocumentVersionSummary[] {
   return db
     .query<Record<string, unknown>, [number]>(
-      `SELECT v.id, v.title, v.created_at, ${userCols("u", "a")} FROM document_versions v JOIN users u ON u.id = v.author_id
-       WHERE v.document_id = ? ORDER BY v.id DESC`,
+      `SELECT v.id, v.title, v.created_at, ${userCols("u", "a")} ${VERSION_FROM} WHERE v.document_id = ? ORDER BY v.id DESC`,
     )
     .all(documentRow(a, slug).id)
-    .map((r) => ({ id: r.id as number, author: versionAuthor(r), title: r.title as string, createdAt: r.created_at as string }));
+    .map((r) => ({ id: r.id as number, author: ref(r, "a")!, title: r.title as string, createdAt: r.created_at as string }));
 }
 
 export function getDocumentVersion(a: Actor, slug: string, id: unknown): DocumentVersion {
   const r = db
     .query<Record<string, unknown>, [number, number]>(
-      `SELECT v.id, v.title, v.content, v.created_at, ${userCols("u", "a")} FROM document_versions v JOIN users u ON u.id = v.author_id
-       WHERE v.document_id = ? AND v.id = ?`,
+      `SELECT v.id, v.title, v.content, v.created_at, ${userCols("u", "a")} ${VERSION_FROM} WHERE v.document_id = ? AND v.id = ?`,
     )
     .get(documentRow(a, slug).id, Number(id));
   if (!r) throw new AppError(`Version ${id} of ${slug} not found`, 404);
-  return { id: r.id as number, author: versionAuthor(r), title: r.title as string, content: r.content as string, createdAt: r.created_at as string };
+  return { id: r.id as number, author: ref(r, "a")!, title: r.title as string, content: r.content as string, createdAt: r.created_at as string };
 }

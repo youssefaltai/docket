@@ -28,8 +28,7 @@ export const PRIORITY_LABELS: Record<Priority, string> = {
 };
 
 /** Who did or owns something: a person or an agent. */
-export const USER_KINDS = ["person", "agent"] as const;
-export type UserKind = (typeof USER_KINDS)[number];
+export type UserKind = "person" | "agent";
 
 export interface UserRef {
   username: string; // lowercase a-z 0-9 . _ -, 2–32 chars, unique across people and agents
@@ -43,8 +42,7 @@ export interface User extends UserRef {
 }
 
 // Workspace roles. Agents are members with role "agent": they work in teams but manage nothing.
-export const ROLES = ["admin", "member", "agent"] as const;
-export type Role = (typeof ROLES)[number];
+export type Role = "admin" | "member" | "agent";
 
 export interface Workspace {
   key: string; // URL-safe lowercase slug, e.g. "acme"

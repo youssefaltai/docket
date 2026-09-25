@@ -49,12 +49,9 @@ type ModalState =
   | { kind: "team-settings"; team: string }
   | null;
 
-const settingsRoute = (path: string) => /^\/settings\/(account|workspace)\/?$/.exec(path)?.[1] as "account" | "workspace" | undefined;
-
 function App() {
   const path = usePath();
   const route = parseRoute(path);
-  const settings = settingsRoute(path);
   const [live, setLive] = useState(0);
   const [workspaces, setWorkspaces] = useState<Workspace[] | null>(null);
   const [workspaceKey, setWorkspaceKey] = useState(() => store.get("workspace"));
@@ -125,10 +122,10 @@ function App() {
   }, []);
   const switchWorkspace = (key: string) => {
     setWorkspace(key);
-    navigate(settings ? path : route.view === "docs" || route.view === "doc" ? "/docs" : "/");
+    navigate(route.view === "settings" ? path : route.view === "docs" || route.view === "doc" ? "/docs" : "/");
   };
 
-  const currentTeam = settings ? null : routeTeam(route, docTeam);
+  const currentTeam = routeTeam(route, docTeam);
 
   // Opening a team, issue or doc from another workspace switches to that workspace.
   const owner = teams?.find((t) => t.key === currentTeam)?.workspace;
@@ -181,13 +178,13 @@ function App() {
       else if (route.view === "issue") navigate(nav.lastList);
       else if (route.view === "doc") navigate(nav.lastDocs);
       else (document.activeElement as HTMLElement | null)?.blur?.();
-    } else if (!settings && (route.view === "issues" || route.view === "docs") && (key === "j" || key === "k" || key === "ArrowDown" || key === "ArrowUp")) {
+    } else if ((route.view === "issues" || route.view === "docs") && (key === "j" || key === "k" || key === "ArrowDown" || key === "ArrowUp")) {
       if (moveFocus(key === "j" || key === "ArrowDown" ? 1 : -1)) e.preventDefault();
     }
   });
 
-  const page = settings ? (
-    <SettingsPage section={settings} workspace={workspace?.key ?? null} />
+  const page = route.view === "settings" ? (
+    <SettingsPage section={route.section} />
   ) : workspaces?.length === 0 ? (
     <EmptyState title="No workspace yet" action={<button className="btn btn-primary" onClick={app.newWorkspace}>Create a workspace</button>}>
       Create one to start, or ask an admin to invite you to theirs.
@@ -206,7 +203,7 @@ function App() {
     <AppContext.Provider value={app}>
       <LiveContext.Provider value={live}>
         <div className={cls("app", navOpen && "nav-open")}>
-          <Sidebar route={route} settings={!!settings} active={currentTeam} onSwitch={switchWorkspace} />
+          <Sidebar route={route} active={currentTeam} onSwitch={switchWorkspace} />
           <div className="nav-backdrop" onClick={() => setNavOpen(false)} />
           <main className="main">{page}</main>
         </div>
@@ -232,20 +229,10 @@ function App() {
 function routeTeam(route: Route, docTeam: string | null): string | null {
   if (route.view === "issue") return route.id.replace(/-\d+$/, "");
   if (route.view === "doc") return docTeam;
-  return route.team;
+  return route.view === "settings" ? null : route.team;
 }
 
-function Sidebar({
-  route,
-  settings,
-  active,
-  onSwitch,
-}: {
-  route: Route;
-  settings: boolean;
-  active: string | null;
-  onSwitch: (key: string) => void;
-}) {
+function Sidebar({ route, active, onSwitch }: { route: Route; active: string | null; onSwitch: (key: string) => void }) {
   const { workspaces, workspace, workspaceTeams: teams, newIssue, newTeam, newWorkspace } = useApp();
   const total = teams?.reduce((n, t) => n + openCount(t), 0) ?? 0;
   const docs = teams?.reduce((n, t) => n + t.docCount, 0) ?? 0;
@@ -253,7 +240,7 @@ function Sidebar({
     ...(workspaces ?? []).map((w) => ({ value: w.key, label: w.name, icon: <TeamMark id={w.name.toUpperCase()} /> })),
     { value: "", label: "New workspace", icon: <PlusIcon /> },
   ];
-  const on = (view: string) => !settings && route.view === view && !("team" in route && route.team);
+  const on = (view: string) => route.view === view && !("team" in route && route.team);
   return (
     <aside className="sidebar">
       <Picker
