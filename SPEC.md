@@ -28,7 +28,7 @@ Env vars and the optional XDG config file: see README's Configuration section. D
 - **issue_blocks**: blocker_id, blocked_id. No cycles: setting `blockedBy` fails (400) if the issue itself or any issue it already blocks, directly or through a chain, is among the blockers.
 - **comments**: id, issue_id, author, body, created_at, edited_at (set on each edit, else null).
 
-Identifier = `${project_key}-${number}`, parsed case-insensitively. Issues can't move between projects. Any change to an issue or its comments bumps `updated_at`. Deleting an issue also bumps `updated_at` on, and publishes `issue` events for, its sub-issues (parent cleared), its parent, and the issues it blocked or was blocked by; docs that mentioned it get a `document` event. Changing an issue's parent or blockers likewise bumps and publishes the old and new parent and each blocker added or removed. `completed_at` is set when status enters done/canceled, cleared when it leaves. List order: status order, then priority (1→4, then 0 last), then `updated_at` desc. WAL mode on.
+Identifier = `${project_key}-${number}`, parsed case-insensitively. Issues can't move between projects. Any change to an issue or its comments bumps `updated_at`, strictly forward (at least 1 ms past its previous value, even within one millisecond), since it doubles as the version token for `baseUpdatedAt`; `db.ts` keeps that rule in one place per layer (`bumpedAt` in JS, `BUMPED_AT` in SQL), shared with documents. Creating an issue with a parent or blockers bumps and publishes them. Deleting an issue also bumps `updated_at` on, and publishes `issue` events for, its sub-issues (parent cleared), its parent, and the issues it blocked or was blocked by; docs that mentioned it get a `document` event. Changing an issue's parent or blockers likewise bumps and publishes the old and new parent and each blocker added or removed. `completed_at` is set when status enters done/canceled, cleared when it leaves. List order: status order, then priority (1→4, then 0 last), then `updated_at` desc. WAL mode on.
 
 ## REST (JSON; errors are `{ "error": string }` with 4xx)
 
@@ -42,10 +42,11 @@ Request bodies (including `POST /api/login`) must be `Content-Type: application/
 | GET | /api/projects | `?workspace` | `Project[]` |
 | POST | /api/projects | `ProjectInput` (workspace required) | `Project` |
 | PATCH | /api/projects/:key | `{ name?, description?, workspace? }` (workspace moves it) | `Project` |
-| GET | /api/issues | `?workspace&project&status=a,b&label&assignee&parent&q` | `IssueSummary[]` |
+| GET | /api/issues | `?workspace&project&status=a,b&label&assignee&parent&q` (`assignee=me`: the caller) | `IssueSummary[]` |
 | POST | /api/issues | `IssueInput` | `Issue` |
 | GET | /api/issues/:id | | `Issue` |
-| PATCH | /api/issues/:id | `IssuePatch` | `Issue` |
+| PATCH | /api/issues/:id | `IssuePatch` (with optional `baseUpdatedAt`) | `Issue` |
+| POST | /api/issues/:id/claim | `{ assignee? }` (root only; a member claims for themselves) | `Issue` |
 | DELETE | /api/issues/:id | | `{ ok: true }` |
 | POST | /api/issues/:id/comments | `{ body, author? }` (author default "anonymous") | `Issue` |
 | PATCH | /api/issues/:id/comments/:cid | `{ body, author? }` | `Issue` |
@@ -81,7 +82,8 @@ Tools return short markdown text (one line per issue: `BRD-3 · todo · high · 
 | list_issues | workspace?, project?, status?[], label?, assignee?, parent?, query?, limit? (default 50) | excludes done/canceled unless `status` given |
 | get_issue | id | full issue with description, sub-issues, blockers, comments |
 | create_issue | project, title, description?, status?, priority?, labels?, assignee?, parent?, blockedBy? | |
-| update_issue | id + any of title, description, status, priority, labels, assignee, parent, blockedBy | |
+| update_issue | id + any of title, description, status, priority, labels, assignee, parent, blockedBy, baseUpdatedAt | pass `baseUpdatedAt` when replacing description, labels or blockedBy |
+| claim_issue | id, assignee? | see Claims |
 | comment_issue | id, body, author? (default "claude") | use for progress notes |
 | list_labels | workspace? | `label · N open`, so agents reuse existing labels |
 | list_members | | active members, `name · kind · role`, marking the caller. No tool creates members or tokens: agents never mint credentials |
@@ -133,7 +135,7 @@ Linear-style docs inside projects. Markdown is the source of truth (agents write
 
 `DocumentPatch.baseUpdatedAt` (optional) is the document's `updatedAt` the client started editing from: if present and different from the current `updatedAt`, the PATCH answers 409 `{ "error": "Document changed since you started editing" }` and changes nothing. Every save moves `updatedAt` strictly forward (at least 1 ms past the previous one), so it works as a version token even for saves in the same millisecond. The web editor sends it with every save; MCP `update_document` accepts it too. `edits` errors (400) name the failing edit and whether `oldText` matched 0 or many times (overlapping occurrences count: `aa` matches `aaa` twice); nothing is applied unless every edit applies. `GET /api/issues/:id` now includes `docs` (documents mentioning it). `Project` includes `docCount`. Mutations publish `{ type: "changed", entity: "document", id: slug }`.
 
-**MCP tools** (added to the 12 above)
+**MCP tools** (added to the 13 above)
 
 | Tool | Input | Notes |
 |---|---|---|
@@ -191,6 +193,16 @@ Migration 6 (additive): **members**: id, name (one line, ≤ 40 chars; `me` and 
 **Backward compatibility**: with no members, a `DOCKET_TOKEN` setup and an open setup behave exactly as before: same bearer, same cookie value, same login. Adding members doesn't change root.
 
 **Open mode caveat**: without `DOCKET_TOKEN`, anyone can reach the API as root, including creating members and tokens, and a request with no member token is root. Once any member exists (revoked ones count), credentials that don't verify are refused, not ignored, so a revoked agent can't quietly fall back to root: a bad bearer or a member-shaped cookie (`<id>.<hmac>`) is 401, and `POST /api/login` with anything but a member token is 401. With no members, stray bearers, cookies and logins are ignored as before. Member tokens then only name who is writing (useful for telling agents apart), and restrict nothing. Set `DOCKET_TOKEN` for real access control.
+
+## Claims
+
+No migration: claims use `assignee` and `status`.
+
+**Claim** (`POST /api/issues/:id/claim`, MCP `claim_issue`): takes an open issue for the claimer: sets `assignee` to them and `status` to `in_progress`. The claimer is the member; root must pass `assignee` (else 400), which goes through the usual assignee check. One IMMEDIATE transaction reads and writes, so of two claims racing for a free issue exactly one wins. A done or canceled issue is 409 `"<ID> is done"`; one held by someone else (compared with `nameKey`) is 409 `"<ID> is claimed by <name>"`. Once members exist, only an active member holds an issue: one assigned to a revoked member or to leftover free text counts as unclaimed, so no claim is held forever. Claiming your own again changes nothing. To hand an issue back: `update_issue` with assignee null and status todo.
+
+**"me"**: as an assignee (create, update, claim) or the `assignee` filter, `me` means the caller's member name; root gets 400 `"me" needs a member token`. The assignee filter matches a member's name by `nameKey`, and older free-text assignees case-insensitively.
+
+**Issue versions**: `IssuePatch.baseUpdatedAt` works like the document one: if present and different from the current `updatedAt`, the PATCH (or `update_issue`) answers 409 `{ "error": "Issue changed since you read it" }` and changes nothing; the check and the write share one IMMEDIATE transaction. Comments bump `updatedAt` too, so send it where lost updates happen (description, and the whole-list `labels` and `blockedBy`), not for single-field changes like status or priority.
 
 ## Deploy
 

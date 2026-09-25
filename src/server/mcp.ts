@@ -13,7 +13,7 @@ import {
   type Issue,
   type IssueSummary,
 } from "../shared/types.ts";
-import { authorFor, type Viewer, viewerOf } from "./auth.ts";
+import { authorFor, claimerFor, resolveAssignee, type Viewer, viewerOf } from "./auth.ts";
 import * as db from "./db.ts";
 
 const INSTRUCTIONS = `Docket is a small issue tracker shared by a human and agents.
@@ -21,7 +21,7 @@ const INSTRUCTIONS = `Docket is a small issue tracker shared by a human and agen
 - Projects have a 2–5 letter key (e.g. BRD), unique across all workspaces. Issues are identified as KEY-number, e.g. BRD-12.
 - Statuses: backlog, todo, in_progress, in_review, done, canceled.
 - Priority: 0 none, 1 urgent, 2 high, 3 medium, 4 low.
-- Working on an issue: get_issue, set status in_progress, post progress notes with comment_issue, then set in_review or done. There is no delete: set status canceled instead.
+- Working on an issue: get_issue, then claim_issue (assigns you and sets in_progress; if someone else holds it, pick another), post progress notes with comment_issue, then set in_review or done. There is no delete: set status canceled instead.
 - Members: people and agents can have their own token. Connected with one, you act as that member (author is set for you); list_members shows who can be assigned.
 - Documents (specs, plans, notes) live in projects and are identified by a slug, e.g. "architecture". They are markdown: mention issues by identifier (BRD-2) and they auto-link; link other docs with [Title](/doc/slug). Change a long doc with update_document's \`edits\` rather than rewriting it.`;
 
@@ -127,6 +127,7 @@ function result(text: string, structuredContent: Record<string, unknown>): CallT
 function createServer(viewer: Viewer): McpServer {
   const server = new McpServer({ name: "docket", version: "1.0.0" }, { instructions: INSTRUCTIONS });
   const by = (author: string | undefined) => authorFor(viewer, author, "claude") as string;
+  const who = <T,>(assignee: T) => resolveAssignee(viewer, assignee) as T;
 
   server.registerTool(
     "list_workspaces",
@@ -241,15 +242,15 @@ function createServer(viewer: Viewer): McpServer {
         project: projectKey.optional(),
         status: z.array(status).optional().describe("Only these statuses. Default: all except done and canceled."),
         label: z.string().optional(),
-        assignee: z.string().optional(),
+        assignee: z.string().optional().describe('A name, or "me" (your member token)'),
         parent: identifier.optional().describe("Only sub-issues of this issue, e.g. BRD-12"),
         query: z.string().optional().describe("Text to find in identifier, title or description"),
         limit: z.number().int().min(1).max(500).optional().describe("Maximum issues to return (default 50)"),
       },
       annotations: { readOnlyHint: true },
     },
-    ({ status, query, limit = 50, ...filter }) => {
-      const all = db.listIssues({ ...filter, status: status ?? OPEN_STATUSES, q: query });
+    ({ status, query, limit = 50, assignee, ...filter }) => {
+      const all = db.listIssues({ ...filter, assignee: who(assignee), status: status ?? OPEN_STATUSES, q: query });
       const issues = all.slice(0, limit);
       const lines = issues.map(line);
       if (all.length > limit) lines.push(`…and ${all.length - limit} more (raise limit or narrow the filters)`);
@@ -312,13 +313,13 @@ function createServer(viewer: Viewer): McpServer {
         status: status.optional().describe("Default todo"),
         priority: priority.optional().describe("0 none (default), 1 urgent, 2 high, 3 medium, 4 low"),
         labels: labels.optional(),
-        assignee: z.string().optional().describe("Who owns it: a person's name, or \"claude\" for an agent"),
+        assignee: z.string().optional().describe('Who owns it: a member name (see list_members), or "me"'),
         parent: identifier.optional().describe("Parent issue identifier, making this a sub-issue"),
         blockedBy: blockedBy.optional(),
       },
     },
-    (input) => {
-      const issue = db.createIssue(input);
+    ({ assignee, ...input }) => {
+      const issue = db.createIssue({ ...input, assignee: who(assignee) });
       return result(`Created ${issue.id}\n${line(issue)}`, { issue });
     },
   );
@@ -327,7 +328,7 @@ function createServer(viewer: Viewer): McpServer {
     "update_issue",
     {
       description:
-        "Update an issue; only the fields you pass change. Status flow: in_progress when you start, in_review when ready for review, done when finished, canceled instead of deleting (there is no delete). labels and blockedBy replace the whole list, so include existing entries you want to keep. Pass null for assignee or parent to clear it. Log progress with comment_issue rather than editing the description.",
+        "Update an issue; only the fields you pass change. Status flow: in_progress when you start, in_review when ready for review, done when finished, canceled instead of deleting (there is no delete). labels and blockedBy replace the whole list, so include existing entries you want to keep, and pass baseUpdatedAt (from get_issue) when replacing them or the description, so you don't overwrite someone else's change. To start work, use claim_issue. Don't reassign an issue someone else holds; use claim_issue. Pass null for assignee or parent to clear it. Log progress with comment_issue rather than editing the description.",
       inputSchema: {
         id: identifier,
         title: title.optional(),
@@ -335,14 +336,37 @@ function createServer(viewer: Viewer): McpServer {
         status: status.optional(),
         priority: priority.optional(),
         labels: labels.optional(),
-        assignee: z.string().nullable().optional().describe("Who owns it; null to unassign"),
+        assignee: z.string().nullable().optional().describe('Who owns it, or "me"; null to unassign'),
         parent: identifier.nullable().optional().describe("Parent issue identifier; null to detach"),
         blockedBy: blockedBy.optional(),
+        baseUpdatedAt: z
+          .string()
+          .optional()
+          .describe("The updated time you read with get_issue. If the issue changed since, nothing is applied (reread and retry)."),
       },
     },
-    ({ id, ...patch }) => {
-      const issue = db.updateIssue(id, patch);
+    ({ id, assignee, ...patch }) => {
+      const issue = db.updateIssue(id, { ...patch, assignee: who(assignee) });
       return result(`Updated ${issue.id}\n${line(issue)}`, { issue });
+    },
+  );
+
+  server.registerTool(
+    "claim_issue",
+    {
+      description:
+        "Take an issue to work on: assigns it to you and sets in_progress, in one step no one else can interleave with. Fails if the issue is done or canceled, or someone else holds it (the error names them): then pick another issue rather than working on it too. Claiming your own again is fine. To hand it back, update_issue with assignee null and status todo.",
+      inputSchema: {
+        id: identifier,
+        assignee: z
+          .string()
+          .optional()
+          .describe("Only without a member token: who to claim it for. With one, you always claim for yourself."),
+      },
+    },
+    ({ id, assignee }) => {
+      const issue = db.claimIssue(id, claimerFor(viewer, assignee));
+      return result(`Claimed ${issue.id}\n${line(issue)}`, { issue });
     },
   );
 

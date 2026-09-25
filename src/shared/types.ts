@@ -165,7 +165,9 @@ export interface IssueInput {
   blockedBy?: string[];
 }
 
-export type IssuePatch = Partial<Omit<IssueInput, "project">>;
+export type IssuePatch = Partial<Omit<IssueInput, "project">> & {
+  baseUpdatedAt?: string; // the updatedAt you read; if the issue changed since, the patch is refused (409)
+};
 
 export interface IssueFilter {
   workspace?: string;
