@@ -22,7 +22,7 @@ function sameOrigin(req: Request): boolean {
   }
 }
 
-export function authorized(req: Request): boolean {
+function authorized(req: Request): boolean {
   if (!TOKEN) return true;
   const bearer = req.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1];
   if (same(bearer, TOKEN)) return true;
@@ -35,7 +35,7 @@ export function authorized(req: Request): boolean {
 export const isJson = (req: Request) =>
   req.headers.get("content-type")?.split(";")[0]!.trim().toLowerCase() === "application/json";
 
-export const unauthorized = () => Response.json({ error: "Unauthorized" }, { status: 401 });
+const unauthorized = () => Response.json({ error: "Unauthorized" }, { status: 401 });
 
 // DNS rebinding defence: a browser tricked into resolving evil.example to us still sends Host: evil.example.
 const HOSTS = new Set([

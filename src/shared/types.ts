@@ -3,6 +3,9 @@
 export const STATUSES = ["backlog", "todo", "in_progress", "in_review", "done", "canceled"] as const;
 export type Status = (typeof STATUSES)[number];
 
+export const CLOSED_STATUSES: Status[] = ["done", "canceled"];
+export const OPEN_STATUSES = STATUSES.filter((s) => !CLOSED_STATUSES.includes(s));
+
 export const STATUS_LABELS: Record<Status, string> = {
   backlog: "Backlog",
   todo: "Todo",
@@ -36,6 +39,8 @@ export interface WorkspaceInput {
   key?: string; // default: slugified name, deduped with -2, -3…
   name: string;
 }
+
+export type WorkspacePatch = Partial<Omit<WorkspaceInput, "key">>; // the key never changes
 
 export interface Project {
   key: string; // 2–5 uppercase letters, e.g. "BRD"; globally unique across workspaces
@@ -122,16 +127,10 @@ export interface DocumentInput {
   author?: string; // REST default "anonymous" (the web UI sends the viewer's name), MCP default "claude"
 }
 
-// Exact-text replacement, like an editor's find/replace. oldText must match exactly once.
-export interface DocumentEdit {
-  oldText: string;
-  newText: string;
-}
-
 export interface DocumentPatch {
   title?: string;
   content?: string; // full replacement; mutually exclusive with edits
-  edits?: DocumentEdit[]; // applied in order
+  edits?: { oldText: string; newText: string }[]; // exact find/replace, applied in order; each oldText must match once
   project?: string; // docs can move between projects; the slug stays
   position?: number;
   author?: string;
@@ -145,6 +144,8 @@ export interface ProjectInput {
   name: string;
   description?: string;
 }
+
+export type ProjectPatch = Partial<Omit<ProjectInput, "key">>; // the key never changes; workspace moves it
 
 export interface IssueInput {
   project: string;

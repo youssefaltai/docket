@@ -3,9 +3,11 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import {
+  OPEN_STATUSES,
   PRIORITIES,
   PRIORITY_LABELS,
   STATUSES,
+  type Comment,
   type Document,
   type DocumentSummary,
   type Issue,
@@ -35,7 +37,7 @@ const docContent = z
   .describe(
     "Markdown. Mention issues by identifier (e.g. BRD-2) and they auto-link; link other docs with [Title](/doc/slug).",
   );
-const docAuthor = z.string().optional().describe('Default "claude"');
+const author = z.string().optional().describe('Default "claude"');
 
 const title = z.string().describe("Short, imperative title");
 const description = z.string().describe("Markdown description");
@@ -65,10 +67,12 @@ function details(issue: Issue): string {
   const parts = [line(issue), meta.filter(Boolean).join(" · "), issue.description || "_No description._"];
   if (issue.children.length) parts.push(`## Sub-issues\n${issue.children.map(line).join("\n")}`);
   if (issue.docs.length) parts.push(`## Docs\n${issue.docs.map(docLine).join("\n")}`);
-  if (issue.comments.length) {
-    parts.push(`## Comments\n${issue.comments.map((c) => `**${c.author}** · ${c.createdAt}\n${c.body}`).join("\n\n")}`);
-  }
+  if (issue.comments.length) parts.push(commentsSection(issue.comments));
   return parts.join("\n\n");
+}
+
+function commentsSection(comments: Comment[]): string {
+  return `## Comments\n${comments.map((c) => `**${c.author}** · ${c.createdAt}\n${c.body}`).join("\n\n")}`;
 }
 
 function ago(iso: string): string {
@@ -93,9 +97,7 @@ function docDetails(doc: Document): string {
     "---",
   ];
   if (doc.issues.length) parts.push(`## Mentioned issues\n${doc.issues.map(line).join("\n")}`);
-  if (doc.comments.length) {
-    parts.push(`## Comments\n${doc.comments.map((c) => `**${c.author}** · ${c.createdAt}\n${c.body}`).join("\n\n")}`);
-  }
+  if (doc.comments.length) parts.push(commentsSection(doc.comments));
   return parts.join("\n\n");
 }
 
@@ -164,7 +166,7 @@ function createServer(): McpServer {
     ({ workspace }) => {
       const projects = db.listProjects({ workspace });
       const lines = projects.map((p) => {
-        const open = db.OPEN_STATUSES.reduce((sum, s) => sum + p.counts[s], 0);
+        const open = OPEN_STATUSES.reduce((sum, s) => sum + p.counts[s], 0);
         return `${p.key} · ${p.name} · workspace ${p.workspace} · ${open} open`;
       });
       return result(lines.join("\n") || "No projects yet.", { projects });
@@ -232,7 +234,7 @@ function createServer(): McpServer {
       annotations: { readOnlyHint: true },
     },
     ({ status, query, limit = 50, ...filter }) => {
-      const all = db.listIssues({ ...filter, status: status ?? db.OPEN_STATUSES, q: query });
+      const all = db.listIssues({ ...filter, status: status ?? OPEN_STATUSES, q: query });
       const issues = all.slice(0, limit);
       const lines = issues.map(line);
       if (all.length > limit) lines.push(`…and ${all.length - limit} more (raise limit or narrow the filters)`);
@@ -308,7 +310,7 @@ function createServer(): McpServer {
       inputSchema: {
         id: identifier,
         body: z.string().describe("Markdown"),
-        author: z.string().optional().describe('Default "claude"'),
+        author,
       },
     },
     ({ id, body, author = "claude" }) => {
@@ -360,7 +362,7 @@ function createServer(): McpServer {
         content: docContent,
         slug: z.string().optional().describe('URL-safe id (a-z, 0-9, dashes); default derived from the title'),
         position: z.number().optional().describe("Order within the project, ascending; default last"),
-        author: docAuthor,
+        author,
       },
     },
     ({ author = "claude", ...input }) => {
@@ -393,7 +395,7 @@ function createServer(): McpServer {
           .string()
           .optional()
           .describe("The updatedAt you read with get_document. If the doc changed since, nothing is applied (reread and retry). Recommended with `content`."),
-        author: docAuthor,
+        author,
       },
     },
     ({ slug, author = "claude", ...patch }) => {
@@ -410,7 +412,7 @@ function createServer(): McpServer {
       inputSchema: {
         slug,
         body: z.string().describe("Markdown"),
-        author: docAuthor,
+        author,
       },
     },
     ({ slug, body, author = "claude" }) => {
