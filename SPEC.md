@@ -1,6 +1,6 @@
 # Docket
 
-A nano issue tracker: workspaces, projects, issues, comments. Web UI for humans, MCP for agents. Bun + SQLite + TypeScript. Runs on the server, reachable only over Tailscale, so there's no app-level auth.
+A nano issue tracker: workspaces, projects, issues, comments. Web UI for humans, MCP for agents. Bun + SQLite + TypeScript. Self-hosted anywhere. Optional single access token (`DOCKET_TOKEN`); unset means open, for private networks.
 
 Rules: minimal, simple, clean, smooth. Few dependencies (react, react-dom, marked, zod, @modelcontextprotocol/sdk). No frameworks beyond that.
 
@@ -142,4 +142,8 @@ Migration 3 (additive): creates `workspaces`, inserts `default` / "Default", add
 
 ## Deploy
 
-`Dockerfile` (oven/bun image) + `docker-compose.yml`: volume `./data:/app/data`, port `127.0.0.1:7100:7100`, `restart: unless-stopped`. on the server it lives in `/srv/docket/` and is exposed to the tailnet with `tailscale serve`.
+`Dockerfile` (oven/bun image) + `docker-compose.yml`: volume `./data:/app/data`, port `127.0.0.1:7100:7100`, `restart: unless-stopped`, `DOCKET_TOKEN` passed through from the environment or `.env`. HTTPS and exposure are the operator's choice (reverse proxy, tunnel, VPN).
+
+## Auth
+
+`src/server/auth.ts`. With `DOCKET_TOKEN` set, `/api/*`, `/mcp` and `/ws` return 401 unless the request carries `Authorization: Bearer <token>` or the `docket_token` cookie (compared in constant time). `POST /api/login {token}` sets that cookie (HttpOnly, SameSite=Lax, 1 year, Secure over HTTPS). The app shell, manifest, service worker and icons stay public; they hold no data. The web client shows a login screen on any 401. The service worker never caches non-OK responses.
