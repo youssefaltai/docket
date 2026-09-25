@@ -142,6 +142,18 @@ function createServer(): McpServer {
   );
 
   server.registerTool(
+    "update_workspace",
+    {
+      description: "Rename a workspace. Its key never changes. Only do this when asked to.",
+      inputSchema: { key: workspaceKey, name: z.string() },
+    },
+    ({ key, name }) => {
+      const workspace = db.updateWorkspace(key, { name });
+      return result(`Updated workspace ${workspace.key} · ${workspace.name}`, { workspace });
+    },
+  );
+
+  server.registerTool(
     "list_projects",
     {
       description:
@@ -181,6 +193,24 @@ function createServer(): McpServer {
       }
       const project = db.createProject({ ...input, workspace });
       return result(`Created project ${project.key} · ${project.name} in workspace ${project.workspace}`, { project });
+    },
+  );
+
+  server.registerTool(
+    "update_project",
+    {
+      description:
+        "Update a project's name or description, or move it to another workspace; only the fields you pass change. Its key never changes, so issue identifiers stay the same. Only do this when asked to.",
+      inputSchema: {
+        key: projectKey,
+        name: z.string().optional(),
+        description: z.string().optional(),
+        workspace: workspaceKey.optional().describe("Move the project to this workspace"),
+      },
+    },
+    ({ key, ...patch }) => {
+      const project = db.updateProject(key, patch);
+      return result(`Updated project ${project.key} · ${project.name} in workspace ${project.workspace}`, { project });
     },
   );
 
@@ -386,6 +416,20 @@ function createServer(): McpServer {
     ({ slug, body, author = "claude" }) => {
       const document = db.addDocumentComment(slug, body, author);
       return result(`Commented on document ${document.slug}`, docMeta(document));
+    },
+  );
+
+  server.registerTool(
+    "delete_document",
+    {
+      description:
+        "Permanently delete a document with its versions and comments. Only when asked to, or to remove a duplicate you just created; otherwise edit it.",
+      inputSchema: { slug },
+      annotations: { destructiveHint: true },
+    },
+    ({ slug }) => {
+      db.deleteDocument(slug);
+      return result(`Deleted document ${slug}`, { ok: true });
     },
   );
 
