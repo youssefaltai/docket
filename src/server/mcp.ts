@@ -111,6 +111,7 @@ function docLine(doc: DocumentSummary): string {
 
 function docDetails(doc: Document): string {
   const parts = [
+    doc.deletedAt && `**In the trash** since ${doc.deletedAt}: read-only until someone restores it.`,
     `# ${doc.title}`,
     `slug ${doc.slug} · team ${doc.team} · updated ${doc.updatedAt} by ${at(doc.updatedBy)} · ${doc.versionCount} version${doc.versionCount === 1 ? "" : "s"}`,
     "---",
@@ -119,7 +120,7 @@ function docDetails(doc: Document): string {
   ];
   if (doc.issues.length) parts.push(`## Mentioned issues\n${doc.issues.map(line).join("\n")}`);
   if (doc.comments.length) parts.push(commentsSection(doc.comments));
-  return parts.join("\n\n");
+  return parts.filter(Boolean).join("\n\n");
 }
 
 /** Mutations echo metadata only, so a long document isn't sent back on every edit. */
@@ -541,7 +542,7 @@ function createServer(a: Actor): McpServer {
     "delete_document",
     {
       description:
-        "Move a document to the trash (with its versions and comments); a person can restore it for 30 days, then it's gone. Only when asked to, or to remove a duplicate you just created; otherwise edit it.",
+        "Move a document to the trash (with its versions and comments); any member can restore it for 30 days, then it's gone. Only when asked to, or to remove a duplicate you just created; otherwise edit it.",
       inputSchema: { slug },
       annotations: { destructiveHint: true },
     },

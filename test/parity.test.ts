@@ -146,3 +146,29 @@ test("issues page with first/after cursors, in list order, over REST and MCP", a
   expect(rest).not.toMatch(/after:/);
   expect([...text.matchAll(/PGE-\d+/g), ...rest.matchAll(/PGE-\d+/g)].map((m) => m[0])).toEqual(all);
 });
+
+test("restoring a blocker brings its link back, even after the blocked issue's blockers were edited", async () => {
+  const blocker = await create("Blocker T");
+  const other = await create("Blocker D");
+  const blocked = await create("Blocked B", { blockedBy: [blocker.id] });
+  await s.api("DELETE", `/api/issues/${blocker.id}`);
+  expect((await s.api("PATCH", `/api/issues/${blocked.id}`, { blockedBy: [other.id] })).body.blockedBy).toEqual([other.id]);
+  await s.api("POST", `/api/issues/${blocker.id}/restore`);
+  expect((await s.api("GET", `/api/issues/${blocked.id}`)).body.blockedBy.sort()).toEqual([blocker.id, other.id].sort());
+});
+
+test("PATCH field names are compared as data, never as object keys", async () => {
+  const issue = await create("Prototype");
+  for (const field of ["constructor", "__proto__", "toString"]) {
+    const res = await s.api("PATCH", `/api/issues/${issue.id}`, JSON.parse(`{"${field}": 1}`));
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain(`Unknown field "${field}"`);
+  }
+});
+
+test("MCP marks a trashed document as such", async () => {
+  const doc = (await s.api("POST", "/api/documents", { team: "PAR", title: "Gone soon", content: "x" })).body;
+  expect(await s.as("bot").tool("get_document", { slug: doc.slug })).not.toMatch(/In the trash|null/);
+  await s.api("DELETE", `/api/documents/${doc.slug}`);
+  expect(await s.as("bot").tool("get_document", { slug: doc.slug })).toMatch(/^\*\*In the trash\*\*/);
+});

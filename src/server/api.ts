@@ -37,7 +37,9 @@ async function body<T = Record<string, unknown>>(req: Request): Promise<T> {
 async function patch(req: Request, what: string, fields: readonly string[], why: Record<string, string> = {}) {
   const data = await body(req);
   for (const field of Object.keys(data)) {
-    if (!fields.includes(field)) throw new AppError(why[field] ?? `Unknown field "${field}" for ${what}: use ${fields.join(", ")}`);
+    if (!fields.includes(field)) {
+      throw new AppError(Object.hasOwn(why, field) ? why[field]! : `Unknown field "${field}" for ${what}: use ${fields.join(", ")}`);
+    }
   }
   return data;
 }

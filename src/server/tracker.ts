@@ -331,9 +331,10 @@ function blockerIds(a: Actor, identifiers: unknown, workspace: string, self?: nu
   return ids;
 }
 
+/** Replaces an issue's blockers. Links to trashed blockers are hidden, not edited, so they stay for their restore. */
 function setBlockers(id: number, blockers: number[]) {
-  db.query("DELETE FROM issue_blocks WHERE blocked_id = ?").run(id);
-  for (const blocker of blockers) db.query("INSERT INTO issue_blocks (blocker_id, blocked_id) VALUES (?, ?)").run(blocker, id);
+  db.query("DELETE FROM issue_blocks WHERE blocked_id = ? AND blocker_id IN (SELECT id FROM issues WHERE deleted_at IS NULL)").run(id);
+  for (const blocker of blockers) db.query("INSERT OR IGNORE INTO issue_blocks (blocker_id, blocked_id) VALUES (?, ?)").run(blocker, id);
 }
 
 /** Validates the patch fields that map directly to issue columns. */
@@ -650,10 +651,20 @@ const TRASH_DAYS = 30;
 /** Deletes for good whatever has been in the trash for 30 days (cascading to comments, versions, refs). */
 export function purgeTrash() {
   const cutoff = new Date(Date.now() - TRASH_DAYS * 24 * 60 * 60 * 1000).toISOString();
-  db.transaction(() => {
+  // Live sub-issues lose their parent when it's purged: bump and publish them, as any parent change does.
+  const orphans = db.transaction(() => {
+    const orphans = db
+      .query<{ id: number; workspace: string }, [string]>(
+        `SELECT c.id, t.workspace FROM issues c JOIN teams t ON t.key = c.team_key
+         WHERE c.deleted_at IS NULL AND c.parent_id IN (SELECT id FROM issues WHERE deleted_at IS NOT NULL AND deleted_at < ?)`,
+      )
+      .all(cutoff);
     db.query("DELETE FROM issues WHERE deleted_at IS NOT NULL AND deleted_at < ?").run(cutoff);
     db.query("DELETE FROM documents WHERE deleted_at IS NOT NULL AND deleted_at < ?").run(cutoff);
+    const refs = bumpIssues(orphans.map((o) => o.id), now());
+    return orphans.map((o, i) => ({ workspace: o.workspace, ref: refs[i]! }));
   })();
+  for (const { workspace, ref } of orphans) changed("issue", workspace, ref);
 }
 
 /** A team's trash, newest first. */
