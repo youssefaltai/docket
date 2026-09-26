@@ -54,6 +54,7 @@ export const MOD = /Mac|iPhone|iPad/.test(navigator.userAgent) ? "⌘" : "Ctrl";
 export type Route =
   | { view: "issues"; team: string | null }
   | { view: "docs"; team: string | null }
+  | { view: "trash"; team: string }
   | { view: "issue"; id: string }
   | { view: "doc"; slug: string }
   | { view: "settings"; section: "account" | "workspace" };
@@ -65,8 +66,9 @@ export function parseRoute(path: string): Route {
   if (issue) return { view: "issue", id: decodeURIComponent(issue[1]!).toUpperCase() };
   const doc = /^\/doc\/([^/]+)/.exec(path);
   if (doc) return { view: "doc", slug: decodeURIComponent(doc[1]!) };
-  const team = /^\/t\/([^/]+)(\/docs)?/.exec(path);
+  const team = /^\/t\/([^/]+)(\/docs|\/trash)?/.exec(path);
   const key = team ? decodeURIComponent(team[1]!).toUpperCase() : null;
+  if (key && team?.[2] === "/trash") return { view: "trash", team: key };
   return { view: team?.[2] || /^\/docs\/?$/.test(path) ? "docs" : "issues", team: key };
 }
 
@@ -300,22 +302,29 @@ const hueStyle = (s: string) => ({ "--h": hue(s) }) as CSSProperties;
 interface Toast {
   id: number;
   text: string;
-  href?: string;
+  href?: string; // a View link
+  undo?: () => void; // an Undo button
 }
 let toasts: Toast[] = [];
 let toastId = 0;
 const toastListeners = new Set<() => void>();
 const emitToasts = () => toastListeners.forEach((l) => l());
 
-export function toast(text: string, href?: string) {
-  const t = { id: ++toastId, text, href };
+const dismiss = (t: Toast) => {
+  toasts = toasts.filter((x) => x !== t);
+  emitToasts();
+};
+
+export function toast(text: string, href?: string, undo?: () => void) {
+  const t = { id: ++toastId, text, href, undo };
   toasts = [...toasts.slice(-2), t];
   emitToasts();
-  setTimeout(() => {
-    toasts = toasts.filter((x) => x !== t);
-    emitToasts();
-  }, 4000);
+  setTimeout(() => dismiss(t), undo ? 8000 : 4000); // time to reach Undo
 }
+
+/** After a delete: "Moved … to trash", with an Undo that restores it and links back. */
+export const trashToast = (label: string, restore: () => Promise<unknown>, href: string) =>
+  toast(`Moved ${label} to trash`, undefined, () => restore().then(() => toast(`Restored ${label}`, href), errorToast));
 
 export const errorToast = (e: unknown) => toast(e instanceof Error ? e.message : String(e));
 
@@ -343,6 +352,17 @@ export function Toaster() {
             <Link to={t.href} className="toast-link">
               View
             </Link>
+          )}
+          {t.undo && (
+            <button
+              className="toast-link"
+              onClick={() => {
+                dismiss(t);
+                t.undo!();
+              }}
+            >
+              Undo
+            </button>
           )}
         </div>
       ))}
@@ -738,10 +758,11 @@ export function ListHeader({
   team: Team | undefined;
   title: string;
   count: number;
-  view: "issues" | "docs";
-  onNew: () => void;
-  search: string;
-  onSearch: (q: string) => void;
+  view: "issues" | "docs" | "trash";
+  /** New item, search and controls: lists have them, the trash doesn't. */
+  onNew?: () => void;
+  search?: string;
+  onSearch?: (q: string) => void;
   placeholder?: string;
   children?: ReactNode;
 }) {
@@ -758,12 +779,16 @@ export function ListHeader({
           tabs={[
             [`/t/${team.key}`, "Issues", view === "issues"],
             [`/t/${team.key}/docs`, "Docs", view === "docs"],
+            [`/t/${team.key}/trash`, "Trash", view === "trash"],
           ]}
         />
       )}
-      <button className="icon-btn mobile-only" onClick={onNew} aria-label={view === "docs" ? "New doc" : "New issue"}>
-        <PlusIcon />
-      </button>
+      {onNew && (
+        <button className="icon-btn mobile-only" onClick={onNew} aria-label={view === "docs" ? "New doc" : "New issue"}>
+          <PlusIcon />
+        </button>
+      )}
+      {onSearch && (
       <div className="controls">
         <label className="search">
           <SearchIcon />
@@ -790,7 +815,25 @@ export function ListHeader({
         </label>
         {children}
       </div>
+      )}
     </header>
+  );
+}
+
+/** Atop a trashed issue or doc opened by URL: it can be read and restored, nothing else. */
+export function TrashBanner({ deletedAt, onRestore }: { deletedAt: string; onRestore: () => Promise<unknown> }) {
+  const { busy, run } = useRun();
+  return (
+    <div className="doc-banner doc-banner-warn" role="status">
+      <TrashIcon />
+      <span className="doc-banner-text">
+        In the trash since <time title={fullDate(deletedAt)}>{ago(deletedAt)}</time>. Restore it to make changes.
+      </span>
+      <span className="grow" />
+      <button className="btn btn-primary btn-sm" disabled={busy} onClick={() => run(onRestore)}>
+        Restore
+      </button>
+    </div>
   );
 }
 

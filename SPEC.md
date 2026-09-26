@@ -177,7 +177,7 @@ Light theme only, neutral and modern, in the spirit of Linear, Vercel, Resend. G
 - **New issue modal**: team, title, description, status, priority, labels, assignee, delegate, parent. `⌘↵` creates, `Esc` closes.
 - **Workspaces**: the current workspace is remembered in localStorage (`docket.workspace`), falling back to the first. `/` and `/docs` show only its content; pickers and filters list only its teams, members and labels. Opening `/t/:key`, `/issue/:id` or `/doc/:slug` of another of your workspaces switches to it.
 - **Team settings**: a button next to the team title opens a dialog to edit the description (and, for admins, rename the workspace).
-- Client routing with `history.pushState`: `/`, `/t/:key`, `/issue/:id`, `/docs`, `/t/:key/docs`, `/doc/:slug`, `/settings/*`, `/login`, `/setup`. The server returns index.html for these paths.
+- Client routing with `history.pushState`: `/`, `/t/:key`, `/issue/:id`, `/docs`, `/t/:key/docs`, `/t/:key/trash`, `/doc/:slug`, `/settings/*`, `/login`, `/setup`. The server returns index.html for these paths.
 - Service worker: never caches non-OK responses; clears cached `/api/*` on a 401 and after a successful setup, redeem or logout, with a generation counter so a GET in flight across the switch can't re-cache the old session's data.
 - Works on a phone: the sidebar collapses below 768px.
 
@@ -208,7 +208,8 @@ Linear-style docs inside teams. Markdown is the source of truth (agents write vi
 MCP: `list_documents` (workspace?, team?, query?; one line per doc: `slug · Title · TEAM · updated 2h ago by @alice`), `get_document` (slug), `create_document` (team, title, content, slug?, position?), `update_document` (slug, title?, content?, edits?, team?, position?, baseUpdatedAt?; prefer `edits` for small changes to long docs), `comment_document` (slug, body), `delete_document` (slug; to the trash, restorable by a person for 30 days, `destructiveHint`). Tool descriptions must say: docs are markdown; mention issues by identifier (e.g. BRD-2) and they auto-link; link other docs with `[Title](/doc/slug)`; use `edits` for targeted changes.
 
 UI:
-- A team's page has two tabs: Issues, Docs (`/t/:key` and `/t/:key/docs`).
+- A team's page has three tabs: Issues, Docs, Trash (`/t/:key`, `/t/:key/docs`, `/t/:key/trash`).
+- **Delete** moves an issue or doc to the trash at once (no confirm): the toast "Moved BRD-12 to trash" has Undo, which restores it. The team's Trash lists deleted issues and docs, newest first, each with Restore. A trashed item opened by URL shows an "In the trash" banner with Restore.
 - Docs list (`/docs`, `/t/:key/docs`): grouped by team, ordered by position. Row: doc icon, title, "updated 2h ago by Alice". "New doc" button.
 - Doc page (`/doc/:slug`): a centered reading column (~720px), large inline-editable title, a quiet metadata line (team · updated by · time · versions). Typography built for long specs: clear heading scale, comfortable line height, tables that scroll horizontally on narrow screens, code blocks, blockquotes, task lists. `dir="auto"` on every block (Arabic). A sticky outline of h2/h3 on the right on wide screens (hidden on narrow), with the current section highlighted.
 - Editing: `E` or the Edit button switches to a full-height markdown textarea (monospace, same column). Autosave ~1s after typing stops with a quiet "Saving… / Saved" indicator, `⌘S` saves now, `Esc` returns to reading. If the doc changes remotely while editing, don't clobber: show a small banner "Updated by Alice · Reload".

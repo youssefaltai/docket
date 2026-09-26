@@ -38,6 +38,8 @@ import {
   useDebounced,
   useFetch,
   useKeydown,
+  trashToast,
+  TrashBanner,
 } from "./ui";
 
 // ---------- Docs list ----------
@@ -275,9 +277,11 @@ export function DocPage({ slug }: { slug: string }) {
           >
             <HistoryIcon />
           </button>
-          <button className="icon-btn" onClick={() => remove(doc)} aria-label="Delete doc" title="Delete doc">
-            <TrashIcon />
-          </button>
+          {!doc.deletedAt && (
+            <button className="icon-btn" onClick={() => remove(doc)} aria-label="Delete doc" title="Delete doc">
+              <TrashIcon />
+            </button>
+          )}
         </>
       )}
     </header>
@@ -341,6 +345,12 @@ export function DocPage({ slug }: { slug: string }) {
         <div className="doc-scroll" ref={scroller}>
           <div className="doc-grid">
             <article className="doc-col">
+              {doc.deletedAt && (
+                <TrashBanner
+                  deletedAt={doc.deletedAt}
+                  onRestore={() => api.restoreDocument(doc.slug).then((fresh) => setDoc(fresh))}
+                />
+              )}
               <TitleEditor
                 key={doc.slug}
                 className="doc-title"
@@ -470,11 +480,11 @@ export function DocPage({ slug }: { slug: string }) {
   );
 }
 
+// To the trash, undoable (as in Linear), so no confirm first.
 async function remove(doc: Document) {
-  if (!(await ask(`Delete “${doc.title}”? Its history and comments go with it.`, "Delete"))) return;
   try {
     await api.deleteDocument(doc.slug);
-    toast(`Deleted “${doc.title}”`);
+    trashToast(`“${doc.title}”`, () => api.restoreDocument(doc.slug), `/doc/${doc.slug}`);
     navigate(`/t/${doc.team}/docs`);
   } catch (e) {
     errorToast(e);

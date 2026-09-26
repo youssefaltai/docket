@@ -11,6 +11,7 @@ import { Login, Setup } from "./login";
 import { NewDocModal, NewIssueModal, NewTeamModal, NewWorkspaceModal, TeamSettingsModal } from "./modals";
 import { Picker } from "./pickers";
 import { SettingsPage } from "./settings";
+import { TrashView } from "./trash";
 import {
   AppContext,
   Avatar,
@@ -215,6 +216,8 @@ function App() {
     <IssuePage key={route.id} id={route.id} />
   ) : route.view === "doc" ? (
     <DocPage key={route.slug} slug={route.slug} />
+  ) : route.view === "trash" ? (
+    <TrashView key={route.team} teamKey={route.team} />
   ) : route.view === "docs" ? (
     <DocsView key={route.team ?? ""} teamKey={route.team} />
   ) : (
