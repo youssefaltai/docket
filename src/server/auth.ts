@@ -14,6 +14,7 @@ export const isJson = (req: Request) =>
 
 const json = (data: unknown, status = 200, headers?: HeadersInit) => Response.json(data, { status, headers });
 const unauthorized = (headers?: HeadersInit) => json({ error: "Unauthorized" }, 401, headers);
+const notJson = () => json({ error: "Expected Content-Type: application/json" }, 415);
 
 // DNS rebinding defence: a browser tricked into resolving evil.example to us still sends Host: evil.example.
 const HOSTS = new Set([
@@ -135,7 +136,7 @@ const open =
   (fn: (body: Record<string, unknown>, req: Request, client: Client) => Response) =>
   async (req: Request, server: Server): Promise<Response> => {
     if (!hostAllowed(req)) return forbiddenHost();
-    if (!isJson(req)) return json({ error: "Expected Content-Type: application/json" }, 415);
+    if (!isJson(req)) return notJson();
     const ip = server.requestIP(req)?.address ?? "";
     if (limited(ip)) return json({ error: "Too many attempts, try again in a minute" }, 429);
     const body = await req.json().catch(() => null);
@@ -171,7 +172,7 @@ export const authRoutes = {
   "/api/logout": {
     POST: (req: Request) => {
       if (!hostAllowed(req)) return forbiddenHost();
-      if (!isJson(req)) return json({ error: "Expected Content-Type: application/json" }, 415);
+      if (!isJson(req)) return notJson();
       const cookie = cookieOf(req);
       if (cookie) access.endSession(cookie);
       return json({ ok: true }, 200, signedOut(req));

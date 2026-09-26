@@ -34,12 +34,12 @@ import {
   AppError,
   BUMPED_AT,
   bumpedAt,
+  capLength,
   changed,
   checkOneOf,
   db,
   exists,
   now,
-  capLength,
   optionalText,
   pickSlug,
   requireText,
@@ -379,7 +379,7 @@ function listScope(a: Actor, alias: string, filter: { workspace?: string; team?:
     where.push(`(${searched.map((column) => `${column} LIKE ? ESCAPE '\\'`).join(" OR ")})`);
     params.push(...searched.map(() => `%${filter.q!.trim().replace(/[\\%_]/g, "\\$&")}%`));
   }
-  return { where, params };
+  return { where, params, workspaces };
 }
 
 /** `listScope` always adds the workspace condition, so there's always a WHERE. */
@@ -389,7 +389,7 @@ const whereClause = (where: string[]) => `WHERE ${where.join(" AND ")}`;
  * A username filter ("me" is the actor) as a user id. It must name someone who is or was in one of the
  * workspaces searched; anyone else is 400 (a typo shouldn't look like "no issues").
  */
-function userFilterId(a: Actor, value: string, workspaces: SQLQueryBindings[], field: string): number {
+function userFilterId(a: Actor, value: string, workspaces: string[], field: string): number {
   const username = value.trim().toLowerCase();
   if (username === "me") return a.id;
   const row = db
@@ -417,7 +417,7 @@ function parseCursor(cursor: string): [number, number, string, number] {
 }
 
 export function listIssues(a: Actor, filter: IssueFilter): IssueSummary[] {
-  return queryIssues(a, filter).rows.map(toSummary);
+  return queryIssues(a, filter).map(toSummary);
 }
 
 /**
@@ -428,15 +428,15 @@ export function listIssuesPage(a: Actor, filter: IssueFilter, page: { first?: un
   const first = page.first === undefined ? 50 : Number(page.first);
   if (!Number.isInteger(first) || first < 1 || first > 500) throw new AppError("first must be a whole number from 1 to 500");
   const after = page.after === undefined || page.after === "" ? undefined : parseCursor(String(page.after));
-  const { rows } = queryIssues(a, filter, after, first + 1);
+  const rows = queryIssues(a, filter, after, first + 1);
   const hasNextPage = rows.length > first;
   const issues = rows.slice(0, first);
   const last = issues.at(-1);
   return { issues: issues.map(toSummary), pageInfo: { hasNextPage, endCursor: last ? cursorOf(toSummary(last), last.id) : null } };
 }
 
-function queryIssues(a: Actor, filter: IssueFilter, after?: [number, number, string, number], limit?: number) {
-  const { where, params } = listScope(a, "i", filter, ["i.title", "i.description", ident("i")]);
+function queryIssues(a: Actor, filter: IssueFilter, after?: [number, number, string, number], limit?: number): IssueRow[] {
+  const { where, params, workspaces } = listScope(a, "i", filter, ["i.title", "i.description", ident("i")]);
   if (filter.status?.length) {
     where.push(`i.status IN (${inList(filter.status)})`);
     params.push(...filter.status.map(checkStatus));
@@ -445,7 +445,6 @@ function queryIssues(a: Actor, filter: IssueFilter, after?: [number, number, str
     where.push("EXISTS (SELECT 1 FROM json_each(i.labels) WHERE value = ? COLLATE NOCASE)");
     params.push(filter.label);
   }
-  const workspaces = scopeWorkspaces(a, filter.workspace);
   if (filter.assignee) {
     where.push("i.assignee_id = ?");
     params.push(userFilterId(a, filter.assignee, workspaces, "assignee"));
@@ -469,10 +468,9 @@ function queryIssues(a: Actor, filter: IssueFilter, after?: [number, number, str
     where.push(`(${STATUS_RANK} > ? OR (${STATUS_RANK} = ? AND (${PRIORITY_RANK} > ? OR (${PRIORITY_RANK} = ? AND (i.updated_at < ? OR (i.updated_at = ? AND i.id < ?))))))`);
     params.push(s, s, p, p, u, u, id);
   }
-  const rows = db
+  return db
     .query<IssueRow, SQLQueryBindings[]>(`${ISSUE_SELECT} ${whereClause(where)} ${ISSUE_ORDER}${limit ? ` LIMIT ${limit}` : ""}`)
     .all(...params);
-  return { rows };
 }
 
 export function getIssue(a: Actor, identifier: string): Issue {
@@ -649,7 +647,7 @@ export const restoreIssue = (a: Actor, identifier: string) => trashIssue(a, iden
 const TRASH_DAYS = 30;
 
 /** Deletes for good whatever has been in the trash for 30 days (cascading to comments, versions, refs). */
-export function purgeTrash() {
+function purgeTrash() {
   const cutoff = new Date(Date.now() - TRASH_DAYS * 24 * 60 * 60 * 1000).toISOString();
   // Live sub-issues lose their parent when it's purged: bump and publish them, as any parent change does.
   const orphans = db.transaction(() => {
@@ -782,13 +780,6 @@ const toDocSummary = (row: DocumentRow): DocumentSummary => ({
   deletedAt: row.deleted_at,
 });
 
-/** A doc that isn't in the trash: a trashed one can be read and restored, nothing else. */
-function liveDocument(a: Actor, slug: unknown): DocumentRow {
-  const row = documentRow(a, slug);
-  if (row.deleted_at) throw new AppError(`Document ${row.slug} is in the trash; restore it first`, 409);
-  return row;
-}
-
 function documentRow(a: Actor, slug: unknown): DocumentRow {
   const row =
     typeof slug === "string"
@@ -797,6 +788,13 @@ function documentRow(a: Actor, slug: unknown): DocumentRow {
           .get(slug.trim().toLowerCase())
       : null;
   if (!row || !a.workspaces.has(row.workspace)) throw new AppError(`Document ${slug} not found`, 404);
+  return row;
+}
+
+/** A doc that isn't in the trash: a trashed one can be read and restored, nothing else. */
+function liveDocument(a: Actor, slug: unknown): DocumentRow {
+  const row = documentRow(a, slug);
+  if (row.deleted_at) throw new AppError(`Document ${row.slug} is in the trash; restore it first`, 409);
   return row;
 }
 

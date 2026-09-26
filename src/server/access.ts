@@ -258,7 +258,8 @@ function requireAdminSession(a: Actor, workspace: unknown): string {
  * assignees are people, delegates are agents.
  */
 export function activeMemberId(a: Actor, workspace: string, value: string, kind: UserKind, field: string): number {
-  const username = value.trim().toLowerCase() === "me" ? a.username : value.trim().toLowerCase();
+  const given = value.trim().toLowerCase();
+  const username = given === "me" ? a.username : given;
   const row = db
     .query<{ id: number; kind: UserKind }, [string, string]>(
       `SELECT u.id, u.kind FROM users u JOIN workspace_members m ON m.user_id = u.id
@@ -282,9 +283,7 @@ export const needsSetup = () => db.query("SELECT 1 FROM users LIMIT 1").get() ==
 export function setup(input: SetupInput, client: Client): { user: User; workspace: Workspace; token: string } {
   if (!needsSetup()) throw new AppError("Docket is already set up", 409);
   const given = normalizeCode(typeof input.code === "string" ? input.code : "");
-  const a = Buffer.from(hash(given));
-  const b = Buffer.from(hash(setupCode));
-  if (!timingSafeEqual(a, b)) throw new AppError("Wrong setup code", 403);
+  if (!timingSafeEqual(Buffer.from(hash(given)), Buffer.from(hash(setupCode)))) throw new AppError("Wrong setup code", 403);
   return db.transaction(() => {
     const userId = insertUser("person", input);
     const key = insertWorkspace(input.workspace ?? {}, userId);
@@ -372,8 +371,10 @@ const toApiKey = (row: ApiKeyRow): ApiKey => ({
   lastUsedAt: row.last_used_at,
 });
 
+const newApiToken = () => `dk_${randomBytes(32).toString("hex")}`;
+
 function insertApiKey(userId: number, name: string, scope: ApiKeyScope): { apiKey: ApiKey; token: string } {
-  const token = `dk_${randomBytes(32).toString("hex")}`;
+  const token = newApiToken();
   const row = db
     .query<ApiKeyRow, [number, string, ApiKeyScope, string, string]>(
       `INSERT INTO api_keys (user_id, name, scope, token_hash, created_at) VALUES (?, ?, ?, ?, ?)
@@ -461,7 +462,7 @@ export function chatWriteKey(a: Actor): { token: string; drop: () => void } {
 
 function mintChatKey(a: Actor, scope: ApiKeyScope, ttl: number) {
   purgeExpiredKeys();
-  const token = `dk_${randomBytes(32).toString("hex")}`;
+  const token = newApiToken();
   const expiresAt = Date.now() + ttl;
   const { id } = db
     .query<{ id: number }, [number, ApiKeyScope, string, string, string, number]>(
@@ -524,7 +525,6 @@ function codeRow(code: unknown): CodeRow {
   return row;
 }
 
-/** `signedIn`: the user whose session came with the request, if any (an invite joins them). */
 /** Who's signed in on the request redeeming or peeking a code: their account and this session. */
 export type SignedIn = { userId: number; sessionId: number } | null;
 
@@ -698,7 +698,6 @@ const activeAdmins = (workspace: string) =>
     .query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM workspace_members WHERE workspace = ? AND role = 'admin' AND suspended_at IS NULL")
     .get(workspace)!.n;
 
-/** Suspends a membership; if it was the user's last active one, their sessions and keys go too. */
 /**
  * Suspends a membership. Access to this workspace ends at once (membership is checked on every request,
  * and their sockets reconnect without it). If it was their last active membership, their credentials
