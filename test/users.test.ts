@@ -1,6 +1,6 @@
 // Workspaces, members, roles and agents: who can manage whom, suspension, and never locking out the last admin.
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { sessionCookie, startServer, type TestServer } from "./server.ts";
+import { startServer, type TestServer } from "./server.ts";
 
 let s: TestServer;
 let ws: string;
