@@ -229,24 +229,29 @@ export function IssuePage({ id }: { id: string }) {
             {issue.deletedAt && (
               <TrashBanner deletedAt={issue.deletedAt} onRestore={() => withFresh(() => api.restoreIssue(issue.id))} />
             )}
-            {issue.parent && (
-              <Link className="issue-parent" to={`/issue/${issue.parent}`}>
-                <ParentIcon /> Sub-issue of <span className="mono">{issue.parent}</span>
-              </Link>
-            )}
-            <TitleEditor key={issue.id} value={issue.title} onSave={(title) => patch({ title })} />
-            {/* Narrow screens show the properties under the title instead of in the side panel. */}
-            <div className="issue-props-inline">
-              <Properties issue={issue} patch={patch} />
-            </div>
-            <Description key={`d-${issue.id}`} value={issue.description} updatedAt={issue.updatedAt} onSave={saveDescription} />
-            <SubIssues issue={issue} onPatch={patchChild} />
-            <Docs issue={issue} />
-            <Activity issue={issue} actions={comments} />
+            {/* A trashed issue is read-only until restored: the fieldset disables every control in it. */}
+            <fieldset className="plain" disabled={!!issue.deletedAt}>
+              {issue.parent && (
+                <Link className="issue-parent" to={`/issue/${issue.parent}`}>
+                  <ParentIcon /> Sub-issue of <span className="mono">{issue.parent}</span>
+                </Link>
+              )}
+              <TitleEditor key={issue.id} value={issue.title} onSave={(title) => patch({ title })} />
+              {/* Narrow screens show the properties under the title instead of in the side panel. */}
+              <div className="issue-props-inline">
+                <Properties issue={issue} patch={patch} />
+              </div>
+              <Description key={`d-${issue.id}`} value={issue.description} updatedAt={issue.updatedAt} onSave={saveDescription} />
+              <SubIssues issue={issue} onPatch={patchChild} />
+              <Docs issue={issue} />
+              {!issue.deletedAt && <Activity issue={issue} actions={comments} />}
+            </fieldset>
           </div>
         </div>
         <aside className="issue-props">
-          <Properties issue={issue} patch={patch} />
+          <fieldset className="plain" disabled={!!issue.deletedAt}>
+            <Properties issue={issue} patch={patch} />
+          </fieldset>
         </aside>
       </div>
     </>

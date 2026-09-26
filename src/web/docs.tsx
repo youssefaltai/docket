@@ -203,6 +203,7 @@ export function DocPage({ slug }: { slug: string }) {
   }, [loaded]);
 
   const startEdit = () => {
+    if (doc?.deletedAt) return; // read-only until restored
     const sc = scroller.current;
     startAt.current = sc ? sc.scrollTop / Math.max(1, sc.scrollHeight - sc.clientHeight) : 0;
     setPreview(null);
@@ -264,9 +265,11 @@ export function DocPage({ slug }: { slug: string }) {
               Done
             </button>
           ) : (
-            <button className="btn btn-sm" onClick={startEdit}>
-              Edit <Kbd>E</Kbd>
-            </button>
+            !doc.deletedAt && (
+              <button className="btn btn-sm" onClick={startEdit}>
+                Edit <Kbd>E</Kbd>
+              </button>
+            )
           )}
           <button
             className="icon-btn"
@@ -351,97 +354,102 @@ export function DocPage({ slug }: { slug: string }) {
                   onRestore={() => api.restoreDocument(doc.slug).then((fresh) => setDoc(fresh))}
                 />
               )}
-              <TitleEditor
-                key={doc.slug}
-                className="doc-title"
-                placeholder="Untitled"
-                value={doc.title}
-                onSave={(title) => patch({ title })}
-              />
-              <div className="doc-meta">
-                <TeamPicker value={doc.team} onChange={(key) => key !== doc.team && patch({ team: key })} className="doc-meta-btn">
-                  <TeamMark id={doc.team} />
-                  <span dir="auto">{team?.name ?? doc.team}</span>
-                </TeamPicker>
-                <span aria-hidden="true">·</span>
-                <span title={fullDate(doc.updatedAt)}>
-                  Updated {ago(doc.updatedAt)} by <span dir="auto">{doc.updatedBy.name}</span>
-                </span>
-                {doc.versionCount > 0 && (
-                  <>
-                    <span aria-hidden="true">·</span>
-                    <button className="doc-meta-btn" onClick={() => stopEdit().then((ok) => ok && setHistory(true))}>
-                      {doc.versionCount} {doc.versionCount === 1 ? "version" : "versions"}
+              {/* A trashed doc is read-only until restored: the fieldset disables every control in it. */}
+              <fieldset className="plain" disabled={!!doc.deletedAt}>
+                <TitleEditor
+                  key={doc.slug}
+                  className="doc-title"
+                  placeholder="Untitled"
+                  value={doc.title}
+                  onSave={(title) => patch({ title })}
+                />
+                <div className="doc-meta">
+                  <TeamPicker value={doc.team} onChange={(key) => key !== doc.team && patch({ team: key })} className="doc-meta-btn">
+                    <TeamMark id={doc.team} />
+                    <span dir="auto">{team?.name ?? doc.team}</span>
+                  </TeamPicker>
+                  <span aria-hidden="true">·</span>
+                  <span title={fullDate(doc.updatedAt)}>
+                    Updated {ago(doc.updatedAt)} by <span dir="auto">{doc.updatedBy.name}</span>
+                  </span>
+                  {doc.versionCount > 0 && (
+                    <>
+                      <span aria-hidden="true">·</span>
+                      <button className="doc-meta-btn" onClick={() => stopEdit().then((ok) => ok && setHistory(true))}>
+                        {doc.versionCount} {doc.versionCount === 1 ? "version" : "versions"}
+                      </button>
+                    </>
+                  )}
+                </div>
+
+                {preview && (
+                  <div className="doc-banner">
+                    <HistoryIcon />
+                    <span className="doc-banner-text">
+                      Version from <time>{fullDate(preview.createdAt)}</time> by <span dir="auto">{preview.author.name}</span>
+                    </span>
+                    <span className="grow" />
+                    <button className="btn btn-ghost btn-sm" onClick={() => setPreview(null)}>
+                      Cancel
                     </button>
+                    <button className="btn btn-primary btn-sm" onClick={() => restore(preview)}>
+                      Restore
+                    </button>
+                  </div>
+                )}
+
+                {editing ? (
+                  <DocEditor
+                    doc={doc}
+                    scroller={scroller}
+                    startAt={startAt.current}
+                    unsaved={unsaved}
+                    onSaved={apply}
+                    onLocal={(content) => setDoc((d) => d && { ...d, content })}
+                    onStatus={setSaveState}
+                    onConflict={reload}
+                    onExit={stopEdit}
+                  />
+                ) : shown.trim() ? (
+                  <div ref={body}>
+                    <Markdown className="doc-md" text={shown} />
+                  </div>
+                ) : (
+                  <button className="desc-empty" onClick={startEdit}>
+                    This doc is empty. Press <Kbd>E</Kbd> to start writing.
+                  </button>
+                )}
+
+                {!editing && !preview && (
+                  <>
+                    {doc.issues.length > 0 && (
+                      <Section title="Issues in this doc" count={doc.issues.length}>
+                        <div className="subs">
+                          {doc.issues.map((i) => (
+                            <div className="row sub" key={i.id}>
+                              <StatusIcon status={i.status} />
+                              <span className="row-id">{i.id}</span>
+                              <Link to={`/issue/${i.id}`} className="row-title" dir="auto">
+                                {i.title}
+                              </Link>
+                            </div>
+                          ))}
+                        </div>
+                      </Section>
+                    )}
+                    {!doc.deletedAt && (
+                      <Comments
+                        comments={doc.comments}
+                        actions={{
+                          add: (body) => withFresh(() => api.commentDocument(doc.slug, body)),
+                          edit: (cid, body) => withFresh(() => api.editDocumentComment(doc.slug, cid, body)),
+                          remove: (cid) => withFresh(() => api.deleteDocumentComment(doc.slug, cid)),
+                        }}
+                      />
+                    )}
                   </>
                 )}
-              </div>
-
-              {preview && (
-                <div className="doc-banner">
-                  <HistoryIcon />
-                  <span className="doc-banner-text">
-                    Version from <time>{fullDate(preview.createdAt)}</time> by <span dir="auto">{preview.author.name}</span>
-                  </span>
-                  <span className="grow" />
-                  <button className="btn btn-ghost btn-sm" onClick={() => setPreview(null)}>
-                    Cancel
-                  </button>
-                  <button className="btn btn-primary btn-sm" onClick={() => restore(preview)}>
-                    Restore
-                  </button>
-                </div>
-              )}
-
-              {editing ? (
-                <DocEditor
-                  doc={doc}
-                  scroller={scroller}
-                  startAt={startAt.current}
-                  unsaved={unsaved}
-                  onSaved={apply}
-                  onLocal={(content) => setDoc((d) => d && { ...d, content })}
-                  onStatus={setSaveState}
-                  onConflict={reload}
-                  onExit={stopEdit}
-                />
-              ) : shown.trim() ? (
-                <div ref={body}>
-                  <Markdown className="doc-md" text={shown} />
-                </div>
-              ) : (
-                <button className="desc-empty" onClick={startEdit}>
-                  This doc is empty. Press <Kbd>E</Kbd> to start writing.
-                </button>
-              )}
-
-              {!editing && !preview && (
-                <>
-                  {doc.issues.length > 0 && (
-                    <Section title="Issues in this doc" count={doc.issues.length}>
-                      <div className="subs">
-                        {doc.issues.map((i) => (
-                          <div className="row sub" key={i.id}>
-                            <StatusIcon status={i.status} />
-                            <span className="row-id">{i.id}</span>
-                            <Link to={`/issue/${i.id}`} className="row-title" dir="auto">
-                              {i.title}
-                            </Link>
-                          </div>
-                        ))}
-                      </div>
-                    </Section>
-                  )}
-                  <Comments
-                    comments={doc.comments}
-                    actions={{
-                      add: (body) => withFresh(() => api.commentDocument(doc.slug, body)),
-                      edit: (cid, body) => withFresh(() => api.editDocumentComment(doc.slug, cid, body)),
-                      remove: (cid) => withFresh(() => api.deleteDocumentComment(doc.slug, cid)),
-                    }}
-                  />
-                </>
-              )}
+              </fieldset>
             </article>
             {!editing && outline.heads.length > 1 && (
               <nav className="doc-outline" aria-label="Outline">

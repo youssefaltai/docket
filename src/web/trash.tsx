@@ -76,7 +76,7 @@ export function TrashView({ teamKey }: { teamKey: string }) {
 
   return (
     <>
-      <ListHeader team={team} title={teamKey} count={0} view="trash" />
+      <ListHeader team={team} title={teamKey} count={trash ? trash.issues.length + trash.documents.length : 0} view="trash" />
       <div className="content">{body}</div>
     </>
   );
