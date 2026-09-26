@@ -27,7 +27,6 @@ const pick = (from: Headers, names: string[]) => {
   return to;
 };
 
-// Shaped like the service's own errors, so the UI handles both the same way.
 /** The request body, or undefined once it passes `max` bytes (stops reading there, chunked or not). */
 async function readCapped(req: Request, max: number): Promise<Blob | undefined> {
   if (Number(req.headers.get("content-length") ?? 0) > max) return undefined;
@@ -68,6 +67,7 @@ function whenDone(body: ReadableStream<Uint8Array>, done: () => void): ReadableS
   });
 }
 
+// Shaped like the service's own errors, so the UI handles both the same way.
 const error = (message: string, code: string, status: number) => Response.json({ error: message, code }, { status });
 
 export async function proxyChat(req: Request, server: Bun.Server<unknown>): Promise<Response> {
