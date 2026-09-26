@@ -4,7 +4,7 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { store } from "./api";
 import { chatApi, type ChatAction, type ChatConversation, type ChatEvent, type ChatMessage, type ChatTool } from "./chatApi";
-import { CloseIcon, ComposeIcon, HistoryIcon, Kbd, Link, MOD, Markdown, PencilIcon, TrashIcon, ask, cls, errorToast, timeAgo, useAutosize, useKeydown } from "./ui";
+import { CloseIcon, ComposeIcon, HistoryIcon, Kbd, Link, MOD, Markdown, PencilIcon, TrashIcon, ask, cls, errorToast, fullDate, timeAgo, useAutosize, useKeydown } from "./ui";
 
 // ---------- Open or closed ----------
 
@@ -359,7 +359,7 @@ function ConfirmCard({ action, busy, onConfirm, onCancel }: { action: ChatAction
           <Fragment key={k}>
             <dt>{k}</dt>
             <dd>
-              <Value value={v} />
+              {k === "baseUpdatedAt" && typeof v === "string" ? `only if unchanged since ${fullDate(v)}` : <Value value={v} />}
             </dd>
           </Fragment>
         ))}
