@@ -15,6 +15,7 @@ import {
   LabelChip,
   LabelDot,
   Link,
+  LoadFailed,
   ListHeader,
   ListIcon,
   PlusIcon,
@@ -33,6 +34,7 @@ import {
   useApp,
   useDebounced,
   useFetch,
+  useResolved,
 } from "./ui";
 
 type View = "list" | "board";
@@ -58,6 +60,7 @@ export function IssuesView({ teamKey }: { teamKey: string | null }) {
   const {
     data: issues,
     setData: setIssues,
+    failed,
     reload,
     invalidate,
   } = useFetch(
@@ -103,7 +106,7 @@ export function IssuesView({ teamKey }: { teamKey: string | null }) {
   } else if (teamKey && app.teams && !team) {
     body = <TeamNotFound teamKey={teamKey} back="/" backLabel="All issues" />;
   } else if (!issues) {
-    body = null;
+    body = failed ? <LoadFailed message={failed} retry={reload} /> : null;
   } else if (issues.length === 0) {
     body = filtered ? (
       <EmptyState
@@ -263,10 +266,13 @@ function NewInStatus({ status }: { status: Status }) {
   );
 }
 
+/** Shown while any blocker is still open. */
 function Blocked({ by }: { by: string[] }) {
-  if (!by.length) return null;
+  const resolved = useResolved();
+  const open = by.filter((id) => !resolved(id));
+  if (!open.length) return null;
   return (
-    <span className="blocked" title={`Blocked by ${by.join(", ")}`}>
+    <span className="blocked" title={`Blocked by ${open.join(", ")}`}>
       <BlockedIcon />
     </span>
   );

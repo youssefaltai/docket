@@ -185,6 +185,14 @@ kbd {
   background: var(--primary-hover);
   border-color: var(--primary-hover);
 }
+.btn-danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+.btn-danger:hover {
+  filter: brightness(0.94);
+}
 .btn-primary kbd {
   background: rgb(255 255 255 / 0.14);
   border-color: transparent;
@@ -331,6 +339,16 @@ kbd {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+}
+
+/* Offline / reconnecting notice above the page. */
+.connection {
+  flex-shrink: 0;
+  padding: 6px var(--pad);
+  background: var(--bg-subtle);
+  border-bottom: 1px solid var(--border);
+  color: var(--text-2);
+  font-size: 12.5px;
 }
 
 .sidebar {
@@ -603,6 +621,7 @@ kbd {
 .crumb-id {
   font: 500 12.5px var(--mono);
   color: var(--text);
+  white-space: nowrap;
 }
 
 .content {
@@ -1211,6 +1230,10 @@ kbd {
   border-color: var(--border-strong);
   background: var(--bg-subtle);
   color: var(--text);
+}
+.rel-resolved {
+  color: var(--faint);
+  text-decoration: line-through;
 }
 .props-meta {
   display: flex;
@@ -1896,6 +1919,10 @@ kbd {
   padding: 10px 12px;
   border-top: 1px solid var(--border);
 }
+.confirm-text {
+  padding: 16px 16px 18px;
+  line-height: 1.5;
+}
 .modal-form {
   display: flex;
   flex-direction: column;
@@ -2228,6 +2255,43 @@ textarea.input {
   .desc-edit,
   .comment-actions {
     opacity: 1;
+  }
+}
+
+/* Touch: every control is at least 44px, the minimum comfortable tap target. */
+@media (pointer: coarse) {
+  .btn,
+  .icon-btn,
+  .chip,
+  .row-btn,
+  .prop-btn,
+  .nav-item,
+  .tab,
+  .pop-item,
+  .doc-meta-btn,
+  .segmented button,
+  .group-toggle,
+  .inline-input,
+  .desc-empty,
+  .search {
+    min-height: 44px;
+  }
+  .icon-btn,
+  .row-btn,
+  .segmented button {
+    min-width: 44px;
+  }
+  .crumbs a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+  .row {
+    height: 52px;
+  }
+  .tab {
+    display: inline-flex;
+    align-items: center;
   }
 }
 

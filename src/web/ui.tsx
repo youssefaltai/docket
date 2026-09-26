@@ -21,6 +21,7 @@ import { Marked } from "marked";
 import { HttpError, api } from "./api";
 import { getMe } from "./auth";
 import {
+  CLOSED_STATUSES,
   OPEN_STATUSES,
   STATUSES,
   type Comment,
@@ -34,6 +35,16 @@ import {
   type Workspace,
   type WorkspaceMember,
 } from "../shared/types";
+
+// Keys typed into an IME composition (Japanese or Chinese input, say) belong to the IME: Enter there
+// confirms the text. Stop them before any app handler can submit, save or move focus.
+window.addEventListener(
+  "keydown",
+  (e) => {
+    if (e.isComposing || e.keyCode === 229) e.stopImmediatePropagation();
+  },
+  true,
+);
 
 export const cls = (...xs: (string | false | null | undefined)[]) => xs.filter(Boolean).join(" ");
 export const MOD = /Mac|iPhone|iPad/.test(navigator.userAgent) ? "⌘" : "Ctrl";
@@ -154,21 +165,26 @@ export function useFetch<T>(load: (() => Promise<T>) | null, deps: unknown[]) {
   const live = useLive();
   const [data, setData] = useState<T | null>(null);
   const [missing, setMissing] = useState(false);
+  const [failed, setFailed] = useState(""); // why the first load failed (offline, say), for the page to show
   const [tick, setTick] = useState(0);
   const seq = useRef(0);
+  const loaded = useRef(false);
   useEffect(() => {
     if (!load) return;
     const n = ++seq.current;
     load().then(
       (d) => {
         if (n !== seq.current) return;
+        loaded.current = true;
         setData(d);
         setMissing(false);
+        setFailed("");
       },
       (e) => {
         if (n !== seq.current) return;
         if (e instanceof HttpError && e.status === 404) setMissing(true);
-        else errorToast(e);
+        else if (loaded.current) errorToast(e);
+        else setFailed(e instanceof Error ? e.message : String(e));
       },
     );
   }, [...deps, live, tick]);
@@ -176,6 +192,7 @@ export function useFetch<T>(load: (() => Promise<T>) | null, deps: unknown[]) {
     data,
     setData,
     missing,
+    failed,
     reload: () => setTick((t) => t + 1),
     invalidate: () => ++seq.current,
     isLatest: (n: number) => n === seq.current,
@@ -330,6 +347,58 @@ export function Toaster() {
         </div>
       ))}
     </div>
+  );
+}
+
+// ---------- Confirm ----------
+
+interface Question {
+  text: string;
+  action: string;
+  resolve: (ok: boolean) => void;
+}
+let question: Question | null = null;
+const questionListeners = new Set<() => void>();
+function setQuestion(q: Question | null) {
+  question = q;
+  questionListeners.forEach((l) => l());
+}
+
+/** The app's own confirm(): resolves true if the user confirms. `action` labels the button ("Delete"). */
+export function ask(text: string, action: string): Promise<boolean> {
+  question?.resolve(false);
+  return new Promise((resolve) => setQuestion({ text, action, resolve }));
+}
+
+/** Renders the pending `ask`, if any; mounted once by the app. */
+export function Confirm() {
+  const q = useSyncExternalStore(
+    (cb) => {
+      questionListeners.add(cb);
+      return () => void questionListeners.delete(cb);
+    },
+    () => question,
+  );
+  if (!q) return null;
+  const answer = (ok: boolean) => {
+    setQuestion(null);
+    q.resolve(ok);
+  };
+  return (
+    <Modal label={q.action} className="modal-sm" onClose={() => answer(false)} onSubmit={() => answer(true)}>
+      <p className="confirm-text" dir="auto">
+        {q.text}
+      </p>
+      <div className="modal-foot">
+        <span className="grow" />
+        <button className="btn" onClick={() => answer(false)}>
+          Cancel
+        </button>
+        <button className="btn btn-danger" autoFocus onClick={() => answer(true)}>
+          {q.action}
+        </button>
+      </div>
+    </Modal>
   );
 }
 
@@ -535,6 +604,15 @@ export function MenuButton() {
     <button className="icon-btn menu-btn" onClick={openNav} aria-label="Open menu">
       <MenuIcon />
     </button>
+  );
+}
+
+/** In place of a page whose first load failed: says why, with a retry. */
+export function LoadFailed({ message, retry }: { message: string; retry: () => void }) {
+  return (
+    <EmptyState title="Couldn’t load this" action={<button className="btn" onClick={retry}>Try again</button>}>
+      {message}
+    </EmptyState>
   );
 }
 
@@ -772,6 +850,15 @@ const useIssueIndex = () =>
     () => issueIndex,
   );
 
+/** Whether an issue is done or canceled, as far as the index knows (a resolved blocker no longer blocks). */
+export function useResolved() {
+  const index = useIssueIndex();
+  return (id: string) => {
+    const status = index?.get(id)?.status;
+    return !!status && CLOSED_STATUSES.includes(status);
+  };
+}
+
 // ---------- Markdown ----------
 
 const escapeHtml = (s: string) =>
@@ -897,10 +984,18 @@ export function Modal({
   children: ReactNode;
 }) {
   const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const prev = document.activeElement as HTMLElement | null;
-    return () => prev?.focus?.({ preventScroll: true });
-  }, []);
+  // What had focus when it opened (read on first render: autofocus moves it before effects run).
+  const [opener] = useState(() => document.activeElement as HTMLElement | null);
+  useEffect(
+    () => () => {
+      // After the close lands (StrictMode's rehearsal unmount remounts at once, so skip it then),
+      // give focus back unless something else has taken it.
+      setTimeout(() => {
+        if (!ref.current && (document.activeElement === document.body || !document.activeElement)) opener?.focus?.({ preventScroll: true });
+      });
+    },
+    [],
+  );
   return createPortal(
     <div
       className="backdrop"
@@ -985,8 +1080,8 @@ function CommentItem({ comment: c, actions }: { comment: Comment; actions: Comme
     if (body !== c.body.trim()) await actions.edit(c.id, body);
     setEditing(false);
   };
-  const remove = () => {
-    if (confirm("Delete this comment? This can’t be undone.")) actions.remove(c.id).catch(errorToast);
+  const remove = async () => {
+    if (await ask("Delete this comment? This can’t be undone.", "Delete")) actions.remove(c.id).catch(errorToast);
   };
   return (
     <li className="comment">

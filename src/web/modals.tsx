@@ -59,7 +59,7 @@ export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueIn
     team: defaults.team ?? "",
     title: defaults.title ?? "",
     description: defaults.description ?? "",
-    status: defaults.status ?? "todo",
+    status: defaults.status ?? "backlog",
     priority: defaults.priority ?? 0,
     labels: defaults.labels ?? [],
     assignee: null,
@@ -198,7 +198,7 @@ export function NewDocModal({ team: initial, onClose }: { team: string; onClose:
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+            if (e.key === "Enter") {
               e.preventDefault();
               submit();
             }

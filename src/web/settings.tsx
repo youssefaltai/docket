@@ -4,6 +4,7 @@ import type { ApiKeyScope, CodeLink, Role, Session, Workspace, WorkspaceMember }
 import { auth, getMe } from "./auth";
 import { Picker } from "./pickers";
 import {
+  ask,
   Avatar,
   CopyIcon,
   EmptyState,
@@ -303,8 +304,8 @@ function ApiKeys() {
   const keys = useFetch(() => auth.apiKeys(), []);
   const [adding, setAdding] = useState(false);
   const { secret, show } = useSecret();
-  const revoke = (id: number, name: string) => {
-    if (confirm(`Revoke the API key “${name}”? Anything using it stops working.`)) auth.revokeApiKey(id).then(keys.reload, errorToast);
+  const revoke = async (id: number, name: string) => {
+    if (await ask(`Revoke the API key “${name}”? Anything using it stops working.`, "Revoke")) auth.revokeApiKey(id).then(keys.reload, errorToast);
   };
   const created = (token: string) => {
     setAdding(false);
@@ -408,9 +409,9 @@ function Members({ workspace, members, reload, readOnly }: { workspace: string; 
     const { name } = m.user;
     if (m.suspendedAt) return [["Reinstate", () => update(m, { suspended: false })]];
     const role = m.role === "admin" ? "member" : "admin";
-    const suspend = () => {
+    const suspend = async () => {
       const note = "They lose access to this workspace; if it's their only one, they're signed out everywhere. What they wrote stays theirs.";
-      if (confirm(`Suspend ${name}? ${note}`)) update(m, { suspended: true });
+      if (await ask(`Suspend ${name}? ${note}`, "Suspend")) update(m, { suspended: true });
     };
     return [
       [`Make ${role}`, () => update(m, { role })],
@@ -478,13 +479,13 @@ function Agents({ workspace, agents, reload }: { workspace: string; agents: Work
   };
   const actions = (m: WorkspaceMember): [string, () => void][] => {
     const { name, username } = m.user;
-    const newToken = () => {
+    const newToken = async () => {
       // A removed agent comes back with a new token, so there's no old one to warn about.
-      if (m.suspendedAt || confirm(`Issue a new token for ${name}? The old token stops working.`))
+      if (m.suspendedAt || (await ask(`Issue a new token for ${name}? The old token stops working.`, "New token")))
         auth.rotateAgentToken(workspace, username).then(({ token }) => showToken(name, token), errorToast);
     };
-    const remove = () => {
-      if (confirm(`Remove ${name}? Its token stops working; what it wrote stays.`)) auth.removeAgent(workspace, username).then(reload, errorToast);
+    const remove = async () => {
+      if (await ask(`Remove ${name}? Its token stops working; what it wrote stays.`, "Remove")) auth.removeAgent(workspace, username).then(reload, errorToast);
     };
     return m.suspendedAt ? [["New token", newToken]] : [["New token", newToken], ["Remove", remove]];
   };
