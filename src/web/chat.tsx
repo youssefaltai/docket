@@ -36,6 +36,7 @@ export function ChatDock() {
   const isOpen = useOpen();
   const [mounted, setMounted] = useState(isOpen);
   useKeydown((e) => {
+    if (document.querySelector(".pop, .backdrop")) return; // like the app's other shortcuts: not over a menu or dialog
     if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "j") {
       e.preventDefault();
       toggleChat();
@@ -322,7 +323,8 @@ function Reply({ message: m, onRetry }: { message: Live; onRetry?: () => void })
           ))}
         </div>
       )}
-      {m.content ? <Markdown text={m.content} /> : streaming && <span className="chat-thinking">Thinking…</span>}
+      {/* No images: a reply's image URL could carry what the model read to someone else's server on render. */}
+      {m.content ? <Markdown text={m.content} images={false} /> : streaming && <span className="chat-thinking">Thinking…</span>}
       {m.status === "stopped" && <p className="chat-note">Stopped.</p>}
       {m.status === "error" && <p className="chat-note chat-error">{m.error ?? "This reply didn't finish."}</p>}
       {onRetry && (m.status === "stopped" || m.status === "error") && (

@@ -917,6 +917,9 @@ function safeUrl(href: string): string | null {
 /** App paths and in-page anchors stay in the tab (and route client-side); everything else opens a new one. */
 const isInternal = (url: string) => /^(\/(?!\/)|#)/.test(url);
 
+// Set right before each parse: whether images load (not in the assistant's replies, see Markdown).
+let allowImages = true;
+
 // Set right before each parse: which identifiers resolve to real issues of known teams.
 let chipKeys = new Set<string>();
 let chipIndex: Map<string, IssueSummary> | null = null;
@@ -979,6 +982,7 @@ const marked = new Marked({
       return `<a href="${escapeHtml(url)}"${t}${target}>${text}</a>`;
     },
     image({ href, title, text }) {
+      if (!allowImages) return escapeHtml(text);
       const url = safeUrl(href);
       if (!url) return escapeHtml(text);
       const t = title ? ` title="${escapeHtml(title)}"` : "";
@@ -987,14 +991,23 @@ const marked = new Marked({
   },
 });
 
-export function Markdown({ text, className }: { text: string; className?: string }) {
+/**
+ * `images={false}` shows an image's alt text instead of loading it: for text a model wrote, where a
+ * prompt injected into what it read could make it write an image URL that carries data out on render.
+ */
+export function Markdown({ text, className, images = true }: { text: string; className?: string; images?: boolean }) {
   const { teams } = useApp();
   const index = useIssueIndex();
   const html = useMemo(() => {
     chipKeys = new Set(teams?.map((t) => t.key));
     chipIndex = index;
-    return (marked.parse(text) as string).replace(/<(p|h[1-6]|ul|ol|blockquote|table|td|th)(?=[\s>])/g, '<$1 dir="auto"');
-  }, [text, teams, index]);
+    allowImages = images;
+    try {
+      return (marked.parse(text) as string).replace(/<(p|h[1-6]|ul|ol|blockquote|table|td|th)(?=[\s>])/g, '<$1 dir="auto"');
+    } finally {
+      allowImages = true;
+    }
+  }, [text, teams, index, images]);
   return (
     <div
       className={cls("md", className)}
