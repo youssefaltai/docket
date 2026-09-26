@@ -5,7 +5,6 @@ import { HttpError, api } from "./api";
 import { AssigneePicker, BlockedByPicker, DelegatePicker, LabelsPicker, ParentPicker, PriorityPicker, StatusPicker } from "./pickers";
 import {
   Avatar,
-  ask,
   ago,
   ChevronRightIcon,
   Comments,
@@ -38,12 +37,13 @@ import {
   nav,
   navigate,
   sortIssues,
-  toast,
   useApp,
   useAutosize,
   useFetch,
   type CommentActions,
   useResolved,
+  trashToast,
+  TrashBanner,
 } from "./ui";
 
 export function IssuePage({ id }: { id: string }) {
@@ -160,7 +160,7 @@ export function IssuePage({ id }: { id: string }) {
   const heldByOther =
     !!assignee && !isMe(assignee) && app.members.some((m) => m.user.username === assignee.username && !m.suspendedAt);
   const alreadyMine = isMe(assignee) && issue.status === "in_progress";
-  const claimable = !CLOSED_STATUSES.includes(issue.status) && !heldByOther && !alreadyMine;
+  const claimable = !issue.deletedAt && !CLOSED_STATUSES.includes(issue.status) && !heldByOther && !alreadyMine;
   const claim = () => withFresh(() => api.claimIssue(issue.id)).catch(errorToast);
 
   // The description is the one field sent with baseUpdatedAt, since a stale save would overwrite someone's
@@ -191,11 +191,11 @@ export function IssuePage({ id }: { id: string }) {
     throw new HttpError("Issue changed since you read it", 409);
   };
 
+  // To the trash, undoable (as in Linear), so no confirm first.
   const remove = async () => {
-    if (!(await ask(`Delete ${issue.id}? This can’t be undone.`, "Delete"))) return;
     try {
       await api.deleteIssue(issue.id);
-      toast(`Deleted ${issue.id}`);
+      trashToast(issue.id, () => api.restoreIssue(issue.id), `/issue/${issue.id}`);
       navigate(nav.lastList);
     } catch (e) {
       errorToast(e);
@@ -216,32 +216,42 @@ export function IssuePage({ id }: { id: string }) {
           <button className="icon-btn" onClick={copyId} aria-label="Copy ID" title="Copy ID">
             <CopyIcon />
           </button>
-          <button className="icon-btn" onClick={remove} aria-label="Delete issue" title="Delete issue">
-            <TrashIcon />
-          </button>
+          {!issue.deletedAt && (
+            <button className="icon-btn" onClick={remove} aria-label="Delete issue" title="Delete issue">
+              <TrashIcon />
+            </button>
+          )}
         </>,
       )}
       <div className="issue">
         <div className="issue-main">
           <div className="issue-inner">
-            {issue.parent && (
-              <Link className="issue-parent" to={`/issue/${issue.parent}`}>
-                <ParentIcon /> Sub-issue of <span className="mono">{issue.parent}</span>
-              </Link>
+            {issue.deletedAt && (
+              <TrashBanner deletedAt={issue.deletedAt} onRestore={() => withFresh(() => api.restoreIssue(issue.id))} />
             )}
-            <TitleEditor key={issue.id} value={issue.title} onSave={(title) => patch({ title })} />
-            {/* Narrow screens show the properties under the title instead of in the side panel. */}
-            <div className="issue-props-inline">
-              <Properties issue={issue} patch={patch} />
-            </div>
-            <Description key={`d-${issue.id}`} value={issue.description} updatedAt={issue.updatedAt} onSave={saveDescription} />
-            <SubIssues issue={issue} onPatch={patchChild} />
-            <Docs issue={issue} />
-            <Activity issue={issue} actions={comments} />
+            {/* A trashed issue is read-only until restored: the fieldset disables every control in it. */}
+            <fieldset className="plain" disabled={!!issue.deletedAt}>
+              {issue.parent && (
+                <Link className="issue-parent" to={`/issue/${issue.parent}`}>
+                  <ParentIcon /> Sub-issue of <span className="mono">{issue.parent}</span>
+                </Link>
+              )}
+              <TitleEditor key={issue.id} value={issue.title} onSave={(title) => patch({ title })} />
+              {/* Narrow screens show the properties under the title instead of in the side panel. */}
+              <div className="issue-props-inline">
+                <Properties issue={issue} patch={patch} />
+              </div>
+              <Description key={`d-${issue.id}`} value={issue.description} updatedAt={issue.updatedAt} onSave={saveDescription} />
+              <SubIssues issue={issue} onPatch={patchChild} />
+              <Docs issue={issue} />
+              {!issue.deletedAt && <Activity issue={issue} actions={comments} />}
+            </fieldset>
           </div>
         </div>
         <aside className="issue-props">
-          <Properties issue={issue} patch={patch} />
+          <fieldset className="plain" disabled={!!issue.deletedAt}>
+            <Properties issue={issue} patch={patch} />
+          </fieldset>
         </aside>
       </div>
     </>

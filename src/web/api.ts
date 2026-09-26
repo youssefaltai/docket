@@ -17,6 +17,7 @@ import type {
   TeamInput,
   TeamPatch,
   ServerEvent,
+  Trash,
   Workspace,
   WorkspaceInput,
   WorkspaceMember,
@@ -139,7 +140,9 @@ export const api = {
   createIssue: (input: IssueInput) => request<Issue>("POST", "/api/issues", input),
   updateIssue: (id: string, patch: IssuePatch) => inOrder(id, () => request<Issue>("PATCH", `/api/issues/${enc(id)}`, patch)),
   claimIssue: (id: string) => inOrder(id, () => request<Issue>("POST", `/api/issues/${enc(id)}/claim`, {})),
-  deleteIssue: (id: string) => request<{ ok: true }>("DELETE", `/api/issues/${enc(id)}`),
+  /** Moves it to the trash; `restoreIssue` brings it back (for 30 days). */
+  deleteIssue: (id: string) => request<Issue>("DELETE", `/api/issues/${enc(id)}`),
+  restoreIssue: (id: string) => request<Issue>("POST", `/api/issues/${enc(id)}/restore`),
   comment: (id: string, body: string) => request<Issue>("POST", `/api/issues/${enc(id)}/comments`, { body }),
   editComment: (id: string, cid: number, body: string) =>
     request<Issue>("PATCH", `/api/issues/${enc(id)}/comments/${cid}`, { body }),
@@ -154,7 +157,9 @@ export const api = {
   createDocument: (input: DocumentInput) => request<Document>("POST", "/api/documents", input),
   updateDocument: (slug: string, patch: DocumentPatch) =>
     request<Document>("PATCH", `/api/documents/${enc(slug)}`, patch),
-  deleteDocument: (slug: string) => request<{ ok: true }>("DELETE", `/api/documents/${enc(slug)}`),
+  deleteDocument: (slug: string) => request<Document>("DELETE", `/api/documents/${enc(slug)}`),
+  restoreDocument: (slug: string) => request<Document>("POST", `/api/documents/${enc(slug)}/restore`),
+  trash: (team: string) => request<Trash>("GET", `/api/teams/${enc(team)}/trash`),
   commentDocument: (slug: string, body: string) =>
     request<Document>("POST", `/api/documents/${enc(slug)}/comments`, { body }),
   editDocumentComment: (slug: string, cid: number, body: string) =>

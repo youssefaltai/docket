@@ -707,6 +707,14 @@ kbd {
   width: 2px;
   background: var(--text);
 }
+/* A fieldset used only to disable a region (a trashed issue or doc), with no box of its own. */
+fieldset.plain {
+  display: contents;
+}
+.row-action {
+  position: relative; /* above the row link's full-row hit area */
+  z-index: 1;
+}
 .row-btn {
   position: relative;
   z-index: 1;
