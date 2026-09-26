@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import type { IssueInput, Team, Workspace, WorkspaceMember } from "../shared/types";
 import { api, connectionStore, setOnAccessLost, setOnUnauthorized, store, subscribe } from "./api";
 import { auth, getMe, loadMe } from "./auth";
+import { ChatDock, ChatNavItem } from "./chat";
 import { DocPage, DocsView } from "./docs";
 import { IssuePage } from "./issue";
 import { IssuesView } from "./issues";
@@ -238,6 +239,7 @@ function App() {
             )}
             {page}
           </main>
+          {getMe().chat && <ChatDock />}
         </div>
         {modal?.kind === "issue" && <NewIssueModal defaults={modal.defaults} onClose={() => setModal(null)} />}
         {modal?.kind === "doc" && <NewDocModal team={modal.team} onClose={() => setModal(null)} />}
@@ -305,6 +307,7 @@ function Sidebar({ route, active, onSwitch }: { route: Route; active: string | n
           <span className="nav-label">All docs</span>
           {docs > 0 && <span className="nav-count">{docs}</span>}
         </Link>
+        {getMe().chat && <ChatNavItem />}
         <div className="nav-section">
           <span>Teams</span>
           <button className="icon-btn xs" onClick={newTeam} aria-label="New team" title="New team">
