@@ -176,6 +176,11 @@ export function subscribe(onEvent: (event: ServerEvent | null) => void): () => v
   let stopped = false;
 
   const connect = () => {
+    // Only ever one socket: detach the old one first, so its late onclose can't start a second retry chain.
+    if (ws) {
+      ws.onopen = ws.onmessage = ws.onclose = null;
+      ws.close();
+    }
     ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
     ws.onopen = () => {
       if (attempt > 0) onEvent(null);
@@ -202,6 +207,7 @@ export function subscribe(onEvent: (event: ServerEvent | null) => void): () => v
   // Back online: retry now rather than after the backoff.
   const online = () => {
     if (ws?.readyState === WebSocket.OPEN) return setConnection("online");
+    if (ws?.readyState === WebSocket.CONNECTING) return; // its onopen or onclose follows
     setConnection("reconnecting");
     clearTimeout(timer);
     connect();
