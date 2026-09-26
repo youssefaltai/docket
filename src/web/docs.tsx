@@ -32,15 +32,14 @@ import {
   fullDate,
   isEditable,
   nav,
-  navigate,
   toast,
   useApp,
   useDebounced,
   useFetch,
   useKeydown,
-  trashToast,
   TrashBanner,
 } from "./ui";
+import { deleteToTrash } from "./trashActions";
 
 // ---------- Docs list ----------
 
@@ -488,16 +487,8 @@ export function DocPage({ slug }: { slug: string }) {
   );
 }
 
-// To the trash, undoable (as in Linear), so no confirm first.
-async function remove(doc: Document) {
-  try {
-    await api.deleteDocument(doc.slug);
-    trashToast(`“${doc.title}”`, () => api.restoreDocument(doc.slug), `/doc/${doc.slug}`);
-    navigate(`/t/${doc.team}/docs`);
-  } catch (e) {
-    errorToast(e);
-  }
-}
+const remove = (doc: Document) =>
+  deleteToTrash(() => api.deleteDocument(doc.slug), `“${doc.title}”`, () => api.restoreDocument(doc.slug), `/doc/${doc.slug}`, `/t/${doc.team}/docs`);
 
 // ---------- Outline ----------
 

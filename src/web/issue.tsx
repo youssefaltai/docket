@@ -35,16 +35,15 @@ import {
   toPatch,
   type IssueChange,
   nav,
-  navigate,
   sortIssues,
   useApp,
   useAutosize,
   useFetch,
   type CommentActions,
   useResolved,
-  trashToast,
   TrashBanner,
 } from "./ui";
+import { deleteToTrash } from "./trashActions";
 
 export function IssuePage({ id }: { id: string }) {
   const app = useApp();
@@ -191,16 +190,7 @@ export function IssuePage({ id }: { id: string }) {
     throw new HttpError("Issue changed since you read it", 409);
   };
 
-  // To the trash, undoable (as in Linear), so no confirm first.
-  const remove = async () => {
-    try {
-      await api.deleteIssue(issue.id);
-      trashToast(issue.id, () => api.restoreIssue(issue.id), `/issue/${issue.id}`);
-      navigate(nav.lastList);
-    } catch (e) {
-      errorToast(e);
-    }
-  };
+  const remove = () => deleteToTrash(() => api.deleteIssue(issue.id), issue.id, () => api.restoreIssue(issue.id), `/issue/${issue.id}`, nav.lastList);
 
   const copyId = () => copyText(issue.id, `Copied ${issue.id}`);
 
