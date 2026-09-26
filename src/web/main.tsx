@@ -419,6 +419,16 @@ function Root() {
   return state === "ready" ? <App /> : null;
 }
 
+// Keys typed into an IME composition (Japanese or Chinese input, say) belong to the IME: Enter there
+// confirms the text. Stop them before any app handler can submit, save or move focus.
+window.addEventListener(
+  "keydown",
+  (e) => {
+    if (e.isComposing || e.keyCode === 229) e.stopImmediatePropagation();
+  },
+  true,
+);
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <Root />

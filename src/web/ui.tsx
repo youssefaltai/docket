@@ -14,13 +14,3 @@ export * from "./issueIndex";
 export * from "./markdown";
 export * from "./components";
 export * from "./comments";
-
-// Keys typed into an IME composition (Japanese or Chinese input, say) belong to the IME: Enter there
-// confirms the text. Stop them before any app handler can submit, save or move focus.
-window.addEventListener(
-  "keydown",
-  (e) => {
-    if (e.isComposing || e.keyCode === 229) e.stopImmediatePropagation();
-  },
-  true,
-);
