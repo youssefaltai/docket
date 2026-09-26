@@ -57,7 +57,7 @@ export const connectionStore = {
 };
 
 /** A network failure says so in words, instead of the browser's "Failed to fetch". */
-const unreachable = () =>
+export const unreachable = () =>
   new HttpError(navigator.onLine ? "Can’t reach Docket. Check your connection and try again." : "You’re offline.", 0);
 
 /** Per-browser preferences; storage can be unavailable (private mode, blocked site data). */
