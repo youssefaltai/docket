@@ -1,6 +1,8 @@
 // Inline SVG icons, plus the status/priority glyphs shared with rendered markdown (issue-ref chips).
 import type { SVGProps } from "react";
-import type { Priority, Status } from "../shared/types";
+import type { IssueSummary, Priority, StatusCategory } from "../shared/types";
+import { useApp } from "./context";
+import { issueStatus, statusOf } from "./hooks";
 
 type IconProps = SVGProps<SVGSVGElement>;
 const icon = (d: string) => (props: IconProps) => (
@@ -59,28 +61,36 @@ export function Logo() {
   );
 }
 
+/** What a status icon draws: a glyph by category, in the status's color; `fill` is how full a started one's pie is. */
+export type StatusGlyph = { category: StatusCategory; color: string; fill?: number };
+
 /** Status icon markup, shared by <StatusIcon> and the issue chips inside rendered markdown. */
-export function statusBody(status: Status): string {
-  const c = `var(--s-${status})`;
+export function statusBody({ category, color, fill = 0.5 }: StatusGlyph): string {
+  const c = /^#[0-9a-f]{6}$/i.test(color) ? color : "#8f8f8f"; // into markup: only ever a hex color
   const ring = `<circle cx="7" cy="7" r="6" stroke="${c}" stroke-width="1.5" fill="none"/>`;
   const pie = (f: number) =>
     `<circle cx="7" cy="7" r="2" fill="none" stroke="${c}" stroke-width="4" stroke-dasharray="${f * 4 * Math.PI} 100" transform="rotate(-90 7 7)"/>`;
   const disc = (mark: string) =>
     `<circle cx="7" cy="7" r="6.75" fill="${c}"/><path d="${mark}" stroke="#fff" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>`;
   return {
+    triage: disc("M4.5 7h5M7.5 5l2 2-2 2"),
     backlog: `<circle cx="7" cy="7" r="6" stroke="${c}" stroke-width="1.5" fill="none" stroke-dasharray="2.1 1.67"/>`,
-    todo: ring,
-    in_progress: ring + pie(0.5),
-    in_review: ring + pie(0.75),
-    done: disc("M4.4 7.2l1.8 1.8 3.5-3.7"),
+    unstarted: ring,
+    started: ring + pie(fill),
+    completed: disc("M4.4 7.2l1.8 1.8 3.5-3.7"),
     canceled: disc("M5 5l4 4M9 5l-4 4"),
-  }[status];
+  }[category];
 }
 
-export const statusSvg = (status: Status) =>
-  `<svg class="status-icon" width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">${statusBody(status)}</svg>`;
+// Chips in rendered markdown know a status by its key alone: they draw the first team's status with that key
+// (the app shell keeps this current), else the default workflow's.
+let chipStatuses = new Map<string, StatusGlyph>();
+export const setChipStatuses = (statuses: Map<string, StatusGlyph>) => (chipStatuses = statuses);
 
-export function StatusIcon({ status, size = 14 }: { status: Status; size?: number }) {
+export const statusSvg = (key: string) =>
+  `<svg class="status-icon" width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">${statusBody(chipStatuses.get(key) ?? statusOf(null, "", key))}</svg>`;
+
+export function StatusIcon({ status, size = 14 }: { status: StatusGlyph; size?: number }) {
   return (
     <svg
       className="status-icon"
@@ -91,6 +101,11 @@ export function StatusIcon({ status, size = 14 }: { status: Status; size?: numbe
       dangerouslySetInnerHTML={{ __html: statusBody(status) }}
     />
   );
+}
+
+/** An issue's status icon, from its team's workflow. */
+export function IssueStatusIcon({ issue, size }: { issue: Pick<IssueSummary, "team" | "status" | "statusCategory">; size?: number }) {
+  return <StatusIcon status={issueStatus(useApp().teams, issue)} size={size} />;
 }
 
 export function PriorityIcon({ priority }: { priority: Priority }) {

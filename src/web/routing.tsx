@@ -12,6 +12,8 @@ type Page =
   | { view: "issues"; team: string | null }
   | { view: "docs"; team: string | null }
   | { view: "trash"; team: string }
+  | { view: "triage"; team: string }
+  | { view: "team-settings"; team: string }
   | { view: "issue"; id: string }
   | { view: "doc"; slug: string }
   | { view: "settings"; section: "account" | "workspace" }
@@ -40,9 +42,11 @@ function parsePage(path: string): Page {
   if (issue) return { view: "issue", id: decodeURIComponent(issue[1]!).toUpperCase() };
   const doc = /^\/doc\/([^/]+)/.exec(path);
   if (doc) return { view: "doc", slug: decodeURIComponent(doc[1]!) };
-  const team = /^\/t\/([^/]+)(\/docs|\/trash)?/.exec(path);
+  const team = /^\/t\/([^/]+)(\/docs|\/trash|\/triage|\/settings)?/.exec(path);
   const key = team ? decodeURIComponent(team[1]!).toUpperCase() : null;
   if (key && team?.[2] === "/trash") return { view: "trash", team: key };
+  if (key && team?.[2] === "/triage") return { view: "triage", team: key };
+  if (key && team?.[2] === "/settings") return { view: "team-settings", team: key };
   return { view: team?.[2] || /^\/docs\/?$/.test(path) ? "docs" : "issues", team: key };
 }
 

@@ -1,18 +1,52 @@
 // The contract shared by the server (REST, MCP) and the web UI.
 
-export const STATUSES = ["backlog", "todo", "in_progress", "in_review", "done", "canceled"] as const;
-export type Status = (typeof STATUSES)[number];
+/**
+ * Each team has its own workflow: ordered statuses in Linear's fixed categories, in this order. Issues name their
+ * status by its stable key ("in_progress"); its name ("In Progress") can be renamed freely.
+ */
+export const STATUS_CATEGORIES = ["triage", "backlog", "unstarted", "started", "completed", "canceled"] as const;
+export type StatusCategory = (typeof STATUS_CATEGORIES)[number];
+export const ACTIVE_CATEGORIES: StatusCategory[] = ["backlog", "unstarted", "started"]; // what "open" means; triage is outside the workflow
+export const CLOSED_CATEGORIES: StatusCategory[] = ["completed", "canceled"];
+export const DUPLICATE_STATUS = "duplicate"; // the system status: fixed name, color and category; can't be deleted
 
-export const CLOSED_STATUSES: Status[] = ["done", "canceled"];
-export const OPEN_STATUSES = STATUSES.filter((s) => !CLOSED_STATUSES.includes(s));
+export interface WorkflowStatus {
+  key: string; // stable, a-z 0-9 _, unique in the team: what issues' `status` holds, e.g. "in_progress"
+  name: string; // "In Progress"; renamable
+  category: StatusCategory;
+  color: string; // "#rrggbb"
+  position: number; // order within its category
+}
 
-export const STATUS_LABELS: Record<Status, string> = {
-  backlog: "Backlog",
-  todo: "Todo",
-  in_progress: "In Progress",
-  in_review: "In Review",
-  done: "Done",
-  canceled: "Canceled",
+export interface WorkflowStatusInput {
+  name?: string; // required, except for triage ("Triage")
+  category: StatusCategory;
+  color?: string; // default: the category's
+  key?: string; // default: derived from the name ("In QA" → in_qa); triage: "triage"
+  position?: number; // default: last in its category
+}
+
+export type WorkflowStatusPatch = { name?: string; color?: string; position?: number }; // key and category never change
+
+/** Every new team's workflow (every existing team's since migration 16): the six statuses teams always had, plus Duplicate. */
+export const DEFAULT_WORKFLOW: WorkflowStatus[] = [
+  { key: "backlog", name: "Backlog", category: "backlog", color: "#a3a3a3", position: 1 },
+  { key: "todo", name: "Todo", category: "unstarted", color: "#8f8f8f", position: 2 },
+  { key: "in_progress", name: "In Progress", category: "started", color: "#e8a800", position: 3 },
+  { key: "in_review", name: "In Review", category: "started", color: "#30a46c", position: 4 },
+  { key: "done", name: "Done", category: "completed", color: "#5e6ad2", position: 5 },
+  { key: "canceled", name: "Canceled", category: "canceled", color: "#b4b4b4", position: 6 },
+  { key: DUPLICATE_STATUS, name: "Duplicate", category: "canceled", color: "#b4b4b4", position: 7 },
+];
+
+/** A new status's color when none is given. */
+export const CATEGORY_COLORS: Record<StatusCategory, string> = {
+  triage: "#f76b15",
+  backlog: "#a3a3a3",
+  unstarted: "#8f8f8f",
+  started: "#e8a800",
+  completed: "#5e6ad2",
+  canceled: "#b4b4b4",
 };
 
 // Linear's convention: 0 none, 1 urgent, 2 high, 3 medium, 4 low.
@@ -147,7 +181,9 @@ export interface Team {
   workspace: string; // workspace key
   name: string;
   description: string;
-  counts: Record<Status, number>;
+  statuses: WorkflowStatus[]; // its workflow: category order, then position
+  defaultStatus: string; // where new issues start: a backlog or unstarted key
+  counts: Record<string, number>; // live issues per status key; 0 for each of the team's statuses without any
   docCount: number;
   createdAt: string; // ISO 8601
   updatedAt: string;
@@ -160,14 +196,15 @@ export interface TeamInput {
   description?: string;
 }
 
-export type TeamPatch = Partial<Omit<TeamInput, "key" | "workspace">>; // the key and workspace never change
+export type TeamPatch = Partial<Omit<TeamInput, "key" | "workspace">> & { defaultStatus?: string }; // the key and workspace never change
 
 export interface IssueSummary {
   id: string; // identifier, e.g. "BRD-12"
   team: string; // team key
   number: number;
   title: string;
-  status: Status;
+  status: string; // a status key of its team's workflow
+  statusCategory: StatusCategory; // that status's category, for API clients (the web app reads it from the team)
   priority: Priority;
   labels: string[];
   assignee: UserRef | null; // a person: who owns it
@@ -179,7 +216,7 @@ export interface IssueSummary {
   dueOn: string | null; // due date, a calendar date "YYYY-MM-DD" (no time), as in Linear
   createdAt: string;
   updatedAt: string;
-  completedAt: string | null; // set when status becomes done/canceled
+  completedAt: string | null; // set when its status enters the completed or canceled category, cleared when it leaves
   deletedAt: string | null; // in the trash since then; purged 30 days later
 }
 
@@ -244,7 +281,7 @@ export const ACTIVITY_KINDS = [
 export type ActivityKind = (typeof ACTIVITY_KINDS)[number];
 
 /**
- * One change to an issue. from/to by kind: title, parent and duplicateOf (identifiers), status and claimed (Status), dueOn
+ * One change to an issue. from/to by kind: title, parent and duplicateOf (identifiers), status and claimed (status keys), dueOn
  * ("YYYY-MM-DD") are strings; priority a number; assignee, delegate a UserRef; labels, blockedBy, relatedTo string arrays; null when unset, and both
  * null for created, description, trashed, restored.
  */
@@ -329,7 +366,7 @@ export interface IssueInput {
   team: string;
   title: string;
   description?: string;
-  status?: Status; // default "backlog", as in Linear
+  status?: string; // a status key (or name) of the team's workflow; default: the team's defaultStatus
   priority?: Priority; // default 0
   labels?: string[];
   assignee?: string | null; // a person's username, or "me"
@@ -337,7 +374,7 @@ export interface IssueInput {
   parent?: string | null;
   blockedBy?: string[];
   relatedTo?: string[]; // replaces the whole list, on both sides
-  duplicateOf?: string | null; // marks it a duplicate of that issue and sets it canceled; null clears (status stays)
+  duplicateOf?: string | null; // marks it a duplicate of that issue and sets its team's Duplicate status; null clears (status stays)
   dueOn?: string | null; // "YYYY-MM-DD"; null clears
 }
 
@@ -368,7 +405,8 @@ export interface BulkIssueResult {
 
 export interface IssueFilter {
   team?: string;
-  status?: Status[];
+  status?: string[]; // status keys; each must be one of some team's in scope
+  category?: StatusCategory[];
   label?: string;
   assignee?: string; // username or "me"
   delegate?: string; // username or "me"
@@ -381,13 +419,13 @@ export interface IssueFilter {
 }
 
 /**
- * Linear's due-date filters, by the server's date (UTC): overdue (before today, open issues only), soon (today to 7 days
+ * Linear's due-date filters, by the server's date (UTC): overdue (before today, not completed or canceled), soon (today to 7 days
  * ahead), today, any (has a due date), none (no due date).
  */
 export const DUE_FILTERS = ["overdue", "soon", "today", "any", "none"] as const;
 export type DueFilter = (typeof DUE_FILTERS)[number];
 
-/** List order: default (status, priority, most recently updated) or due (earliest due date first, none last; then default). */
+/** List order: default (status category, the team's status order, priority, most recently updated) or due (earliest due date first, none last; then default). */
 export const ISSUE_SORTS = ["default", "due"] as const;
 export type IssueSort = (typeof ISSUE_SORTS)[number];
 
@@ -400,10 +438,10 @@ export interface Notification {
   kind: NotificationKind;
   workspace: string;
   actor: UserRef;
-  issue: { id: string; title: string; status: Status } | null; // id: identifier
+  issue: { id: string; title: string; status: string } | null; // id: identifier; status: a key of its team's workflow
   document: { slug: string; title: string } | null;
   comment: { id: number; excerpt: string } | null; // first 200 characters, newlines as spaces; null once deleted
-  status: Status | null; // kind "status": what it moved to
+  status: string | null; // kind "status": the status key it moved to
   createdAt: string;
   readAt: string | null;
 }

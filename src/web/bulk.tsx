@@ -2,9 +2,9 @@
 // Esc, and a bottom bar that sets status, priority, assignee, delegate or labels on every selected issue, or
 // moves them all to the trash, through POST /api/issues/bulk.
 import { useEffect, useRef, useState, type MouseEvent } from "react";
-import type { BulkIssuePatch, BulkIssueResult, IssueSummary, Priority, Status, UserRef } from "../shared/types";
+import type { BulkIssuePatch, BulkIssueResult, IssueSummary, Priority, UserRef } from "../shared/types";
 import { api } from "./api";
-import { PRIORITY_OPTIONS, Picker, STATUS_OPTIONS, useMembers, userOption } from "./pickers";
+import { PRIORITY_OPTIONS, Picker, statusOptions, useMembers, userOption } from "./pickers";
 import {
   Avatar,
   CheckIcon,
@@ -19,6 +19,7 @@ import {
   errorToast,
   isEditable,
   moveFocus,
+  statusGroups,
   toast,
   useApp,
   useKeydown,
@@ -202,7 +203,9 @@ function BulkBar({
   remove: () => void;
   clear: () => void;
 }) {
-  const { labels, loadDirectory } = useApp();
+  const { labels, loadDirectory, teams } = useApp();
+  // The statuses of the selected issues' teams; one a team lacks fails for its issues (400) and the rest still apply.
+  const statuses = statusGroups((teams ?? []).filter((t) => issues.some((i) => i.team === t.key)));
   const people = useMembers("person");
   const agents = useMembers("agent");
   const allLabels = [...new Set([...labels, ...issues.flatMap((i) => i.labels)])].sort((a, b) => a.localeCompare(b));
@@ -235,11 +238,11 @@ function BulkBar({
         label="Set status"
         cmd="status"
         className="bulkbar-btn"
-        options={STATUS_OPTIONS}
+        options={statusOptions(statuses)}
         selected={shared(issues, (i) => i.status)}
-        onPick={(v) => apply({ status: v as Status }, (i) => ({ ...i, status: v as Status }))}
+        onPick={(v) => apply({ status: v }, (i) => ({ ...i, status: v }))}
       >
-        <StatusIcon status="todo" />
+        <StatusIcon status={{ category: "unstarted", color: "#8f8f8f" }} />
         <span className="bulkbar-text">Status</span>
       </Picker>
       <Picker

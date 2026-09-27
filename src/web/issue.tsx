@@ -1,6 +1,6 @@
 // Issue page: title, description, sub-issues, comments and the properties panel.
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { CLOSED_STATUSES, PRIORITY_LABELS, STATUS_LABELS, type Issue } from "../shared/types";
+import { PRIORITY_LABELS, type Issue } from "../shared/types";
 import { HttpError, api } from "./api";
 import { RichEditor } from "./editor";
 import { SubscribeButton } from "./inbox";
@@ -46,6 +46,8 @@ import {
   cls,
   dayLabel,
   dueInfo,
+  isClosedCategory,
+  issueStatus,
   errorToast,
   fullDate,
   isMe,
@@ -182,8 +184,9 @@ export function IssuePage({ id }: { id: string }) {
   const { assignee } = issue;
   const heldByOther =
     !!assignee && !isMe(assignee) && app.members.some((m) => m.user.username === assignee.username && !m.suspendedAt);
-  const alreadyMine = isMe(assignee) && issue.status === "in_progress";
-  const claimable = !issue.deletedAt && !CLOSED_STATUSES.includes(issue.status) && !heldByOther && !alreadyMine;
+  const { category } = issueStatus(app.teams, issue);
+  const alreadyMine = isMe(assignee) && category === "started";
+  const claimable = !issue.deletedAt && !isClosedCategory(category) && !heldByOther && !alreadyMine;
   const claim = () => withFresh(() => api.claimIssue(issue.id)).catch(errorToast);
 
   // The description is the one field sent with baseUpdatedAt, since a stale save would overwrite someone's
@@ -403,8 +406,8 @@ function Description({
 
 function SubIssues({ issue, onPatch }: { issue: Issue; onPatch: (id: string, p: IssueChange) => void }) {
   const app = useApp();
-  const children = sortIssues(issue.children);
-  const done = children.filter((c) => c.status === "done").length;
+  const children = sortIssues(issue.children, app.teams);
+  const done = children.filter((c) => issueStatus(app.teams, c).category === "completed").length;
   return (
     <Section
       title="Sub-issues"
@@ -422,7 +425,7 @@ function SubIssues({ issue, onPatch }: { issue: Issue; onPatch: (id: string, p: 
         <div className="subs">
           {children.map((c) => (
             <div className="row sub" key={c.id}>
-              <StatusPicker value={c.status} onChange={(status) => onPatch(c.id, { status })} className="row-btn" />
+              <StatusPicker team={c.team} value={c.status} onChange={(status) => onPatch(c.id, { status })} className="row-btn" />
               <span className="row-id">{c.id}</span>
               <Link to={`/issue/${c.id}`} className="row-title" dir="auto">
                 {c.title}
@@ -461,7 +464,7 @@ function Docs({ issue }: { issue: Issue }) {
 }
 
 function Activity({ issue, actions }: { issue: Issue; actions: CommentActions }) {
-  return <Comments title="Activity" comments={issue.comments} activity={issue.activity} actions={actions} />;
+  return <Comments title="Activity" comments={issue.comments} activity={issue.activity} team={issue.team} actions={actions} />;
 }
 
 /**
@@ -471,7 +474,8 @@ function Activity({ issue, actions }: { issue: Issue; actions: CommentActions })
 function DueDate({ issue, patch }: { issue: Issue; patch: (p: IssueChange) => void }) {
   const [draft, setDraft] = useState<string | null>(null); // while editing
   const value = draft ?? issue.dueOn ?? "";
-  const due = dueInfo({ ...issue, dueOn: value || null });
+  const { teams } = useApp();
+  const due = dueInfo({ dueOn: value || null }, isClosedCategory(issueStatus(teams, issue).category));
   const save = () => {
     // A year typed past 4 digits (12026) is a valid date to the browser but not a due date: keep the saved one.
     if (draft !== null && /^(\d{4}-\d{2}-\d{2})?$/.test(draft) && (draft || null) !== issue.dueOn) patch({ dueOn: draft || null });
@@ -540,9 +544,9 @@ function Properties({ issue, patch }: { issue: Issue; patch: (p: IssueChange) =>
   return (
     <>
       <Prop label="Status" cmd="status">
-        <StatusPicker value={issue.status} onChange={(status) => patch({ status })} className="prop-btn">
-          <StatusIcon status={issue.status} />
-          {STATUS_LABELS[issue.status]}
+        <StatusPicker team={issue.team} value={issue.status} onChange={(status) => patch({ status })} className="prop-btn">
+          <StatusIcon status={issueStatus(app.teams, issue)} />
+          {issueStatus(app.teams, issue).name}
         </StatusPicker>
       </Prop>
       <Prop label="Priority" cmd="priority">
@@ -604,7 +608,7 @@ function Properties({ issue, patch }: { issue: Issue; patch: (p: IssueChange) =>
       </Prop>
       {issue.blocks.length > 0 && (
         <Prop label="Blocks">
-          <Relations ids={issue.blocks} resolved={() => CLOSED_STATUSES.includes(issue.status)} />
+          <Relations ids={issue.blocks} resolved={() => isClosedCategory(issueStatus(app.teams, issue).category)} />
         </Prop>
       )}
       <Prop label="Related">

@@ -595,8 +595,8 @@ describe("migration 6", () => {
     expect((await acme("GET", "/api/issues/ACM-5")).body.comments[0].body).toBe("oops");
     const teams = (await acme("GET", "/api/teams")).body.map((t: any) => [t.key, t.counts, t.docCount]);
     expect(teams).toEqual([
-      ["ACM", { backlog: 0, todo: 1, in_progress: 1, in_review: 0, done: 1, canceled: 0 }, 1],
-      ["OPS", { backlog: 0, todo: 1, in_progress: 0, in_review: 0, done: 0, canceled: 0 }, 1],
+      ["ACM", { backlog: 0, todo: 1, in_progress: 1, in_review: 0, done: 1, canceled: 0, duplicate: 0 }, 1],
+      ["OPS", { backlog: 0, todo: 1, in_progress: 0, in_review: 0, done: 0, canceled: 0, duplicate: 0 }, 1],
     ]);
     const next = async (workspace: string, team: string) => (await sam(workspace)("POST", "/api/issues", { team, title: "Next" })).body.id;
     expect(await next("acme", "ACM")).toBe("ACM-6");
@@ -1780,7 +1780,7 @@ describe("migration 11", () => {
       blockedBy: ["ACM-1"],
       relatedTo: ["ACM-1"],
       duplicateOf: "ACM-1",
-      status: "canceled",
+      status: "duplicate", // its team's Duplicate status since migration 16
     });
     expect((await bot.api("GET", "/api/issues/ACM-1")).body).toMatchObject({ blocks: ["ACM-2"], relatedTo: ["ACM-2"], duplicates: ["ACM-2"] });
     expect((await bot.api("PATCH", "/api/issues/ACM-2", { relatedTo: ["ACM-3"] })).status).toBe(400); // in the trash
@@ -2074,7 +2074,7 @@ describe("migration 12", () => {
   afterAll(() => server.stop());
 
   test("the data is untouched; issues gain due_on, empty, and its index", () => {
-    expect(UNCHANGED.map((sql) => rows(v11, sql))).toEqual(before);
+    expect(UNCHANGED.map((sql) => rows(v11, sql))).toMatchObject(before); // later migrations may add columns (16: teams.default_status)
     expect(rows(v11, ISSUES)).toEqual(issuesBefore.map((issue) => ({ ...issue, due_on: null })));
     expect(rows(v11, "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'issues' AND name = 'issues_due'")).toEqual([{ name: "issues_due" }]);
     expect(rows(v11, "PRAGMA foreign_key_check")).toEqual([]);
@@ -2382,7 +2382,7 @@ describe("migration 13", () => {
   afterAll(() => server.stop());
 
   test("the data is untouched and every existing comment is an unresolved thread root", () => {
-    expect(UNCHANGED.map((sql) => rows(v12, sql))).toEqual(before);
+    expect(UNCHANGED.map((sql) => rows(v12, sql))).toMatchObject(before); // later migrations may add columns (16: teams.default_status)
     const roots = { parent_id: null, resolved_at: null, resolved_by_id: null };
     expect(COMMENTS.map((sql) => rows(v12, sql))).toEqual(commentsBefore.map((table) => table.map((c) => ({ ...c, ...roots }))));
     expect(rows(v12, "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE '%comments_parent' ORDER BY name")).toEqual([
@@ -2704,7 +2704,7 @@ describe("migration 14", () => {
   afterAll(() => server.stop());
 
   test("the data is untouched; reactions is created, empty", () => {
-    expect(UNCHANGED.map((sql) => rows(v13, sql))).toEqual(before);
+    expect(UNCHANGED.map((sql) => rows(v13, sql))).toMatchObject(before); // later migrations may add columns (16: teams.default_status)
     expect(rows(v13, "SELECT COUNT(*) AS n FROM reactions")).toEqual([{ n: 0 }]);
     expect(rows(v13, "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'reactions'")).toEqual([{ name: "reactions" }]);
     expect(rows(v13, "PRAGMA foreign_key_check")).toEqual([]);
@@ -3030,7 +3030,7 @@ describe("migration 15", () => {
   afterAll(() => server.stop());
 
   test("the data is untouched; attachments is created, empty, with its folder next to the database", () => {
-    expect(UNCHANGED.map((sql) => rows(v14, sql))).toEqual(before);
+    expect(UNCHANGED.map((sql) => rows(v14, sql))).toMatchObject(before); // later migrations may add columns (16: teams.default_status)
     expect(rows(v14, "SELECT COUNT(*) AS n FROM attachments")).toEqual([{ n: 0 }]);
     expect(rows(v14, "PRAGMA foreign_key_check")).toEqual([]);
     expect((rows(v14, "PRAGMA user_version")[0] as { user_version: number }).user_version).toBeGreaterThanOrEqual(15);
@@ -3047,5 +3047,410 @@ describe("migration 15", () => {
     ]);
     expect((await bot.api("GET", "/api/issues/ACM-1")).body.description).toBe("Remote: ![x](https://example.com/x.png)");
     expect(rows(v14, "PRAGMA foreign_key_check")).toEqual([]);
+  });
+});
+
+describe("migration 16", () => {
+  // Migrations 1-15 exactly as they shipped (src/server/db.ts): migration 15's fixture above (1-14), then
+  // migration 15. Frozen: never edit this fixture.
+  const SCHEMA_V15 = [
+    ...SCHEMA_V3,
+    `
+  ALTER TABLE api_keys ADD COLUMN workspace TEXT REFERENCES workspaces(key) ON DELETE CASCADE;
+  DELETE FROM api_keys WHERE session_id IS NOT NULL; -- chat keys: short-lived, minted again per workspace
+  UPDATE api_keys SET workspace = (SELECT m.workspace FROM workspace_members m
+    WHERE m.user_id = api_keys.user_id AND m.suspended_at IS NULL ORDER BY m.created_at, m.workspace LIMIT 1);
+  DELETE FROM api_keys WHERE workspace IS NULL; -- the owner has no active workspace left
+  CREATE INDEX api_keys_workspace ON api_keys(user_id, workspace);
+  `,
+    `
+  CREATE TABLE members_new (
+    workspace TEXT NOT NULL REFERENCES workspaces(key) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    username TEXT NOT NULL,
+    name TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('admin', 'member', 'guest', 'agent')),
+    created_at TEXT NOT NULL,
+    suspended_at TEXT,
+    PRIMARY KEY (workspace, user_id),
+    UNIQUE (workspace, username)
+  );
+  INSERT INTO members_new SELECT m.workspace, m.user_id, u.username, u.name, m.role, m.created_at, m.suspended_at
+    FROM workspace_members m JOIN users u ON u.id = m.user_id;
+  DROP TABLE workspace_members;
+  ALTER TABLE members_new RENAME TO workspace_members;
+  CREATE INDEX workspace_members_user ON workspace_members(user_id);
+  CREATE TABLE users_new (
+    id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('person', 'agent')),
+    email TEXT,
+    created_at TEXT NOT NULL
+  );
+  INSERT INTO users_new SELECT id, kind, email, created_at FROM users;
+  DROP TABLE users;
+  ALTER TABLE users_new RENAME TO users;
+  CREATE UNIQUE INDEX users_email ON users(lower(email)) WHERE email IS NOT NULL;
+  `,
+    `
+  CREATE TABLE teams_new (
+    id INTEGER PRIMARY KEY,
+    workspace TEXT NOT NULL REFERENCES workspaces(key),
+    key TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    next_number INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (workspace, key)
+  );
+  INSERT INTO teams_new (workspace, key, name, description, next_number, created_at, updated_at)
+    SELECT workspace, key, name, description, next_number, created_at, updated_at FROM teams ORDER BY created_at, key;
+  CREATE TABLE issues_new (
+    id INTEGER PRIMARY KEY,
+    team_id INTEGER NOT NULL REFERENCES teams(id),
+    number INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL,
+    priority INTEGER NOT NULL DEFAULT 0,
+    labels TEXT NOT NULL DEFAULT '[]',
+    assignee_id INTEGER REFERENCES users(id),
+    delegate_id INTEGER REFERENCES users(id),
+    creator_id INTEGER NOT NULL REFERENCES users(id),
+    parent_id INTEGER REFERENCES issues(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT,
+    deleted_at TEXT,
+    UNIQUE (team_id, number)
+  );
+  INSERT INTO issues_new SELECT i.id, t.id, i.number, i.title, i.description, i.status, i.priority, i.labels, i.assignee_id,
+    i.delegate_id, i.creator_id, i.parent_id, i.created_at, i.updated_at, i.completed_at, i.deleted_at
+    FROM issues i LEFT JOIN teams_new t ON t.key = i.team_key;
+  CREATE TABLE documents_new (
+    id INTEGER PRIMARY KEY,
+    workspace TEXT NOT NULL REFERENCES workspaces(key),
+    team_id INTEGER NOT NULL REFERENCES teams(id),
+    slug TEXT NOT NULL,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    position REAL NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    updated_by_id INTEGER NOT NULL REFERENCES users(id),
+    deleted_at TEXT,
+    UNIQUE (workspace, slug)
+  );
+  INSERT INTO documents_new SELECT d.id, t.workspace, t.id, d.slug, d.title, d.content, d.position, d.created_at,
+    d.updated_at, d.updated_by_id, d.deleted_at FROM documents d LEFT JOIN teams_new t ON t.key = d.team_key;
+  DROP TABLE documents;
+  DROP TABLE issues;
+  DROP TABLE teams;
+  ALTER TABLE teams_new RENAME TO teams;
+  ALTER TABLE issues_new RENAME TO issues;
+  ALTER TABLE documents_new RENAME TO documents;
+  CREATE INDEX issues_parent ON issues(parent_id);
+  CREATE INDEX issues_deleted ON issues(deleted_at) WHERE deleted_at IS NOT NULL;
+  CREATE INDEX documents_team ON documents(team_id, position);
+  CREATE INDEX documents_deleted ON documents(deleted_at) WHERE deleted_at IS NOT NULL;
+  `,
+    `
+  CREATE TABLE issue_activity (
+    id INTEGER PRIMARY KEY,
+    issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+    actor_id INTEGER NOT NULL REFERENCES users(id),
+    on_behalf_of_id INTEGER REFERENCES users(id),
+    kind TEXT NOT NULL,
+    from_value TEXT,
+    to_value TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX issue_activity_issue ON issue_activity(issue_id, id);
+  INSERT INTO issue_activity (issue_id, actor_id, kind, created_at) SELECT id, creator_id, 'created', created_at FROM issues ORDER BY id;
+  `,
+    `
+  CREATE TABLE mentions (
+    source TEXT NOT NULL, -- 'issue:<id>' (description), 'comment:<id>', 'document:<id>' (content), 'document_comment:<id>'
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    issue_id INTEGER REFERENCES issues(id) ON DELETE CASCADE,       -- the issue it's in or on
+    document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE, -- the doc it's in or on
+    author_id INTEGER NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (source, user_id)
+  );
+  CREATE INDEX mentions_user ON mentions(user_id);
+  `,
+    `
+    CREATE TABLE subscriptions (
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      issue_id INTEGER REFERENCES issues(id) ON DELETE CASCADE,
+      document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE,
+      created_at TEXT NOT NULL,
+      CHECK ((issue_id IS NULL) != (document_id IS NULL))
+    );
+    CREATE UNIQUE INDEX subscriptions_issue ON subscriptions(issue_id, user_id) WHERE issue_id IS NOT NULL;
+    CREATE UNIQUE INDEX subscriptions_document ON subscriptions(document_id, user_id) WHERE document_id IS NOT NULL;
+    CREATE INDEX subscriptions_user ON subscriptions(user_id);
+    CREATE TABLE notifications (
+      id INTEGER PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id), -- the recipient
+      workspace TEXT NOT NULL REFERENCES workspaces(key) ON DELETE CASCADE,
+      kind TEXT NOT NULL, -- assigned | delegated | mentioned | commented | status
+      actor_id INTEGER NOT NULL REFERENCES users(id),
+      issue_id INTEGER REFERENCES issues(id) ON DELETE CASCADE,
+      document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE,
+      comment_id INTEGER, -- in comments (issue) or document_comments (doc); no FK: two tables
+      status TEXT, -- kind status: the new status
+      created_at TEXT NOT NULL,
+      read_at TEXT
+    );
+    CREATE INDEX notifications_user ON notifications(user_id, workspace, id);
+    INSERT OR IGNORE INTO subscriptions (user_id, issue_id, created_at) SELECT creator_id, id, created_at FROM issues;
+    INSERT OR IGNORE INTO subscriptions (user_id, issue_id, created_at) SELECT assignee_id, id, updated_at FROM issues WHERE assignee_id IS NOT NULL;
+    INSERT OR IGNORE INTO subscriptions (user_id, issue_id, created_at) SELECT delegate_id, id, updated_at FROM issues WHERE delegate_id IS NOT NULL;
+    INSERT OR IGNORE INTO subscriptions (user_id, issue_id, created_at) SELECT author_id, issue_id, MIN(created_at) FROM comments GROUP BY author_id, issue_id;
+    -- A doc's creator is the author of its first version.
+    INSERT OR IGNORE INTO subscriptions (user_id, document_id, created_at) SELECT v.author_id, v.document_id, v.created_at FROM document_versions v
+      WHERE v.id = (SELECT MIN(id) FROM document_versions WHERE document_id = v.document_id);
+    INSERT OR IGNORE INTO subscriptions (user_id, document_id, created_at) SELECT author_id, document_id, MIN(created_at) FROM document_comments GROUP BY author_id, document_id;
+    `,
+    `
+    INSERT OR IGNORE INTO subscriptions (user_id, issue_id, created_at)
+      SELECT user_id, issue_id, MIN(created_at) FROM mentions WHERE issue_id IS NOT NULL GROUP BY user_id, issue_id;
+    INSERT OR IGNORE INTO subscriptions (user_id, document_id, created_at)
+      SELECT user_id, document_id, MIN(created_at) FROM mentions WHERE document_id IS NOT NULL GROUP BY user_id, document_id;
+    `,
+    `
+  CREATE TABLE webhooks (
+    id INTEGER PRIMARY KEY,
+    workspace TEXT NOT NULL REFERENCES workspaces(key) ON DELETE CASCADE,
+    url TEXT NOT NULL,
+    label TEXT NOT NULL DEFAULT '',
+    resource_types TEXT NOT NULL,         -- JSON array of Issue | Comment | Document | Notification
+    secret TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    failures INTEGER NOT NULL DEFAULT 0,  -- deliveries in a row that failed for good; 10 disables the webhook
+    created_by INTEGER NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX webhooks_workspace ON webhooks(workspace);
+  CREATE TABLE webhook_deliveries (
+    id INTEGER PRIMARY KEY,
+    webhook_id INTEGER NOT NULL REFERENCES webhooks(id) ON DELETE CASCADE,
+    uuid TEXT NOT NULL,                   -- Docket-Delivery, the same on every attempt
+    type TEXT NOT NULL,
+    action TEXT NOT NULL,
+    entity TEXT NOT NULL,                 -- identifier, slug, comment id or notification id
+    payload TEXT NOT NULL,                -- JSON without webhookTimestamp (set per attempt)
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'delivered', 'failed')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT,
+    response_status INTEGER,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    last_attempt_at TEXT
+  );
+  CREATE INDEX webhook_deliveries_due ON webhook_deliveries(next_attempt_at) WHERE status = 'pending';
+  CREATE INDEX webhook_deliveries_webhook ON webhook_deliveries(webhook_id, id);
+  `,
+    `
+  CREATE TABLE issue_relations (
+    from_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+    to_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN ('related', 'duplicate')),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (from_id, to_id, kind)
+  );
+  CREATE INDEX issue_relations_to ON issue_relations(to_id, kind);
+  `,
+    `
+  ALTER TABLE issues ADD COLUMN due_on TEXT;
+  CREATE INDEX issues_due ON issues(due_on) WHERE due_on IS NOT NULL;
+  `,
+    `
+  ALTER TABLE comments ADD COLUMN parent_id INTEGER REFERENCES comments(id) ON DELETE CASCADE;
+  ALTER TABLE comments ADD COLUMN resolved_at TEXT;
+  ALTER TABLE comments ADD COLUMN resolved_by_id INTEGER REFERENCES users(id);
+  ALTER TABLE document_comments ADD COLUMN parent_id INTEGER REFERENCES document_comments(id) ON DELETE CASCADE;
+  ALTER TABLE document_comments ADD COLUMN resolved_at TEXT;
+  ALTER TABLE document_comments ADD COLUMN resolved_by_id INTEGER REFERENCES users(id);
+  CREATE INDEX comments_parent ON comments(parent_id) WHERE parent_id IS NOT NULL;
+  CREATE INDEX document_comments_parent ON document_comments(parent_id) WHERE parent_id IS NOT NULL;
+  `,
+    `
+  CREATE TABLE reactions (
+    target TEXT NOT NULL,   -- 'issue:<id>' (the description), 'comment:<id>', 'document_comment:<id>'
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    emoji TEXT NOT NULL,
+    issue_id INTEGER REFERENCES issues(id) ON DELETE CASCADE,       -- the issue it's on (purge cascades)
+    document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE, -- the doc it's on
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (target, user_id, emoji)
+  );
+  `,
+    `
+  CREATE TABLE attachments (
+    id TEXT PRIMARY KEY,           -- 16 random bytes, base64url; also the file's name on disk
+    workspace TEXT NOT NULL REFERENCES workspaces(key) ON DELETE CASCADE,
+    name TEXT NOT NULL,            -- the uploaded file's name, sanitized
+    content_type TEXT NOT NULL,    -- sniffed by Docket, never the client's claim
+    size INTEGER NOT NULL,
+    uploader_id INTEGER NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL
+  );
+  `,
+  ];
+  const t = (minutes: number) => new Date(Date.UTC(2026, 0, 1, 0, minutes)).toISOString();
+  const rows = (file: string, sql: string) => {
+    const db = new Database(file, { readonly: true });
+    try {
+      return db.query(sql).all();
+    } finally {
+      db.close();
+    }
+  };
+  // Every table of schema 15 but the ones signing in writes to (sessions, api_keys, codes): migration 16 adds
+  // workflow_statuses and teams.default_status, and changes no row.
+  const UNCHANGED = [
+    "users",
+    "workspaces",
+    "workspace_members",
+    "teams",
+    "issues",
+    "issue_blocks",
+    "issue_relations",
+    "comments",
+    "documents",
+    "document_versions",
+    "document_refs",
+    "document_comments",
+    "issue_activity",
+    "mentions",
+    "subscriptions",
+    "notifications",
+    "webhooks",
+    "webhook_deliveries",
+    "reactions",
+    "attachments",
+  ].map((table) => `SELECT * FROM ${table} ORDER BY rowid`);
+  const DEFAULT = [
+    ["backlog", "Backlog", "backlog", "#a3a3a3", 1],
+    ["todo", "Todo", "unstarted", "#8f8f8f", 2],
+    ["in_progress", "In Progress", "started", "#e8a800", 3],
+    ["in_review", "In Review", "started", "#30a46c", 4],
+    ["done", "Done", "completed", "#5e6ad2", 5],
+    ["canceled", "Canceled", "canceled", "#b4b4b4", 6],
+    ["duplicate", "Duplicate", "canceled", "#b4b4b4", 7],
+  ].map(([key, name, category, color, position]) => ({ key, name, category, color, position }));
+
+  /** A schema-15 database: alice in acme (team OLD: one issue per status, done and canceled finished, one trashed) and side (team SID). */
+  function writeV15(file: string, extra = "") {
+    mkdirSync(dirname(file), { recursive: true });
+    const db = new Database(file, { create: true });
+    for (const sql of SCHEMA_V15) db.run(sql);
+    db.run("PRAGMA user_version = 15");
+    db.run(`INSERT INTO users (id, kind, email, created_at) VALUES (1, 'person', 'alice@example.com', '${t(0)}'), (2, 'agent', NULL, '${t(0)}')`);
+    db.run(`INSERT INTO workspaces (key, name, created_at, updated_at) VALUES ('acme', 'Acme', '${t(0)}', '${t(0)}'), ('side', 'Side', '${t(0)}', '${t(0)}')`);
+    db.run(`INSERT INTO workspace_members (workspace, user_id, username, name, role, created_at) VALUES
+      ('acme', 1, 'alice', 'Alice', 'admin', '${t(0)}'), ('side', 1, 'alice', 'Alice', 'admin', '${t(1)}'), ('acme', 2, 'bot', 'Bot', 'agent', '${t(0)}')`);
+    db.run(`INSERT INTO api_keys (id, user_id, name, scope, token_hash, created_at, workspace) VALUES (12, 2, 'bot', 'write', '${hash(AGENT_KEY)}', '${t(0)}', 'acme')`);
+    db.run(`INSERT INTO teams (id, workspace, key, name, created_at, updated_at, next_number) VALUES
+      (5, 'acme', 'OLD', 'Old', '${t(0)}', '${t(0)}', 9), (6, 'side', 'SID', 'Side', '${t(0)}', '${t(0)}', 2)`);
+    // Listed out of order, with priorities, so the list order is the statuses' and not the ids'.
+    db.run(`INSERT INTO issues (id, team_id, number, title, status, priority, creator_id, created_at, updated_at, completed_at, deleted_at) VALUES
+      (106, 5, 6, 'Dropped', 'canceled', 0, 1, '${t(1)}', '${t(16)}', '${t(16)}', NULL),
+      (105, 5, 5, 'Shipped', 'done', 2, 1, '${t(1)}', '${t(15)}', '${t(15)}', NULL),
+      (104, 5, 4, 'Reviewing', 'in_review', 1, 1, '${t(1)}', '${t(14)}', NULL, NULL),
+      (103, 5, 3, 'Doing', 'in_progress', 3, 1, '${t(1)}', '${t(13)}', NULL, NULL),
+      (102, 5, 2, 'Next', 'todo', 1, 1, '${t(1)}', '${t(12)}', NULL, NULL),
+      (107, 5, 7, 'Next too', 'todo', 4, 1, '${t(1)}', '${t(17)}', NULL, NULL),
+      (101, 5, 1, 'Someday', 'backlog', 0, 1, '${t(1)}', '${t(11)}', NULL, NULL),
+      (108, 5, 8, 'Trashed', 'done', 0, 1, '${t(1)}', '${t(18)}', '${t(18)}', '${new Date().toISOString()}'),
+      (109, 6, 1, 'Elsewhere', 'in_review', 0, 1, '${t(1)}', '${t(19)}', NULL, NULL)`);
+    db.run(`INSERT INTO issue_activity (issue_id, actor_id, kind, from_value, to_value, created_at) VALUES
+      (103, 1, 'created', NULL, NULL, '${t(1)}'), (103, 2, 'claimed', '"todo"', '"in_progress"', '${t(13)}')`);
+    db.run(`INSERT INTO notifications (user_id, workspace, kind, actor_id, issue_id, status, created_at) VALUES (1, 'acme', 'status', 2, 105, 'done', '${t(15)}')`);
+    if (extra) db.run(extra);
+    db.close();
+  }
+
+  let v15: string;
+  let before: unknown[][];
+  let server: TestServer;
+  let alice: Caller;
+  beforeAll(async () => {
+    v15 = join(dir, "v15", "docket.db");
+    writeV15(v15);
+    before = UNCHANGED.map((sql) => rows(v15, sql));
+    server = await startServer({ setup: false, env: { DATABASE_PATH: v15 } });
+    await server.signIn("alice");
+    alice = server.as("alice", "cookie", "acme");
+  });
+  afterAll(() => server.stop());
+
+  test("no row changes; every team gets the default workflow, same keys, and starts new issues in backlog", () => {
+    expect(UNCHANGED.map((sql) => rows(v15, sql))).toMatchObject(before); // teams gain default_status; nothing else changes
+    expect(rows(v15, "SELECT id, default_status FROM teams ORDER BY id")).toEqual([
+      { id: 5, default_status: "backlog" },
+      { id: 6, default_status: "backlog" },
+    ]);
+    for (const team of [5, 6]) {
+      expect(rows(v15, `SELECT key, name, category, color, position FROM workflow_statuses WHERE team_id = ${team} ORDER BY position`)).toEqual(DEFAULT);
+    }
+    // Every issue's status is a key of its own team's workflow.
+    expect(rows(v15, "SELECT COUNT(*) AS n FROM issues i LEFT JOIN workflow_statuses w ON w.team_id = i.team_id AND w.key = i.status WHERE w.id IS NULL")).toEqual([
+      { n: 0 },
+    ]);
+    expect(rows(v15, "PRAGMA foreign_key_check")).toEqual([]);
+    expect((rows(v15, "PRAGMA user_version")[0] as { user_version: number }).user_version).toBeGreaterThanOrEqual(16);
+  });
+
+  test("every issue keeps its status, completedAt and place in the list; the team shows the old statuses plus Duplicate", async () => {
+    const list = (await alice.api("GET", "/api/issues?team=OLD")).body;
+    expect(list.map((i: any) => [i.id, i.status, i.statusCategory, i.completedAt])).toEqual([
+      ["OLD-1", "backlog", "backlog", null],
+      ["OLD-2", "todo", "unstarted", null],
+      ["OLD-7", "todo", "unstarted", null],
+      ["OLD-3", "in_progress", "started", null],
+      ["OLD-4", "in_review", "started", null],
+      ["OLD-5", "done", "completed", t(15)],
+      ["OLD-6", "canceled", "canceled", t(16)],
+    ]);
+    const trashed = (await alice.api("GET", "/api/issues/OLD-8")).body;
+    expect([trashed.status, trashed.statusCategory, trashed.completedAt]).toEqual(["done", "completed", t(18)]);
+    const [old] = (await alice.api("GET", "/api/teams")).body;
+    expect(old).toMatchObject({ key: "OLD", defaultStatus: "backlog", statuses: DEFAULT });
+    expect(old.counts).toEqual({ backlog: 1, todo: 2, in_progress: 1, in_review: 1, done: 1, canceled: 1, duplicate: 0 });
+    // History and the inbox name statuses by the same keys, so they still read.
+    expect((await alice.api("GET", "/api/issues/OLD-3")).body.activity.at(-1)).toMatchObject({ kind: "claimed", from: "todo", to: "in_progress" });
+    expect((await alice.api("GET", "/api/notifications")).body.notifications[0]).toMatchObject({ kind: "status", status: "done" });
+    // The same filters work as before: REST keys, and MCP's default of open issues.
+    expect((await alice.api("GET", "/api/issues?team=OLD&status=done,canceled")).body.map((i: any) => i.id)).toEqual(["OLD-5", "OLD-6"]);
+    const bot = server.with({ token: AGENT_KEY });
+    expect(await bot.tool("list_issues", { team: "OLD" })).not.toContain("OLD-5");
+    expect(await bot.tool("list_issues", { team: "OLD", status: ["todo"] })).toBe(
+      "OLD-2 · todo · urgent · Next\nOLD-7 · todo · low · Next too",
+    );
+    expect(await bot.tool("list_teams")).toBe(
+      "OLD · Old · workspace acme · 5 open · statuses: backlog (default), todo, in_progress, in_review, done, canceled, duplicate",
+    );
+  });
+
+  test("an issue whose status isn't in the default workflow stops the migration, and the database stays as it was", async () => {
+    const file = join(dir, "v15-stray", "docket.db");
+    writeV15(file, `INSERT INTO issues (id, team_id, number, title, status, creator_id, created_at, updated_at) VALUES (110, 5, 9, 'Odd', 'blocked', 1, '${t(20)}', '${t(20)}')`);
+    const run = Bun.spawn(["bun", "-e", 'await import("./src/server/db.ts")'], {
+      cwd: join(import.meta.dir, ".."),
+      env: { PATH: process.env.PATH, HOME: dir, DATABASE_PATH: file },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stderr, exitCode] = await Promise.all([new Response(run.stderr).text(), run.exited]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain(`issues whose status isn't in the default workflow: [{"id":110,"status":"blocked"}]`);
+    expect(rows(file, "PRAGMA user_version")).toEqual([{ user_version: 15 }]);
+    expect(rows(file, "SELECT name FROM sqlite_master WHERE name = 'workflow_statuses'")).toEqual([]);
+    expect(rows(file, "SELECT name FROM pragma_table_info('teams') WHERE name = 'default_status'")).toEqual([]);
   });
 });

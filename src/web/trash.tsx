@@ -8,7 +8,7 @@ import {
   Link,
   ListHeader,
   LoadFailed,
-  StatusIcon,
+  IssueStatusIcon,
   TeamNotFound,
   TrashIcon,
   ago,
@@ -50,7 +50,7 @@ export function TrashView({ teamKey }: { teamKey: string }) {
           {(i: IssueSummary) => (
             <TrashRow
               key={i.id}
-              icon={<StatusIcon status={i.status} />}
+              icon={<IssueStatusIcon issue={i} />}
               id={i.id}
               title={i.title}
               href={`/issue/${i.id}`}

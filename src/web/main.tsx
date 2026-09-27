@@ -12,11 +12,12 @@ import { IssuePage } from "./issue";
 import { IssuesView } from "./issues";
 import { Login, Setup } from "./login";
 import { MyIssuesView } from "./myissues";
-import { NewDocModal, NewIssueModal, NewTeamModal, NewWorkspaceModal, TeamSettingsModal } from "./modals";
+import { NewDocModal, NewIssueModal, NewTeamModal, NewWorkspaceModal } from "./modals";
 import { Picker } from "./pickers";
-import { SettingsPage } from "./settings";
+import { SettingsPage, TeamSettingsPage } from "./settings";
 import { ShortcutsHelp } from "./shortcuts";
 import { TrashView } from "./trash";
+import { TriageView } from "./triage";
 import {
   AppContext,
   Avatar,
@@ -43,7 +44,9 @@ import {
   navigate,
   openCount,
   parseRoute,
+  setChipStatuses,
   setIssueIndex,
+  statusGroups,
   toast,
   useApp,
   moveFocus,
@@ -58,7 +61,6 @@ type ModalState =
   | { kind: "doc"; team: string }
   | { kind: "team" }
   | { kind: "workspace" }
-  | { kind: "team-settings"; team: string }
   | null;
 
 function App() {
@@ -182,6 +184,8 @@ function App() {
 
   const workspace = workspaces?.find((w) => w.key === currentKey) ?? null;
   const workspaceTeams = teams?.workspace === currentKey ? teams.list : null;
+  // Identifier chips in markdown draw a status by key: the workspace's teams say how.
+  useEffect(() => void setChipStatuses(new Map(statusGroups(workspaceTeams ?? []).map((s) => [s.key, s]))), [workspaceTeams]);
 
   // Labels and members (assignees are people, delegates agents) of the current workspace, for pickers and filters.
   const loadDirectory = useCallback(() => {
@@ -244,7 +248,9 @@ function App() {
       const team = pickTeam(defaults.team);
       if (!team) return setModal({ kind: "team" });
       loadDirectory();
-      setModal({ kind: "issue", defaults: { ...defaults, team } });
+      // From the Triage tab, a new issue waits in Triage.
+      const triage = route.view === "triage" ? workspaceTeams?.find((t) => t.key === team)?.statuses.find((s) => s.category === "triage") : undefined;
+      setModal({ kind: "issue", defaults: { status: triage?.key, ...defaults, team } });
     },
     newDoc: (key) => {
       const team = pickTeam(key);
@@ -253,7 +259,6 @@ function App() {
     newTeam: () => setModal({ kind: "team" }),
     newWorkspace: () => setModal({ kind: "workspace" }),
     switchWorkspace,
-    teamSettings: (team) => setModal({ kind: "team-settings", team }),
     setDocTeam,
     openNav: () => setNavOpen(true),
   };
@@ -298,7 +303,7 @@ function App() {
       else if (route.view === "issue") navigate(nav.lastList);
       else if (route.view === "doc") navigate(nav.lastDocs);
       else (document.activeElement as HTMLElement | null)?.blur?.();
-    } else if (["issues", "docs", "inbox", "my"].includes(route.view) && (key === "j" || key === "k" || key === "ArrowDown" || key === "ArrowUp")) {
+    } else if (["issues", "triage", "docs", "inbox", "my"].includes(route.view) && (key === "j" || key === "k" || key === "ArrowDown" || key === "ArrowUp")) {
       if (moveFocus(key === "j" || key === "ArrowDown" ? 1 : -1)) e.preventDefault();
     }
   });
@@ -334,6 +339,10 @@ function App() {
     <DocPage key={route.slug} slug={route.slug} />
   ) : route.view === "trash" ? (
     <TrashView key={route.team} teamKey={route.team} />
+  ) : route.view === "triage" ? (
+    <TriageView key={route.team} teamKey={route.team} />
+  ) : route.view === "team-settings" ? (
+    <TeamSettingsPage key={route.team} teamKey={route.team} />
   ) : route.view === "docs" ? (
     <DocsView key={route.team ?? ""} teamKey={route.team} />
   ) : (
@@ -359,7 +368,6 @@ function App() {
         {modal?.kind === "issue" && <NewIssueModal defaults={modal.defaults} onClose={() => setModal(null)} />}
         {modal?.kind === "doc" && <NewDocModal team={modal.team} onClose={() => setModal(null)} />}
         {modal?.kind === "team" && <NewTeamModal onClose={() => setModal(null)} />}
-        {modal?.kind === "team-settings" && <TeamSettingsModal teamKey={modal.team} onClose={() => setModal(null)} />}
         {modal?.kind === "workspace" && (
           <NewWorkspaceModal
             onCreate={(w) => {

@@ -1,27 +1,51 @@
 // Settings: your account (profile, devices, API keys) and, for admins, the workspace (members, invites, agents, webhooks).
 import { Fragment, useEffect, useState, type FormEvent, type ReactNode } from "react";
-import type { ApiKeyScope, CodeLink, Role, Session, Webhook, WebhookDelivery, WebhookResource, Workspace, WorkspaceMember } from "../shared/types";
+import {
+  CATEGORY_COLORS,
+  DUPLICATE_STATUS,
+  STATUS_CATEGORIES,
+  type ApiKeyScope,
+  type CodeLink,
+  type Role,
+  type Session,
+  type StatusCategory,
+  type Team,
+  type Webhook,
+  type WebhookDelivery,
+  type WebhookResource,
+  type WorkflowStatusPatch,
+  type Workspace,
+  type WorkspaceMember,
+} from "../shared/types";
+import { api } from "./api";
 import { auth, getMe, getYou } from "./auth";
-import { Picker } from "./pickers";
+import { Picker, statusOptions } from "./pickers";
 import {
   ask,
   Avatar,
   CopyIcon,
   EmptyState,
   Field,
+  InlineInput,
+  ListHeader,
   MenuButton,
   MoreIcon,
   PlusIcon,
   Section,
+  StatusIcon,
   Tabs,
+  TeamNotFound,
   ago,
   cls,
   copyText,
   errorToast,
+  teamStatuses,
   toast,
   useApp,
+  useDebounced,
   useFetch,
   useRun,
+  type StatusLook,
 } from "./ui";
 
 export function SettingsPage({ section }: { section: "account" | "workspace" }) {
@@ -434,6 +458,37 @@ function FormButtons({ label, disabled, onCancel }: { label: string; disabled: b
 
 // ---------- Workspace ----------
 
+/** Renames the workspace (admins); its key, in every URL, never changes. */
+function WorkspaceName({ workspace }: { workspace: Workspace }) {
+  const { reloadTeams } = useApp();
+  const [name, setName] = useState(workspace.name);
+  const { busy, run } = useRun();
+  const dirty = !!name.trim() && name.trim() !== workspace.name;
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    if (!dirty) return;
+    run(async () => {
+      await api.updateWorkspace(workspace.key, { name: name.trim() });
+      reloadTeams(); // refetches the workspace list too
+      toast("Saved");
+    });
+  };
+  return (
+    <Section title="Workspace">
+      <form className="settings-form" onSubmit={submit}>
+        <Field label="Name" hint={`Its key, ${workspace.key}, stays in every link.`}>
+          <input className="input" dir="auto" value={name} onChange={(e) => setName(e.target.value)} />
+        </Field>
+        <div>
+          <button className="btn btn-primary" disabled={!dirty || busy}>
+            Save
+          </button>
+        </div>
+      </form>
+    </Section>
+  );
+}
+
 function WorkspaceSettings({ workspace }: { workspace: Workspace }) {
   const { members, loadDirectory } = useApp();
   const admin = workspace.role === "admin";
@@ -442,6 +497,7 @@ function WorkspaceSettings({ workspace }: { workspace: Workspace }) {
   return (
     <>
       {!admin && <p className="settings-note">Only admins manage the workspace.</p>}
+      {admin && <WorkspaceName key={workspace.name} workspace={workspace} />}
       <Members workspace={workspace.key} members={people} reload={loadDirectory} readOnly={!admin} />
       {admin && (
         <>
@@ -820,5 +876,234 @@ function Deliveries({ workspace, id }: { workspace: string; id: number }) {
         />
       ))}
     </div>
+  );
+}
+
+// ---------- Team ----------
+
+const CATEGORY_NAMES: Record<StatusCategory, string> = {
+  triage: "Triage",
+  backlog: "Backlog",
+  unstarted: "Unstarted",
+  started: "Started",
+  completed: "Completed",
+  canceled: "Canceled",
+};
+
+/** A team's settings (`/t/:key/settings`): its description, and its workflow. */
+export function TeamSettingsPage({ teamKey }: { teamKey: string }) {
+  const { teams } = useApp();
+  const team = teams?.find((t) => t.key === teamKey);
+  useEffect(() => {
+    document.title = `Settings · ${team?.name ?? teamKey} · Docket`;
+  }, [team?.name, teamKey]);
+  return (
+    <>
+      <ListHeader team={team} title={teamKey} count={0} view="settings" />
+      <div className="content">
+        {teams && !team ? (
+          <TeamNotFound teamKey={teamKey} back="/" backLabel="All issues" />
+        ) : (
+          team && (
+            <div className="settings">
+              <TeamGeneral key={team.key} team={team} />
+              <Workflow team={team} />
+            </div>
+          )
+        )}
+      </div>
+    </>
+  );
+}
+
+function TeamGeneral({ team }: { team: Team }) {
+  const { reloadTeams } = useApp();
+  const [description, setDescription] = useState(team.description);
+  const { busy, run } = useRun();
+  const dirty = description.trim() !== team.description;
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    if (!dirty) return;
+    run(async () => {
+      await api.updateTeam(team.key, { description: description.trim() });
+      reloadTeams();
+      toast("Saved");
+    });
+  };
+  return (
+    <Section title="General">
+      <form className="settings-form" onSubmit={submit}>
+        <Field label="Description">
+          <textarea className="input" dir="auto" rows={2} value={description} onChange={(e) => setDescription(e.target.value)} />
+        </Field>
+        <div>
+          <button className="btn btn-primary" disabled={!dirty || busy}>
+            Save
+          </button>
+        </div>
+      </form>
+    </Section>
+  );
+}
+
+/**
+ * The team's statuses by category: add, rename, recolor, reorder, delete, make one the default; and the Triage
+ * switch. Issues keep a status by its key, which never changes, so renaming touches no issue.
+ */
+function Workflow({ team }: { team: Team }) {
+  const { teams, reloadTeams } = useApp();
+  const statuses = teamStatuses(teams, team.key);
+  const triage = statuses.find((s) => s.category === "triage");
+  const [adding, setAdding] = useState<StatusCategory | null>(null);
+  const toggleTriage = async () => {
+    if (!triage) return api.createStatus(team.key, { category: "triage" }).then(reloadTeams, errorToast);
+    const n = team.counts[triage.key] ?? 0;
+    const to = statuses.find((s) => s.key === team.defaultStatus)?.name ?? team.defaultStatus;
+    if (n && !(await ask(`Turn off Triage and move ${n} ${n === 1 ? "issue" : "issues"} to ${to}?`, "Turn off"))) return;
+    api.deleteStatus(team.key, triage.key, team.defaultStatus).then(reloadTeams, errorToast);
+  };
+  return (
+    <Section title="Workflow">
+      <p className="settings-hint">New issues start in the default status. Renaming a status changes no issue.</p>
+      <label className="workflow-switch">
+        <input type="checkbox" checked={!!triage} onChange={toggleTriage} />
+        <span>
+          <b>Triage</b> <span className="muted">New issues from the Triage tab wait there until someone accepts them.</span>
+        </span>
+      </label>
+      {STATUS_CATEGORIES.filter((c) => c !== "triage" || triage).map((category) => {
+        const list = statuses.filter((s) => s.category === category);
+        return (
+          <div key={category} className="workflow-category">
+            <div className="workflow-head">
+              <h4>{CATEGORY_NAMES[category]}</h4>
+              {category !== "triage" && (
+                <button className="btn btn-ghost btn-sm" onClick={() => setAdding(category)}>
+                  <PlusIcon />
+                  Add status
+                </button>
+              )}
+            </div>
+            <div className="settings-list">
+              {list.map((s, i) => (
+                <StatusRow key={s.key} team={team} status={s} above={list.slice(Math.max(0, i - 2), i)} below={list.slice(i + 1, i + 3)} />
+              ))}
+              {adding === category && <NewStatus team={team} category={category} onDone={() => setAdding(null)} />}
+            </div>
+          </div>
+        );
+      })}
+    </Section>
+  );
+}
+
+/** One status: its color (the icon opens a color input), inline-editable name, key, and a menu. Duplicate is fixed. */
+function StatusRow({ team, status, above, below }: { team: Team; status: StatusLook; above: StatusLook[]; below: StatusLook[] }) {
+  const { teams, reloadTeams } = useApp();
+  const [color, setColor] = useState(status.color);
+  const settled = useDebounced(color, 400); // a color input fires while dragging: save once it settles
+  const [moving, setMoving] = useState(false); // deleting a status in use: pick where its issues go
+  const system = status.key === DUPLICATE_STATUS;
+  const done = (p: Promise<unknown>) => p.then(reloadTeams, errorToast);
+  const update = (patch: WorkflowStatusPatch) => done(api.updateStatus(team.key, status.key, patch));
+  useEffect(() => setColor(status.color), [status.color]);
+  useEffect(() => {
+    if (settled !== status.color) update({ color: settled });
+  }, [settled]);
+  const inUse = team.counts[status.key] ?? 0;
+  const remove = async () => {
+    if (inUse) return setMoving(true);
+    // Trashed issues can still be in it: they go to the default status.
+    if (await ask(`Delete the status ${status.name}?`, "Delete")) done(api.deleteStatus(team.key, status.key, team.defaultStatus));
+  };
+  // Moving is to the midpoint between the two neighbours on that side, or one past the last.
+  const [up1, up2, down1, down2] = [above.at(-1), above.at(-2), below[0], below[1]];
+  const actions: [string, () => void][] = [];
+  if (!system) {
+    if ((status.category === "backlog" || status.category === "unstarted") && team.defaultStatus !== status.key) {
+      actions.push(["Make default", () => done(api.updateTeam(team.key, { defaultStatus: status.key }))]);
+    }
+    if (up1) actions.push(["Move up", () => update({ position: up2 ? (up1.position + up2.position) / 2 : up1.position - 1 })]);
+    if (down1) actions.push(["Move down", () => update({ position: down2 ? (down1.position + down2.position) / 2 : down1.position + 1 })]);
+    actions.push(["Delete", remove]);
+  }
+  return (
+    <>
+      <div className="settings-row workflow-row">
+        <label className={cls("status-color", system && "fixed")} title={system ? "Duplicate is a system status" : "Change color"}>
+          <StatusIcon status={{ ...status, color }} />
+          {!system && <input type="color" value={color} onChange={(e) => setColor(e.target.value)} aria-label={`${status.name} color`} />}
+        </label>
+        <div className="settings-row-main">
+          {system ? <span dir="auto">{status.name}</span> : <InlineInput label="Status name" value={status.name} onSave={(name) => update({ name })} />}
+        </div>
+        {team.defaultStatus === status.key && <span className="webhook-tag">Default</span>}
+        <span className="muted mono workflow-key">{status.key}</span>
+        {actions.length > 0 ? <RowMenu label={`${status.name} actions`} actions={actions} /> : <span className="workflow-menu-space" />}
+      </div>
+      {moving && (
+        <div className="settings-row settings-inline">
+          <span className="grow">
+            Move {inUse} {inUse === 1 ? "issue" : "issues"} to…
+          </span>
+          <Picker
+            label="Move issues to"
+            options={statusOptions(teamStatuses(teams, team.key).filter((s) => s.key !== status.key))}
+            selected={[]}
+            onPick={(to) => {
+              setMoving(false);
+              done(api.deleteStatus(team.key, status.key, to));
+            }}
+            className="btn btn-sm"
+          >
+            Pick a status
+          </Picker>
+          <button className="btn btn-sm btn-ghost" onClick={() => setMoving(false)}>
+            Cancel
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
+/** "+ Add status": an inline name field; Enter creates it, last in its category. */
+function NewStatus({ team, category, onDone }: { team: Team; category: StatusCategory; onDone: () => void }) {
+  const { reloadTeams } = useApp();
+  const [name, setName] = useState("");
+  const { busy, run } = useRun();
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    if (!name.trim()) return;
+    run(async () => {
+      await api.createStatus(team.key, { name: name.trim(), category });
+      reloadTeams();
+      onDone();
+    });
+  };
+  return (
+    <form className="settings-row settings-inline" onSubmit={submit}>
+      <StatusIcon status={{ category, color: CATEGORY_COLORS[category] }} />
+      <input
+        className="input grow"
+        autoFocus
+        dir="auto"
+        placeholder="Status name"
+        aria-label="New status name"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key !== "Escape") return;
+          e.preventDefault();
+          onDone();
+        }}
+      />
+      <button className="btn btn-sm btn-primary" disabled={!name.trim() || busy}>
+        Add
+      </button>
+      <button type="button" className="btn btn-sm btn-ghost" onClick={onDone}>
+        Cancel
+      </button>
+    </form>
   );
 }

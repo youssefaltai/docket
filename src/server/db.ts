@@ -460,6 +460,40 @@ const MIGRATIONS: (string | (() => void))[] = [
     created_at TEXT NOT NULL
   );
   `,
+  // Per-team workflows (Linear's workflow statuses): each team's ordered statuses in fixed categories. Issues keep
+  // their status as the key (issues.status never changes here). Every team gets the six statuses teams always had,
+  // same keys, plus Duplicate, so every issue keeps its status, icon and order; new issues still start in backlog.
+  // Refused (rolled back) if any issue's status isn't one of them, rather than leaving it outside its workflow.
+  () => {
+    db.run(`
+    CREATE TABLE workflow_statuses (
+      id INTEGER PRIMARY KEY,
+      team_id INTEGER NOT NULL REFERENCES teams(id),
+      key TEXT NOT NULL,
+      name TEXT NOT NULL,
+      category TEXT NOT NULL CHECK (category IN ('triage', 'backlog', 'unstarted', 'started', 'completed', 'canceled')),
+      color TEXT NOT NULL,
+      position REAL NOT NULL,
+      UNIQUE (team_id, key)
+    );
+    CREATE UNIQUE INDEX workflow_statuses_triage ON workflow_statuses(team_id) WHERE category = 'triage';
+    INSERT INTO workflow_statuses (team_id, key, name, category, color, position)
+      SELECT t.id, d.key, d.name, d.category, d.color, d.position FROM teams t, (
+                  SELECT 'backlog' AS key, 'Backlog' AS name, 'backlog' AS category, '#a3a3a3' AS color, 1 AS position
+        UNION ALL SELECT 'todo', 'Todo', 'unstarted', '#8f8f8f', 2
+        UNION ALL SELECT 'in_progress', 'In Progress', 'started', '#e8a800', 3
+        UNION ALL SELECT 'in_review', 'In Review', 'started', '#30a46c', 4
+        UNION ALL SELECT 'done', 'Done', 'completed', '#5e6ad2', 5
+        UNION ALL SELECT 'canceled', 'Canceled', 'canceled', '#b4b4b4', 6
+        UNION ALL SELECT 'duplicate', 'Duplicate', 'canceled', '#b4b4b4', 7
+      ) d ORDER BY t.id, d.position;
+    ALTER TABLE teams ADD COLUMN default_status TEXT NOT NULL DEFAULT 'backlog';
+    `);
+    const stray = db
+      .query("SELECT i.id, i.status FROM issues i LEFT JOIN workflow_statuses w ON w.team_id = i.team_id AND w.key = i.status WHERE w.id IS NULL LIMIT 5")
+      .all();
+    if (stray.length) throw new Error(`Workflow statuses: issues whose status isn't in the default workflow: ${JSON.stringify(stray)}`);
+  },
 ];
 
 db.run("PRAGMA foreign_keys = OFF"); // a migration may rebuild a table (SQLite's 12-step ALTER); checked before each commit

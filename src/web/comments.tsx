@@ -1,12 +1,12 @@
 // Comment threads with composer, shared by issues and docs; an issue's history interleaves with them.
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { PRIORITY_LABELS, STATUS_LABELS, type Activity, type Comment, type Priority, type Reaction, type Status, type UserRef } from "../shared/types";
+import { PRIORITY_LABELS, type Activity, type Comment, type Priority, type Reaction, type UserRef } from "../shared/types";
 import { Avatar, isMe, Kbd, Section } from "./components";
 import { RichEditor } from "./editor";
 import { CheckIcon, PencilIcon, ReplyIcon, SmileIcon, StatusIcon, TrashIcon } from "./icons";
 import { Link } from "./routing";
-import { useRun } from "./hooks";
+import { useRun, useStatusOf } from "./hooks";
 import { Markdown } from "./markdown";
 import { ask, errorToast } from "./toast";
 import { ago, cls, dayLabel, fullDate, MOD } from "./util";
@@ -187,11 +187,13 @@ export function Comments({
   title = "Comments",
   comments,
   activity = [],
+  team = "",
   actions,
 }: {
   title?: string;
   comments: Comment[];
   activity?: Activity[];
+  team?: string; // the issue's team: its history names statuses by key, shown by that team's names and icons
   actions: CommentActions;
 }) {
   const replies = new Map<number, Comment[]>();
@@ -206,7 +208,7 @@ export function Comments({
           "body" in item ? (
             <Thread key={`c${item.id}`} root={item} replies={replies.get(item.id) ?? []} actions={actions} />
           ) : (
-            <Run key={item[0]!.rows[0]!.id} lines={item} />
+            <Run key={item[0]!.rows[0]!.id} lines={item} team={team} />
           ),
         )}
       </ol>
@@ -239,7 +241,7 @@ function timeline(comments: Comment[], activity: Activity[]): (Comment | Line[])
 }
 
 /** History between two comments: a long run shows its last 2 lines until expanded (Linear's collapse). Creation always shows. */
-function Run({ lines }: { lines: Line[] }) {
+function Run({ lines, team }: { lines: Line[]; team: string }) {
   const [open, setOpen] = useState(false);
   const pinned = lines[0]!.rows[0]!.kind === "created" ? lines.slice(0, 1) : [];
   const rest = lines.slice(pinned.length);
@@ -247,7 +249,7 @@ function Run({ lines }: { lines: Line[] }) {
   return (
     <>
       {pinned.map((line) => (
-        <HistoryLine key={line.rows[0]!.id} line={line} />
+        <HistoryLine key={line.rows[0]!.id} line={line} team={team} />
       ))}
       {hidden > 0 && (
         <li className="event">
@@ -257,17 +259,19 @@ function Run({ lines }: { lines: Line[] }) {
         </li>
       )}
       {rest.slice(hidden).map((line) => (
-        <HistoryLine key={line.rows[0]!.id} line={line} />
+        <HistoryLine key={line.rows[0]!.id} line={line} team={team} />
       ))}
     </>
   );
 }
 
-function HistoryLine({ line }: { line: Line }) {
+function HistoryLine({ line, team }: { line: Line; team: string }) {
+  const statusOf = useStatusOf();
   const moved = line.rows.find((r) => r.kind === "status" || r.kind === "claimed");
+  const statusName = (key: unknown) => statusOf(team, String(key)).name;
   return (
     <li className="event">
-      <span className="event-icon">{moved ? <StatusIcon status={moved.to as Status} size={12} /> : <span className="event-dot" />}</span>
+      <span className="event-icon">{moved ? <StatusIcon status={statusOf(team, String(moved.to))} size={12} /> : <span className="event-dot" />}</span>
       <span>
         <b className="event-name" dir="auto">
           {line.actor.name}
@@ -275,7 +279,7 @@ function HistoryLine({ line }: { line: Line }) {
         {line.rows.map((r, i) => (
           <Fragment key={r.id}>
             {i > 0 && ", "}
-            {describe(r, line.actor)}
+            {describe(r, line.actor, statusName)}
           </Fragment>
         ))}
         {" · "}
@@ -286,7 +290,7 @@ function HistoryLine({ line }: { line: Line }) {
 }
 
 /** One change in words: "moved from Todo to In Progress", "assigned to Ana", "added label bug". */
-function describe({ kind, from, to }: Activity, actor: UserRef): ReactNode {
+function describe({ kind, from, to }: Activity, actor: UserRef, statusName: (key: unknown) => string): ReactNode {
   const name = (text: string) => (
     <b className="event-name" dir="auto">
       {text}
@@ -334,7 +338,7 @@ function describe({ kind, from, to }: Activity, actor: UserRef): ReactNode {
     case "description":
       return "updated the description";
     case "status":
-      return `moved from ${STATUS_LABELS[from as Status]} to ${STATUS_LABELS[to as Status]}`;
+      return `moved from ${statusName(from)} to ${statusName(to)}`;
     case "priority":
       return to ? `set priority to ${PRIORITY_LABELS[to as Priority]}` : "removed priority";
     case "assignee":
