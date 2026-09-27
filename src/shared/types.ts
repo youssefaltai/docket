@@ -206,6 +206,9 @@ export interface Comment {
   body: string; // markdown
   createdAt: string;
   editedAt: string | null; // set when the body was last edited
+  parent: number | null; // the thread's root comment id; null for a root (one level: a reply to a reply joins its thread)
+  resolvedAt: string | null; // roots only: the thread was resolved then (a new reply reopens it)
+  resolvedBy: UserRef | null;
 }
 
 export interface LabelCount {

@@ -216,6 +216,33 @@ describe("events", () => {
     expect(h.hits()).toHaveLength(4);
   });
 
+  test("comment threads: a reply carries its parent; resolving, reopening and a reopening reply are updates with the old resolvedAt", async () => {
+    const h = await hook("threads", { resourceTypes: ["Comment"] });
+    const id = await createIssue();
+    const root = (await s.api("POST", `/api/issues/${id}/comments`, { body: "Q?" })).body.comments[0].id;
+    const reply = (await ana.api("POST", `/api/issues/${id}/comments`, { body: "A", parent: root })).body.comments[1].id;
+    const first = (await ana.api("PUT", `/api/issues/${id}/comments/${root}/resolved`)).body.comments[0].resolvedAt;
+    await s.api("DELETE", `/api/issues/${id}/comments/${root}/resolved`);
+    const second = (await ana.api("PUT", `/api/issues/${id}/comments/${root}/resolved`)).body.comments[0].resolvedAt;
+    await s.api("PUT", `/api/issues/${id}/comments/${root}/resolved`); // already resolved: nothing
+    const more = (await s.api("POST", `/api/issues/${id}/comments`, { body: "More", parent: reply })).body.comments.at(-1).id;
+    await nth(h, 7);
+    await Bun.sleep(100);
+    const got = h.hits().map((x) => x.body);
+    expect(got.map((b) => `${b.action} ${b.data.id} ${b.data.parent}`)).toEqual([
+      `create ${root} null`,
+      `create ${reply} ${root}`,
+      `update ${root} null`,
+      `update ${root} null`,
+      `update ${root} null`,
+      `update ${root} null`,
+      `create ${more} ${root}`,
+    ]);
+    expect(got[2]).toMatchObject({ actor: { username: "ana" }, data: { resolvedAt: first, resolvedBy: { username: "ana" } }, updatedFrom: { resolvedAt: null } });
+    expect(got[3]).toMatchObject({ actor: { username: "admin" }, data: { resolvedAt: null, resolvedBy: null }, updatedFrom: { resolvedAt: first } });
+    expect(got[5]).toMatchObject({ actor: { username: "admin" }, data: { resolvedAt: null }, updatedFrom: { resolvedAt: second } });
+  });
+
   test("docs: no content; updates wait 10 s and merge; trashing sends the held update first", async () => {
     const h = await hook("docs", { resourceTypes: ["Document"] });
     const created = await s.api("POST", "/api/documents", { team: "WHK", title: "Plan", content: "secret plans" });

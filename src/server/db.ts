@@ -423,6 +423,18 @@ const MIGRATIONS: (string | (() => void))[] = [
   ALTER TABLE issues ADD COLUMN due_on TEXT;
   CREATE INDEX issues_due ON issues(due_on) WHERE due_on IS NOT NULL;
   `,
+  // Comment threads (Linear's replies): a reply points at its thread's root (one level); a root can be resolved.
+  // Existing comments become roots.
+  `
+  ALTER TABLE comments ADD COLUMN parent_id INTEGER REFERENCES comments(id) ON DELETE CASCADE;
+  ALTER TABLE comments ADD COLUMN resolved_at TEXT;
+  ALTER TABLE comments ADD COLUMN resolved_by_id INTEGER REFERENCES users(id);
+  ALTER TABLE document_comments ADD COLUMN parent_id INTEGER REFERENCES document_comments(id) ON DELETE CASCADE;
+  ALTER TABLE document_comments ADD COLUMN resolved_at TEXT;
+  ALTER TABLE document_comments ADD COLUMN resolved_by_id INTEGER REFERENCES users(id);
+  CREATE INDEX comments_parent ON comments(parent_id) WHERE parent_id IS NOT NULL;
+  CREATE INDEX document_comments_parent ON document_comments(parent_id) WHERE parent_id IS NOT NULL;
+  `,
 ];
 
 db.run("PRAGMA foreign_keys = OFF"); // a migration may rebuild a table (SQLite's 12-step ALTER); checked before each commit
