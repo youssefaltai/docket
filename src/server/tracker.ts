@@ -6,6 +6,8 @@ import {
   CLOSED_STATUSES,
   PRIORITIES,
   STATUSES,
+  type Activity,
+  type ActivityKind,
   type Comment,
   type Document,
   type DocumentFilter,
@@ -477,6 +479,71 @@ function queryIssues(a: Actor, filter: IssueFilter, after?: [number, number, str
     .all(...params);
 }
 
+// --- Activity ---
+
+type Change = { kind: ActivityKind; from?: unknown; to?: unknown };
+
+// Kinds whose values aren't stored: `created` and the trash have none, and descriptions aren't diffed.
+const NO_VALUES: ActivityKind[] = ["created", "description", "trashed", "restored"];
+
+/**
+ * Records a mutation's changes, one row each, at its `time`. Call it once per mutation, as the last statement
+ * of its transaction, so whatever runs here later sees the final state and rolls back with the change.
+ * Values as they are in memory (users by id, parent and blockers by identifier), stored as JSON.
+ */
+function logActivity(a: Actor, issueId: number, changes: Change[], time: string) {
+  const insert = db.query("INSERT INTO issue_activity (issue_id, actor_id, kind, from_value, to_value, created_at) VALUES (?, ?, ?, ?, ?, ?)");
+  const json = (kind: ActivityKind, value: unknown) => (NO_VALUES.includes(kind) || value == null ? null : JSON.stringify(value));
+  for (const { kind, from, to } of changes) insert.run(issueId, a.id, kind, json(kind, from), json(kind, to), time);
+}
+
+// The fields of an issue's history, from an ISSUE_SELECT row, in the order a mutation lists them.
+const TRACKED: [ActivityKind, (row: IssueRow) => unknown][] = [
+  ["title", (r) => r.title],
+  ["description", (r) => r.description],
+  ["status", (r) => r.status],
+  ["priority", (r) => r.priority],
+  ["assignee", (r) => r.assignee_id],
+  ["delegate", (r) => r.delegate_id],
+  ["labels", (r) => JSON.parse(r.labels)],
+  ["parent", (r) => r.parent],
+  ["blockedBy", (r) => JSON.parse(r.blocked_by)],
+];
+
+/** What really changed between two reads of an issue; labels and blockers compare as sets. */
+function changes(before: IssueRow, after: IssueRow): Change[] {
+  const key = (v: unknown) => JSON.stringify(Array.isArray(v) ? [...v].sort() : v);
+  return TRACKED.map(([kind, get]) => ({ kind, from: get(before), to: get(after) })).filter((c) => key(c.from) !== key(c.to));
+}
+
+/** An issue's history, oldest first; people by how they're known in `workspace` now, so renames show. */
+function listActivity(issueId: number, workspace: string): Activity[] {
+  const rows = db
+    .query<Record<string, unknown>, [string, number]>(
+      `SELECT x.id, x.kind, x.from_value, x.to_value, x.created_at, ${userCols("u", "a")}
+       FROM issue_activity x ${userJoin("u", "x.actor_id", "?")} WHERE x.issue_id = ? ORDER BY x.id`,
+    )
+    .all(workspace, issueId)
+    .map((r) => ({ r, from: JSON.parse((r.from_value as string | null) ?? "null"), to: JSON.parse((r.to_value as string | null) ?? "null") }));
+  // Assignees and delegates are stored by id: one query for everyone they name.
+  const people = (r: Record<string, unknown>) => r.kind === "assignee" || r.kind === "delegate";
+  const ids = [...new Set(rows.filter(({ r }) => people(r)).flatMap(({ from, to }) => [from, to]).filter((id) => id !== null))];
+  const users = new Map(
+    db
+      .query<Record<string, unknown>, [string, string]>(`SELECT ids.value AS id, ${userCols("u", "u")} FROM json_each(?) ids ${userJoin("u", "ids.value", "?")}`)
+      .all(JSON.stringify(ids), workspace)
+      .map((u) => [u.id as number, ref(u, "u")]),
+  );
+  return rows.map(({ r, from, to }) => ({
+    id: r.id as number,
+    kind: r.kind as ActivityKind,
+    actor: ref(r, "a")!,
+    from: people(r) && from !== null ? (users.get(from) ?? null) : from,
+    to: people(r) && to !== null ? (users.get(to) ?? null) : to,
+    createdAt: r.created_at as string,
+  }));
+}
+
 export function getIssue(a: Actor, identifier: string): Issue {
   const { id } = issueRef(a, identifier);
   const row = db.query<IssueRow, [number]>(`${ISSUE_SELECT} WHERE i.id = ?`).get(id)!;
@@ -501,6 +568,7 @@ export function getIssue(a: Actor, identifier: string): Issue {
     children,
     blocks,
     comments: listComments("issue", id, row.workspace),
+    activity: listActivity(id, row.workspace),
     docs,
   };
 }
@@ -558,6 +626,8 @@ export function createIssue(a: Actor, input: IssueInput): Issue {
       .all(team.workspace, `%${identifier}%`)
       .filter((doc) => mention.test(doc.content));
     for (const doc of docs) saveRefs(doc.id, doc.content, team.workspace);
+    const people = (["assignee", "delegate"] as const).filter((f) => cols[`${f}_id`] !== null);
+    logActivity(a, id, [{ kind: "created" }, ...people.map((kind) => ({ kind, from: null, to: cols[`${kind}_id`] }))], time);
     return { identifier, docs, refs };
   })();
   changed("issue", team.workspace, identifier);
@@ -569,7 +639,6 @@ export function createIssue(a: Actor, input: IssueInput): Issue {
 export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Issue {
   const { id, workspace } = liveIssue(a, identifier);
   const cols = issueColumns(a, workspace, patch);
-  const current = db.query<{ status: Status; parent_id: number | null }, [number]>("SELECT status, parent_id FROM issues WHERE id = ?").get(id)!;
   // A new parent must not be the issue itself or one of its descendants.
   for (let p = cols.parent_id as number | null | undefined; p != null; ) {
     if (p === id) throw new AppError("An issue can't be its own parent or ancestor");
@@ -577,34 +646,38 @@ export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Is
   }
   const blockers = patch.blockedBy === undefined ? undefined : blockerIds(a, patch.blockedBy, id);
   const time = now();
-  if (cols.status !== undefined) {
-    const closing = isClosed(cols.status as Status);
-    if (closing !== isClosed(current.status)) cols.completed_at = closing ? time : null;
-  }
-  // The old and new parent and any blocker added or removed change too.
-  const related = new Set<number>();
-  if (cols.parent_id !== undefined && cols.parent_id !== current.parent_id) {
-    if (current.parent_id !== null) related.add(current.parent_id);
-    if (cols.parent_id !== null) related.add(cols.parent_id as number);
-  }
-  if (blockers) {
-    const before = db
-      .query<{ blocker_id: number }, [number]>("SELECT blocker_id FROM issue_blocks WHERE blocked_id = ?")
-      .all(id)
-      .map((b) => b.blocker_id);
-    for (const b of before) if (!blockers.includes(b)) related.add(b);
-    for (const b of blockers) if (!before.includes(b)) related.add(b);
-  }
-  // IMMEDIATE holds the write lock from the version check to the write, so nothing lands in between.
+  const read = db.query<IssueRow, [number]>(`${ISSUE_SELECT} WHERE i.id = ?`);
+  // IMMEDIATE holds the write lock from the read (the version check, the history's "before") to the write.
   const refs = db.transaction(() => {
-    if (patch.baseUpdatedAt !== undefined) {
-      const { updated_at } = db.query<{ updated_at: string }, [number]>("SELECT updated_at FROM issues WHERE id = ?").get(id)!;
-      if (patch.baseUpdatedAt !== updated_at) throw new AppError("Issue changed since you read it", 409);
+    const before = read.get(id)!;
+    if (patch.baseUpdatedAt !== undefined && patch.baseUpdatedAt !== before.updated_at) {
+      throw new AppError("Issue changed since you read it", 409);
+    }
+    if (cols.status !== undefined) {
+      const closing = isClosed(cols.status as Status);
+      if (closing !== isClosed(before.status)) cols.completed_at = closing ? time : null;
+    }
+    // The old and new parent and any blocker added or removed change too.
+    const related = new Set<number>();
+    const parentBefore = before.parent_id as number | null;
+    if (cols.parent_id !== undefined && cols.parent_id !== parentBefore) {
+      if (parentBefore !== null) related.add(parentBefore);
+      if (cols.parent_id !== null) related.add(cols.parent_id as number);
+    }
+    if (blockers) {
+      const was = db
+        .query<{ blocker_id: number }, [number]>("SELECT blocker_id FROM issue_blocks WHERE blocked_id = ?")
+        .all(id)
+        .map((b) => b.blocker_id);
+      for (const b of was) if (!blockers.includes(b)) related.add(b);
+      for (const b of blockers) if (!was.includes(b)) related.add(b);
     }
     const assignments = [...Object.keys(cols).map((c) => `${c} = ?`), BUMPED_AT];
     db.query(`UPDATE issues SET ${assignments.join(", ")} WHERE id = ?`).run(...Object.values(cols), time, time, id);
     if (blockers) setBlockers(id, blockers);
-    return bumpIssues(related, time);
+    const refs = bumpIssues(related, time);
+    logActivity(a, id, changes(before, read.get(id)!), time);
+    return refs;
   }).immediate();
   const issue = getIssue(a, identifier);
   changed("issue", workspace, issue.id);
@@ -639,7 +712,9 @@ function trashIssue(a: Actor, identifier: string, trash: boolean): Issue {
   const time = now();
   const refs = db.transaction(() => {
     db.query(`UPDATE issues SET deleted_at = ?, ${BUMPED_AT} WHERE id = ?`).run(trash ? time : null, time, time, issue.id);
-    return bumpIssues(relatives(issue.id), time);
+    const refs = bumpIssues(relatives(issue.id), time);
+    logActivity(a, issue.id, [{ kind: trash ? "trashed" : "restored" }], time);
+    return refs;
   })();
   changed("issue", issue.workspace, issue.ref);
   for (const r of refs) changed("issue", issue.workspace, r);
@@ -711,7 +786,9 @@ export function claimIssue(a: Actor, identifier: string): Issue {
     }
     const started = row.status === "in_progress" || row.status === "in_review";
     if (row.holder === a.id && started) return false;
-    db.query(`UPDATE issues SET ${slot} = ?, status = ?, ${BUMPED_AT} WHERE id = ?`).run(a.id, started ? row.status : "in_progress", time, time, id);
+    const status = started ? row.status : "in_progress";
+    db.query(`UPDATE issues SET ${slot} = ?, status = ?, ${BUMPED_AT} WHERE id = ?`).run(a.id, status, time, time, id);
+    logActivity(a, id, [{ kind: "claimed", from: row.status, to: status }], time);
     return true;
   }).immediate();
   const issue = getIssue(a, identifier);
