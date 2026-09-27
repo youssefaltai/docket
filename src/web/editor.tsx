@@ -1,12 +1,15 @@
 // Editing markdown. RichEditor edits it as rich text (Tiptap, in tiptap.tsx: its own chunk, fetched on first edit)
 // or as its markdown source. Both have @mention autocomplete: a small popover at the caret that inserts `@username `.
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type DragEvent, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
-import type { UserRef } from "../shared/types";
+import { MAX_UPLOAD_BYTES, attachmentMarkdown, type UserRef } from "../shared/types";
+import { api } from "./api";
 import { Avatar, isMe } from "./components";
 import { useApp } from "./context";
+import { PaperclipIcon } from "./icons";
 import { Markdown } from "./markdown";
-import { cls } from "./util";
+import { toast } from "./toast";
+import { MOD, cls, pastedFiles } from "./util";
 
 // An @ at the start, after a space or an opening bracket, then what's typed of a username, up to the caret.
 export const MENTION_TRIGGER = /(?:^|[\s([])@([a-z0-9._-]{0,32})$/i;
@@ -222,16 +225,60 @@ export interface EditorProps {
   onSubmit?: () => void; // ⌘↵
   onSave?: () => void; // ⌘S
   onCancel?: () => void; // Esc
+  /** ⌘⇧A: pick files to attach (RichEditor's file picker). */
+  onAttach?: () => void;
+  /** Where RichEditor's picked files go: the mode shown sets it to insert them at its caret. */
+  attach?: RefObject<((files: File[]) => void) | null>;
 }
 
-/** ⌘↵, ⌘S and Esc, the same in both modes: true when one was used. */
-export function editorKey(e: Key, { onSubmit, onSave, onCancel }: EditorProps): boolean {
+/** ⌘↵, ⌘S, ⌘⇧A and Esc, the same in both modes: true when one was used. */
+export function editorKey(e: Key, { onSubmit, onSave, onCancel, onAttach }: EditorProps): boolean {
   const mod = e.metaKey || e.ctrlKey;
-  const action = e.key === "Enter" && mod ? onSubmit : e.key === "s" && mod ? onSave : e.key === "Escape" ? onCancel : undefined;
+  const action =
+    e.key === "Enter" && mod
+      ? onSubmit
+      : e.key === "s" && mod
+        ? onSave
+        : e.key.toLowerCase() === "a" && mod && e.shiftKey
+          ? onAttach
+          : e.key === "Escape"
+            ? onCancel
+            : undefined;
   if (!action) return false;
   e.preventDefault();
   action();
   return true;
+}
+
+// ---------- Attachments: paste, drop or pick files; each uploads to the workspace shown and is linked where it went ----------
+
+/** Uploads a file: the markdown that shows it (an image, or a link), or null when it can't (a toast says why). */
+export async function upload(file: File): Promise<string | null> {
+  if (file.size > MAX_UPLOAD_BYTES) {
+    toast(`${file.name} is over ${MAX_UPLOAD_BYTES / 1024 / 1024} MB`);
+    return null;
+  }
+  try {
+    return attachmentMarkdown(await api.upload(file));
+  } catch (err) {
+    toast(`Couldn’t upload ${file.name}: ${err instanceof Error ? err.message : err}`);
+    return null;
+  }
+}
+
+/** A dashed highlight while files are dragged over an editor. Spread `props` on it. */
+export function useDropHighlight() {
+  const [over, setOver] = useState(false);
+  const props = {
+    onDragOver: (e: DragEvent) => {
+      if (!e.dataTransfer.types.includes("Files")) return;
+      e.preventDefault(); // it takes the drop
+      setOver(true);
+    },
+    onDragLeave: (e: DragEvent) => !e.currentTarget.contains(e.relatedTarget as Node | null) && setOver(false),
+    onDrop: () => setOver(false),
+  };
+  return { over, props };
 }
 
 type Tiptap = typeof import("./tiptap");
@@ -255,6 +302,10 @@ export function RichEditor({
   const [failed, setFailed] = useState(false);
   const [mode, setMode] = useState<"rich" | "source" | "kept">("rich"); // kept: the guard sent it to the source
   const [focus, setFocus] = useState(props.autoFocus); // after a toggle, the new mode takes focus
+  const attach = useRef<((files: File[]) => void) | null>(null);
+  const picker = useRef<HTMLInputElement>(null);
+  const pick = () => picker.current?.click();
+  props = { ...props, attach, onAttach: pick };
 
   useEffect(() => {
     if (!kit) loadTiptap().then(setKit, () => setFailed(true)); // offline, say: the source still works
@@ -289,6 +340,28 @@ export function RichEditor({
         >
           Markdown
         </button>
+        <button
+          type="button"
+          className="icon-btn"
+          aria-label="Attach files"
+          title={`Attach files ${MOD}⇧A`}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={pick}
+        >
+          <PaperclipIcon />
+        </button>
+        <input
+          ref={picker}
+          type="file"
+          multiple
+          hidden
+          tabIndex={-1}
+          onChange={(e) => {
+            const files = [...(e.target.files ?? [])];
+            e.target.value = ""; // the same file can be picked again
+            if (files.length) attach.current?.(files);
+          }}
+        />
         {mode === "kept" && <span className="hint">Opened as markdown to keep its formatting exact.</span>}
         <span className="grow" />
         {foot}
@@ -302,6 +375,42 @@ function SourceEditor(props: EditorProps) {
   const { value, onChange, label, placeholder, className, autoFocus, onReady } = props;
   const ref = useRef<HTMLTextAreaElement>(null);
   const mention = useMentionMenu(ref, value, onChange);
+  const drop = useDropHighlight();
+  const text = useRef(value); // the text as last set: uploads finishing together each build on the one before
+  text.current = value;
+  const latest = useRef(props);
+  latest.current = props;
+  const caret = useRef<number | null>(null); // where the caret goes once the text changes
+
+  /** `![Uploading name…]()` at the caret for each file, replaced by its markdown once it's up (or removed). */
+  const insertFiles = (files: File[]) => {
+    const el = ref.current!;
+    const holders = files.map((f) => `![Uploading ${f.name.replace(/[[\]]/g, "")}…]()`);
+    const set = (next: string) => {
+      text.current = next;
+      latest.current.onChange(next);
+    };
+    const start = el.selectionStart;
+    const added = holders.join(" ");
+    caret.current = start + added.length;
+    set(text.current.slice(0, start) + added + text.current.slice(el.selectionEnd));
+    files.forEach((file, i) =>
+      upload(file).then((markdown) => {
+        const at = text.current.indexOf(holders[i]!);
+        if (at < 0) return; // edited away meanwhile
+        const shift = (markdown ?? "").length - holders[i]!.length;
+        if (document.activeElement === el) caret.current = el.selectionStart > at ? el.selectionStart + shift : el.selectionStart;
+        set(text.current.slice(0, at) + (markdown ?? "") + text.current.slice(at + holders[i]!.length));
+      }),
+    );
+  };
+  if (props.attach) props.attach.current = insertFiles;
+
+  useLayoutEffect(() => {
+    if (caret.current === null) return;
+    ref.current!.setSelectionRange(caret.current, caret.current);
+    caret.current = null;
+  }, [value]);
 
   useLayoutEffect(() => {
     const el = ref.current!;
@@ -328,7 +437,7 @@ function SourceEditor(props: EditorProps) {
     <>
       <textarea
         ref={ref}
-        className={cls("md-source", className)}
+        className={cls("md-source", className, drop.over && "dropping")}
         dir="auto"
         spellCheck
         aria-label={`${label} (Markdown)`}
@@ -337,6 +446,19 @@ function SourceEditor(props: EditorProps) {
         onChange={(e) => onChange(e.target.value)}
         {...mention.props}
         onKeyDown={(e) => mention.onKeyDown(e) || editorKey(e, props)}
+        onPaste={(e) => {
+          const files = pastedFiles(e.clipboardData);
+          if (!files.length) return;
+          e.preventDefault();
+          insertFiles(files);
+        }}
+        {...drop.props}
+        onDrop={(e) => {
+          drop.props.onDrop();
+          if (!e.dataTransfer.files.length) return;
+          e.preventDefault();
+          insertFiles([...e.dataTransfer.files]);
+        }}
       />
       {mention.menu}
     </>

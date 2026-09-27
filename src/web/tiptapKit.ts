@@ -1,6 +1,6 @@
 // The rich editor's document model: Tiptap extensions, markdown in and out, safe paste, and the fidelity guard.
 // Headless (no React), so tests run it as is; the editor UI around it is tiptap.tsx. Markdown stays the stored format.
-import { Editor, Extension, type AnyExtension } from "@tiptap/core";
+import { Editor, Extension, flattenExtensions, Node as TiptapNode, type AnyExtension } from "@tiptap/core";
 import { Markdown } from "@tiptap/markdown";
 import { BulletList, getListMarker, ListItem, OrderedList, TaskItem, TaskList } from "@tiptap/extension-list";
 import { Table, TableCell, TableHeader, TableRow } from "@tiptap/extension-table";
@@ -8,6 +8,8 @@ import { Node as PMNode, Slice } from "@tiptap/pm/model";
 import { Plugin } from "@tiptap/pm/state";
 import { StarterKit } from "@tiptap/starter-kit";
 import { Marked } from "marked";
+import { ATTACHMENT_URL } from "../shared/types";
+import { pastedFiles } from "./util";
 
 /**
  * @tiptap/extension-table's renderTableToMarkdown, ported line for line with one change: `|` in a cell's text is
@@ -156,22 +158,73 @@ export const allowedHref = (href: string) => {
 };
 
 /**
- * Nothing pasted or dropped loads anything: HTML loses its images and media before it's parsed (the schema has no
- * image node either), and files are ignored. Plain text is read as markdown, except in code.
+ * Images, but only attachments: same-origin `/api/attachments/<id>/<name>`, private to the workspace. Any other image
+ * markdown reads as a link to it (the guard sends such text to the source, see plainText), so the editor never loads a
+ * remote image. `alt` is kept as markdown source, so it saves back as written.
  */
-const SafePaste = Extension.create({
+const AttachmentImage = TiptapNode.create({
+  name: "image",
+  inline: true,
+  group: "inline",
+  atom: true,
+  draggable: true,
+  addAttributes: () => ({ src: { default: "" }, alt: { default: "" }, title: { default: null } }),
+  parseHTML: () => [
+    {
+      tag: "img[src]",
+      getAttrs: (el) => (ATTACHMENT_URL.test(el.getAttribute("src") ?? "") ? { src: el.getAttribute("src"), alt: el.getAttribute("alt") ?? "" } : false),
+    },
+  ],
+  renderHTML: ({ node }) => ["img", { src: ATTACHMENT_URL.test(node.attrs.src) ? node.attrs.src : "", alt: node.attrs.alt, title: node.attrs.title }],
+  markdownTokenName: "image",
+  parseMarkdown: (token, h) => {
+    const { href = "", title = null, text = "" } = token as { href?: string; title?: string | null; text?: string };
+    if (ATTACHMENT_URL.test(href)) return { type: "image", attrs: { src: href, alt: text, title } };
+    return h.applyMark("link", [{ type: "text", text: text || href }], { href, title });
+  },
+  renderMarkdown: (node) => {
+    const title = node.attrs?.title ? ` "${String(node.attrs.title).replace(/"/g, '\\"')}"` : "";
+    return `![${node.attrs?.alt ?? ""}](${node.attrs?.src}${title})`;
+  },
+});
+
+// StarterKit's paragraph, except that a paragraph of just an image stays a paragraph: Tiptap unwraps it, for block
+// images, and ours are inline.
+const Paragraph = flattenExtensions([StarterKit]).find((e) => e.name === "paragraph") as TiptapNode;
+const ImageParagraph = Paragraph.extend({
+  parseMarkdown: (token, h) =>
+    token.tokens?.length === 1 && token.tokens[0]!.type === "image"
+      ? h.createNode("paragraph", undefined, h.parseInline(token.tokens))
+      : Paragraph.config.parseMarkdown!(token, h),
+});
+
+/** Files to upload, and where they go: a drop's position, or null for the selection (a paste). */
+export type OnFiles = (files: File[], at: number | null) => void;
+
+/**
+ * Nothing pasted or dropped loads anything remote: HTML loses its images and media before it's parsed (the image node
+ * takes only attachments), and files go to `onFiles` (uploaded, then linked) or nowhere. Plain text is read as
+ * markdown, except in code.
+ */
+const SafePaste = Extension.create<{ onFiles?: OnFiles }>({
   name: "safePaste",
   addProseMirrorPlugins() {
     const editor = this.editor;
+    const { onFiles } = this.options;
     return [
       new Plugin({
         props: {
           transformPastedHTML: (html) => html.replace(/<\/?(img|picture|source|video|audio|iframe|object|embed|svg|image)\b[^>]*>/gi, ""),
           handlePaste: (_view, event) => {
-            const data = event.clipboardData;
-            return !!data?.files.length && !data.getData("text/plain") && !data.getData("text/html");
+            const files = pastedFiles(event.clipboardData);
+            if (files.length) onFiles?.(files, null);
+            return files.length > 0;
           },
-          handleDrop: (_view, event) => !!(event as DragEvent).dataTransfer?.files.length,
+          handleDrop: (view, event) => {
+            const files = [...((event as DragEvent).dataTransfer?.files ?? [])];
+            if (files.length) onFiles?.(files, view.posAtCoords({ left: event.clientX, top: event.clientY })?.pos ?? null);
+            return files.length > 0;
+          },
           clipboardTextParser: (text, $context, plain) => {
             if (plain || $context.parent.type.spec.code) return null as unknown as Slice; // ProseMirror's own
             const doc = PMNode.fromJSON(editor.schema, editor.markdown!.parse(text));
@@ -183,11 +236,12 @@ const SafePaste = Extension.create({
   },
 });
 
-/** Everything the editor edits, and how it reads and writes markdown. `extra` adds UI-only behaviour. */
-export function extensions(extra: AnyExtension[] = []): AnyExtension[] {
+/** Everything the editor edits, and how it reads and writes markdown. `extra` adds UI-only behaviour; `onFiles` takes pasted and dropped files. */
+export function extensions(extra: AnyExtension[] = [], onFiles?: OnFiles): AnyExtension[] {
   return [
     StarterKit.configure({
       underline: false, // no markdown for it
+      paragraph: false, // ImageParagraph
       bulletList: false, // the patched lists below
       orderedList: false,
       listItem: false,
@@ -209,7 +263,9 @@ export function extensions(extra: AnyExtension[] = []): AnyExtension[] {
     FaithfulListItem,
     TaskList,
     FaithfulTaskItem.configure({ nested: true }),
-    SafePaste,
+    AttachmentImage,
+    ImageParagraph,
+    SafePaste.configure({ onFiles }),
     ...extra,
   ];
 }
@@ -231,14 +287,15 @@ export function roundtrip(markdown: string): string {
   return toMarkdown(headless);
 }
 
-// What a reader sees, rendered as the read view renders it: text, link targets, checkboxes, line breaks and
+// What a reader sees, rendered as the read view renders it: text, link targets, images (never the same as a link to
+// them: a remote image reads as a link in the editor, so it stays in the source), checkboxes, line breaks and
 // paragraphs (so a tight list can't turn loose).
 const reader = new Marked({ gfm: true, breaks: true, renderer: { html: ({ text }) => text.replace(/</g, "&lt;") } });
 const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'" };
 export function plainText(markdown: string): string {
   return (reader.parse(markdown) as string)
     .replace(/<a [^>]*href="([^"]*)"[^>]*>/g, " $1 ")
-    .replace(/<img [^>]*>/g, (tag) => ` ${/src="([^"]*)"/.exec(tag)?.[1]} ${/alt="([^"]*)"/.exec(tag)?.[1]} `)
+    .replace(/<img [^>]*>/g, (tag) => ` 🖼${/src="([^"]*)"/.exec(tag)?.[1]} ${/alt="([^"]*)"/.exec(tag)?.[1]} ${/title="([^"]*)"/.exec(tag)?.[1] ?? ""} `)
     .replace(/<input [^>]*>/g, (tag) => (/ checked/.test(tag) ? "[x]" : "[ ]"))
     .replace(/<br>/g, "⏎")
     .replace(/<p>/g, "¶")

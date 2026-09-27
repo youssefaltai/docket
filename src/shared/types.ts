@@ -474,6 +474,32 @@ export interface WebhookPayload<T = unknown> {
   webhookTimestamp: number; // ms, this attempt
 }
 
+// Attachments: files uploaded to a workspace, linked from markdown by their url. Private to the workspace's members.
+export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+
+export interface Attachment {
+  id: string; // 16 random bytes, base64url (22 characters)
+  url: string; // "/api/attachments/<id>/<encoded name>": what markdown links to
+  name: string;
+  contentType: string; // sniffed by Docket, never the uploader's claim
+  size: number;
+  uploader: UserRef;
+  createdAt: string;
+}
+
+/** The only images markdown loads: same-origin attachment URLs. Anything else shows as a link. */
+export const ATTACHMENT_URL = /^\/api\/attachments\/([A-Za-z0-9_-]{22})\/[^/?#\s"'<>\\]+$/;
+
+/** The raster images an attachment may be shown as; everything else downloads. */
+export const INLINE_IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+
+/** An attachment's name in markdown link text: brackets and backslashes dropped, the rest of markdown's punctuation escaped. */
+const label = (name: string) => name.replace(/[[\]\\]/g, "").replace(/[*_`<>]/g, "\\$&") || "file";
+
+/** The markdown that shows an attachment: an image for raster images, else a link. */
+export const attachmentMarkdown = (a: Pick<Attachment, "name" | "url" | "contentType">) =>
+  `${INLINE_IMAGE_TYPES.includes(a.contentType) ? "!" : ""}[${label(a.name)}](${a.url})`;
+
 // Pushed over the WebSocket at /ws after every mutation, to the workspace's members. "inbox" events (and
 // subscription changes) go only to that one user's sockets in that workspace.
 export interface ServerEvent {

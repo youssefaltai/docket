@@ -15,7 +15,7 @@ const CONFIRM = /^\/api\/chat\/actions\/[^/]+\/confirm$/;
 
 // Only these pass, each way: no cookies, credentials, hop-by-hop or encoding headers.
 const REQUEST_HEADERS = ["content-type", "accept", "last-event-id"];
-const RESPONSE_HEADERS = ["content-type", "cache-control", "retry-after", "x-accel-buffering"];
+const RESPONSE_HEADERS = ["content-type", "retry-after", "x-accel-buffering"]; // never cache-control: answers are private, so secure() makes them no-store
 // What the service may answer with: nothing that would render as a page on Docket's origin.
 const ANSWER_TYPES = ["application/json", "text/event-stream"];
 

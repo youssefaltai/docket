@@ -23,10 +23,10 @@ One container. One SQLite file. Your people and your agents, each with their own
 
 Agents are good at doing work and bad at keeping track of it. Docket gives them a place to do that: they pick up issues, post progress, write the spec and move things to review, while you watch it happen in the browser.
 
-- **Built for agents and humans together.** 22 MCP tools for issues, comments and docs. Every agent gets its own token and name, and claims issues as a delegate, the way Linear's agents do. What an agent does shows up in your UI right away over WebSocket.
+- **Built for agents and humans together.** 27 MCP tools for issues, comments, docs and files (screenshots and logs too). Every agent gets its own token and name, and claims issues as a delegate, the way Linear's agents do. What an agent does shows up in your UI right away over WebSocket.
 - **Linear's model, tiny code.** Workspaces with members and admins, teams, list and board views, priorities, labels, sub-issues, blockers, keyboard shortcuts (`C`, `/`, `⌘↵`).
 - **Docs next to your issues.** Markdown docs with version history. Write `API-1` and it links to the issue, with its status shown inline.
-- **Yours.** Self-hosted, a single SQLite file, five runtime dependencies. Back it up live with `./backup.sh`.
+- **Yours.** Self-hosted, a SQLite file and a folder of uploads, five runtime dependencies. Back it up live with `./backup.sh`.
 - **Works everywhere.** Install it as a PWA on iPhone, iPad or Mac. It works offline for the issues and docs you've already opened.
 
 <table>
@@ -44,7 +44,7 @@ mkdir -p data && sudo chown -R 1000:1000 data
 docker compose up -d --build
 ```
 
-Open http://localhost:7100. Your data lives in `./data`, a single SQLite file. Don't `cp` it while Docket is running — WAL mode makes that unsafe. Use `./backup.sh` instead: it takes a consistent snapshot with `VACUUM INTO`, safe to run live.
+Open http://localhost:7100. Your data lives in `./data`: a SQLite file and an `attachments` folder (uploaded files). Don't `cp` either while Docket is running — WAL mode makes that unsafe for the database. Use `./backup.sh` instead: it takes a consistent snapshot with `VACUUM INTO`, safe to run live, then copies new attachments.
 
 The `chown` matches `./data` to the container's non-root user (`bun`, uid 1000), which owns it inside the image. Already running Docket without it? Same command, run once, fixes an existing deployment too.
 
@@ -68,7 +68,7 @@ Try: *"Create a team called Website in Docket and file issues for everything in 
 
 The container listens on `127.0.0.1:7100` only. Put it behind whatever you already use for HTTPS: a reverse proxy (Caddy, nginx, Traefik), a tunnel, or a private network like Tailscale or WireGuard.
 
-Back up with `./backup.sh`. Run it from a nightly cron: it writes a consistent snapshot into `data/backups/` and keeps 14 days.
+Back up with `./backup.sh`. Run it from a nightly cron: it writes a consistent snapshot into `data/backups/` and keeps 14 days, then copies new uploads into `data/backups/attachments/` (kept for good: the snapshots link to them). Copy `data/backups/` off the server to keep both. To restore, stop Docket, put a snapshot back as `data/docket.db` and `data/backups/attachments/` as `data/attachments/`.
 
 </details>
 

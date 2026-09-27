@@ -1,6 +1,7 @@
 // Typed wrappers for the REST API and the /ws event stream (see SPEC.md).
 import type {
   ApiError,
+  Attachment,
   BulkIssuePatch,
   BulkIssueResult,
   Document,
@@ -94,10 +95,14 @@ export const setCurrentWorkspace = (key: string | null) => (currentWorkspace = k
 export const getCurrentWorkspace = () => currentWorkspace;
 export const workspaceHeader = (): Record<string, string> => (currentWorkspace ? { "x-docket-workspace": currentWorkspace } : {});
 
-export async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+export const request = <T>(method: string, path: string, body?: unknown): Promise<T> =>
+  body === undefined ? send<T>(method, path) : send<T>(method, path, JSON.stringify(body), "application/json");
+
+/** A request in this tab's workspace, as this tab's account; errors become HttpErrors, and a 401 signs out. */
+async function send<T>(method: string, path: string, body?: BodyInit, type?: string): Promise<T> {
   const headers: Record<string, string> = { ...workspaceHeader(), ...signedInHeader() };
-  if (body !== undefined) headers["content-type"] = "application/json";
-  const res = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) }).catch(() => {
+  if (type) headers["content-type"] = type;
+  const res = await fetch(path, { method, headers, body }).catch(() => {
     throw unreachable();
   });
   const data: unknown = await res.json().catch(() => null);
@@ -133,6 +138,8 @@ function inOrder<T>(key: string, send: () => Promise<T>): Promise<T> {
 }
 
 export const api = {
+  /** Uploads a file to this tab's workspace, as raw bytes (see SPEC: Attachments). */
+  upload: (file: File) => send<Attachment>("POST", `/api/attachments?name=${enc(file.name)}`, file, "application/octet-stream"),
   workspaces: () => request<Workspace[]>("GET", "/api/workspaces"),
   createWorkspace: (input: WorkspaceInput) => request<Workspace>("POST", "/api/workspaces", input),
   updateWorkspace: (key: string, patch: WorkspacePatch) =>
