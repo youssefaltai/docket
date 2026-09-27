@@ -11,7 +11,8 @@ type Page =
   | { view: "trash"; team: string }
   | { view: "issue"; id: string }
   | { view: "doc"; slug: string }
-  | { view: "settings"; section: "account" | "workspace" };
+  | { view: "settings"; section: "account" | "workspace" }
+  | { view: "inbox" };
 
 /** A page, and the workspace in the URL's first segment: null for a path from before URLs carried one (or "/"). */
 export type Route = Page & { workspace: string | null };
@@ -25,6 +26,7 @@ export function parseRoute(path: string): Route {
 function parsePage(path: string): Page {
   const settings = /^\/settings\/(account|workspace)\/?$/.exec(path);
   if (settings) return { view: "settings", section: settings[1] as "account" | "workspace" };
+  if (/^\/inbox\/?$/.test(path)) return { view: "inbox" };
   const issue = /^\/issue\/([^/]+)/.exec(path);
   if (issue) return { view: "issue", id: decodeURIComponent(issue[1]!).toUpperCase() };
   const doc = /^\/doc\/([^/]+)/.exec(path);
@@ -42,8 +44,8 @@ window.addEventListener("popstate", emitRoute);
 /** Where Esc / breadcrumbs go back to from an issue or doc page; a new doc opens in edit mode. */
 export const nav = { lastList: "/", lastDocs: "/docs", editDoc: "" };
 
-// App pages written without a workspace: /, /issue/…, /doc/…, /docs, /t/…, /settings/…
-const PAGE = /^\/(?:$|(?:issue|doc|docs|t|settings)(?:[/?#]|$))/;
+// App pages written without a workspace: /, /issue/…, /doc/…, /docs, /t/…, /settings/…, /inbox
+const PAGE = /^\/(?:$|(?:issue|doc|docs|t|settings|inbox)(?:[/?#]|$))/;
 
 /** An app path in the current workspace: "/issue/BRD-1" → "/acme/issue/BRD-1". Anything else stays as it is. */
 export function wsPath(path: string): string {

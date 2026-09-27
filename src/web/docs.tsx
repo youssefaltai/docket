@@ -3,6 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "re
 import type { Document, DocumentPatch, DocumentSummary, DocumentVersion, DocumentVersionSummary } from "../shared/types";
 import { HttpError, api } from "./api";
 import { useMentionMenu } from "./editor";
+import { SubscribeButton } from "./inbox";
 import { TeamPicker } from "./pickers";
 import {
   Avatar,
@@ -269,6 +270,7 @@ export function DocPage({ slug }: { slug: string }) {
               </button>
             )
           )}
+          {!doc.deletedAt && <SubscribeButton subscribed={doc.subscribed} onToggle={() => api.subscribeDocument(doc.slug, !doc.subscribed).then((d) => setDoc((cur) => cur && { ...cur, subscribed: d.subscribed }), errorToast)} />}
           <button
             className="icon-btn"
             onClick={() => (history ? closeHistory() : stopEdit().then((ok) => ok && setHistory(true)))}
