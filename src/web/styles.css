@@ -1435,6 +1435,18 @@ fieldset.plain {
   margin-inline-end: 4px;
   vertical-align: -1.5px;
 }
+/* @mentions: plain-text chips (nothing loads); agents get a tint of their own. */
+.md .mention {
+  padding: 0 4px;
+  border-radius: 5px;
+  background: var(--wash-strong);
+  font-weight: 500;
+  white-space: nowrap;
+}
+.md .mention-agent {
+  background: hsl(268 70% 95%);
+  color: hsl(268 40% 38%);
+}
 
 /* ---------- Tabs ---------- */
 
@@ -1867,6 +1879,34 @@ fieldset.plain {
   padding: 8px;
   font-size: 12.5px;
   color: var(--muted);
+}
+/* @mention autocomplete: a .pop at the caret; full width on phones. */
+.mention-menu {
+  width: 280px;
+}
+.mention-name,
+.mention-username {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mention-username {
+  flex: 1;
+  font-size: 12px;
+  color: var(--muted);
+}
+.mention-tag {
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+@media (max-width: 767px) {
+  .mention-menu {
+    width: calc(100vw - 16px);
+  }
 }
 
 /* ---------- Modal ---------- */

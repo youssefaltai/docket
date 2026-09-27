@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { CLOSED_STATUSES, PRIORITY_LABELS, STATUS_LABELS, type Issue } from "../shared/types";
 import { HttpError, api } from "./api";
+import { useMentionMenu } from "./editor";
 import { AssigneePicker, BlockedByPicker, DelegatePicker, LabelsPicker, ParentPicker, PriorityPicker, StatusPicker } from "./pickers";
 import {
   Avatar,
@@ -268,6 +269,7 @@ function Description({
   const started = useRef<Edit>({ value, base: updatedAt });
   const ref = useRef<HTMLTextAreaElement>(null);
   useAutosize(ref, editing ? draft : "");
+  const mention = useMentionMenu(ref, draft, setDraft);
 
   useEffect(() => {
     const el = ref.current;
@@ -322,7 +324,9 @@ function Description({
           value={draft}
           placeholder="Add a description…"
           onChange={(e) => setDraft(e.target.value)}
+          {...mention.props}
           onKeyDown={(e) => {
+            if (mention.onKeyDown(e)) return;
             if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
               e.preventDefault();
               save();
@@ -332,6 +336,7 @@ function Description({
             }
           }}
         />
+        {mention.menu}
         {conflict && (
           <div className="editor-conflict" role="alert">
             <div className="editor-conflict-head">

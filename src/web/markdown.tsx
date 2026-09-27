@@ -1,7 +1,7 @@
-// Rendering Markdown (issue descriptions, comments, docs): sanitized, with issue-ref chips and client routing.
+// Rendering Markdown (issue descriptions, comments, docs): sanitized, with issue-ref and mention chips and client routing.
 import { useMemo } from "react";
 import { Marked } from "marked";
-import type { IssueSummary } from "../shared/types";
+import { MENTION_PATTERN, mentionOf, type IssueSummary, type UserRef } from "../shared/types";
 import { useApp } from "./context";
 import { statusSvg } from "./icons";
 import { isPlainClick, navigate, wsPath } from "./routing";
@@ -29,6 +29,18 @@ let chipKeys = new Set<string>();
 let chipIndex: Map<string, IssueSummary> | null = null;
 const chipFor = (id: string) => (chipKeys.has(id.slice(0, id.indexOf("-"))) ? chipIndex?.get(id) : undefined);
 const IDENT = /\b[A-Z]{2,5}-\d+\b/g;
+
+// Set right before each parse: the active members of the workspace shown, by username (mention chips).
+let mentionable = new Map<string, UserRef>();
+const MENTIONS = new RegExp(MENTION_PATTERN, "giu");
+const MENTION_AT = new RegExp(MENTION_PATTERN, "iuy");
+const known = (username: string) => mentionable.has(username);
+/** The member mentioned at the start of `src`, given the text just `before` it (a mention needs a boundary there). */
+function mentionAt(before: string, src: string): string | undefined {
+  MENTION_AT.lastIndex = before.length;
+  const m = MENTION_AT.exec(before + src.slice(0, 34)); // "@", at most 32 characters, and the one after
+  return m ? mentionOf(m[1]!, known) : undefined;
+}
 
 // Heading ids for the outline and #anchors; deduped per parse.
 let headingIds = new Map<string, number>();
@@ -70,6 +82,23 @@ const marked = new Marked({
         return `<a class="issue-ref" href="${wsPath(`/issue/${raw}`)}" title="${escapeHtml(issue.title)}">${statusSvg(issue.status)}${raw}</a>`;
       },
     },
+    {
+      // @username of an active member: a plain-text chip (nothing loads). dir="ltr" keeps "@name" whole in Arabic text.
+      name: "mention",
+      level: "inline",
+      start(src) {
+        for (const m of src.matchAll(MENTIONS)) if (mentionOf(m[1]!, known)) return m.index;
+      },
+      tokenizer(src, tokens) {
+        const username = this.lexer.state.inLink ? undefined : mentionAt(tokens.at(-1)?.raw.slice(-1) ?? "", src);
+        if (username) return { type: "mention", raw: src.slice(0, username.length + 1), username };
+      },
+      renderer({ username }) {
+        const user = mentionable.get(username)!;
+        const kind = user.kind === "agent" ? "mention mention-agent" : "mention";
+        return `<span class="${kind}" dir="ltr" title="${escapeHtml(user.name)}">@${username}</span>`;
+      },
+    },
   ],
   renderer: {
     // Raw HTML is shown as text, never rendered.
@@ -102,18 +131,19 @@ const marked = new Marked({
  * prompt injected into what it read could make it write an image URL that carries data out on render.
  */
 export function Markdown({ text, className, images = true }: { text: string; className?: string; images?: boolean }) {
-  const { teams, workspace } = useApp();
+  const { teams, workspace, members } = useApp();
   const index = useIssueIndex();
   const html = useMemo(() => {
     chipKeys = new Set(teams?.map((t) => t.key));
     chipIndex = index;
+    mentionable = new Map(members.filter((m) => !m.suspendedAt).map((m) => [m.user.username, m.user]));
     allowImages = images;
     try {
       return (marked.parse(text) as string).replace(/<(p|h[1-6]|ul|ol|blockquote|table|td|th)(?=[\s>])/g, '<$1 dir="auto"');
     } finally {
       allowImages = true;
     }
-  }, [text, teams, index, images, workspace?.key]);
+  }, [text, teams, index, images, workspace?.key, members]);
   return (
     <div
       className={cls("md", className)}

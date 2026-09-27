@@ -309,6 +309,20 @@ const MIGRATIONS = [
   CREATE INDEX issue_activity_issue ON issue_activity(issue_id, id);
   INSERT INTO issue_activity (issue_id, actor_id, kind, created_at) SELECT id, creator_id, 'created', created_at FROM issues ORDER BY id;
   `,
+  // Who is @mentioned where; recomputed on every save of the text, like document_refs. created_at: the save that
+  // first mentioned them, so a mutation's new mentions are the rows it wrote. Existing texts count from their next save.
+  `
+  CREATE TABLE mentions (
+    source TEXT NOT NULL, -- 'issue:<id>' (description), 'comment:<id>', 'document:<id>' (content), 'document_comment:<id>'
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    issue_id INTEGER REFERENCES issues(id) ON DELETE CASCADE,       -- the issue it's in or on
+    document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE, -- the doc it's in or on
+    author_id INTEGER NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (source, user_id)
+  );
+  CREATE INDEX mentions_user ON mentions(user_id);
+  `,
 ];
 
 db.run("PRAGMA foreign_keys = OFF"); // a migration may rebuild a table (SQLite's 12-step ALTER); checked before each commit

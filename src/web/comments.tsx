@@ -2,6 +2,7 @@
 import { Fragment, useRef, useState, type ReactNode } from "react";
 import { PRIORITY_LABELS, STATUS_LABELS, type Activity, type Comment, type Priority, type Status, type UserRef } from "../shared/types";
 import { Avatar, isMe, Kbd, Section } from "./components";
+import { useMentionMenu } from "./editor";
 import { PencilIcon, StatusIcon, TrashIcon } from "./icons";
 import { Link } from "./routing";
 import { useAutosize, useRun } from "./hooks";
@@ -238,6 +239,7 @@ function Composer({
   const { busy, run } = useRun();
   const ref = useRef<HTMLTextAreaElement>(null);
   useAutosize(ref, body);
+  const mention = useMentionMenu(ref, body, setBody);
   const send = () => {
     const text = body.trim();
     if (text)
@@ -257,7 +259,9 @@ function Composer({
         autoFocus={!!onCancel}
         value={body}
         onChange={(e) => setBody(e.target.value)}
+        {...mention.props}
         onKeyDown={(e) => {
+          if (mention.onKeyDown(e)) return;
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
             e.preventDefault();
             send();
@@ -268,6 +272,7 @@ function Composer({
           }
         }}
       />
+      {mention.menu}
       <div className="composer-foot">
         {onCancel && (
           <button className="btn btn-ghost btn-sm" onClick={onCancel}>

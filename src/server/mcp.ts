@@ -39,7 +39,8 @@ ${
     ? "- This key is read-only: you can list and read everything here, but not change anything."
     : "- Working on an issue: get_issue, then claim_issue (an agent becomes its delegate, a person its assignee, and it moves to in_progress; if someone else holds it, pick another), post progress notes with comment_issue, then set in_review or done. There is no delete: set status canceled instead."
 }
-- Documents (specs, plans, notes) live in teams and are identified by a slug, e.g. "architecture". They are markdown: mention issues by identifier (BRD-2) and they auto-link; link other docs with [Title](/doc/slug). Change a long doc with update_document's \`edits\` rather than rewriting it.`;
+- Documents (specs, plans, notes) live in teams and are identified by a slug, e.g. "architecture". They are markdown: mention issues by identifier (BRD-2) and they auto-link; link other docs with [Title](/doc/slug). Change a long doc with update_document's \`edits\` rather than rewriting it.
+- Mention people or agents as @username (see list_members) in descriptions, comments and docs.`;
 
 const identifier = z.string().describe('Issue identifier: team key + number, e.g. "BRD-12" (case-insensitive)');
 const teamKey = z.string().describe('Team key, e.g. "BRD" (see list_teams)');
@@ -51,12 +52,14 @@ const assignee = z.string().describe('A person\'s username (see list_members), o
 const delegate = z.string().describe('An agent\'s username (see list_members), or "me" if you are one');
 
 const slug = z.string().describe('Document slug, e.g. "architecture" (see list_documents)');
+const MENTION = "Mention people or agents as @username (list_members has usernames).";
 const docContent = z
   .string()
-  .describe("Markdown. Mention issues by identifier (e.g. BRD-2) and they auto-link; link other docs with [Title](/doc/slug).");
+  .describe(`Markdown. Mention issues by identifier (e.g. BRD-2) and they auto-link; link other docs with [Title](/doc/slug). ${MENTION}`);
 
 const title = z.string().describe("Short, imperative title");
-const description = z.string().describe("Markdown description");
+const description = z.string().describe(`Markdown description. ${MENTION}`);
+const body = z.string().describe(`Markdown. ${MENTION}`);
 
 const at = (user: UserRef) => `@${user.username}`;
 
@@ -448,7 +451,7 @@ function createServer(a: Actor, origin: string): McpServer {
     {
       description:
         "Add a markdown comment to an issue, as you. Use it for progress notes, findings, decisions, and a summary of what you did when finishing (changes made, links). Comments bump the issue's updated time.",
-      inputSchema: { id: identifier, body: z.string().describe("Markdown") },
+      inputSchema: { id: identifier, body },
     },
     writes(({ id, body }) => {
       const issue = tracker.addComment(a, id, body);
@@ -514,7 +517,7 @@ function createServer(a: Actor, origin: string): McpServer {
       inputSchema: {
         slug,
         title: z.string().optional(),
-        content: docContent.optional().describe("Full replacement markdown. Prefer edits for small changes."),
+        content: docContent.optional().describe(`Full replacement markdown. Prefer edits for small changes. ${MENTION}`),
         edits: z
           .array(
             z.object({
@@ -543,7 +546,7 @@ function createServer(a: Actor, origin: string): McpServer {
     {
       description:
         "Add a markdown comment to a document, as you, e.g. review notes, questions, or a summary of what you changed. Comments don't change the content.",
-      inputSchema: { slug, body: z.string().describe("Markdown") },
+      inputSchema: { slug, body },
     },
     writes(({ slug, body }) => {
       const document = tracker.addDocumentComment(a, slug, body);
@@ -562,7 +565,7 @@ function createServer(a: Actor, origin: string): McpServer {
     {
       description:
         "Edit one of your own comments on an issue or a document, e.g. to fix a typo or an outdated note. It shows as edited. For new information, add a new comment instead.",
-      inputSchema: { ...commentTarget, body: z.string().describe("Markdown, replaces the whole comment") },
+      inputSchema: { ...commentTarget, body: z.string().describe(`Markdown, replaces the whole comment. ${MENTION}`) },
     },
     writes(({ comment, body, ...target }) =>
       commentOn(

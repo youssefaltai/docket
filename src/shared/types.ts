@@ -36,6 +36,21 @@ export interface UserRef {
   kind: UserKind;
 }
 
+/**
+ * An @mention in markdown prose (not in code or link text): `@username`, not preceded by a letter, digit or
+ * `_ . @ / + -` (so bob@example.com and https://x.com/@ana aren't mentions). Group 1 is the candidate; see
+ * `mentionOf`. It counts for an active member of the text's workspace. Use with flags "giu".
+ */
+export const MENTION_PATTERN = "(?<![\\p{L}\\p{N}_.@/+-])@([a-z0-9][a-z0-9._-]{1,31})(?![a-z0-9._-])";
+
+/** Who a candidate names: itself, else with trailing `. _ -` dropped one at a time ("Thanks @ana." is ana). */
+export function mentionOf(candidate: string, known: (username: string) => boolean): string | undefined {
+  for (let name = candidate.toLowerCase(); name.length >= 2; name = name.slice(0, -1)) {
+    if (known(name)) return name;
+    if (!/[._-]$/.test(name)) return undefined;
+  }
+}
+
 export interface User extends UserRef {
   email: string | null; // people only, optional; unverified contact info, never used to find an account
   createdAt: string;
