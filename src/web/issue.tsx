@@ -4,7 +4,17 @@ import { CLOSED_STATUSES, PRIORITY_LABELS, STATUS_LABELS, type Issue } from "../
 import { HttpError, api } from "./api";
 import { RichEditor } from "./editor";
 import { SubscribeButton } from "./inbox";
-import { AssigneePicker, BlockedByPicker, DelegatePicker, LabelsPicker, ParentPicker, PriorityPicker, StatusPicker } from "./pickers";
+import {
+  AssigneePicker,
+  BlockedByPicker,
+  DelegatePicker,
+  DuplicatePicker,
+  LabelsPicker,
+  ParentPicker,
+  PriorityPicker,
+  RelatedPicker,
+  StatusPicker,
+} from "./pickers";
 import {
   Avatar,
   ago,
@@ -527,6 +537,35 @@ function Properties({ issue, patch }: { issue: Issue; patch: (p: IssueChange) =>
       {issue.blocks.length > 0 && (
         <Prop label="Blocks">
           <Relations ids={issue.blocks} resolved={() => CLOSED_STATUSES.includes(issue.status)} />
+        </Prop>
+      )}
+      <Prop label="Related">
+        <Relations ids={issue.relatedTo}>
+          <RelatedPicker
+            value={issue.relatedTo}
+            onChange={(relatedTo) => patch({ relatedTo })}
+            exclude={[issue.id]}
+            className={issue.relatedTo.length ? "icon-btn xs" : "prop-btn"}
+          >
+            {issue.relatedTo.length ? <PencilIcon /> : none}
+          </RelatedPicker>
+        </Relations>
+      </Prop>
+      <Prop label="Duplicate of">
+        <Relations ids={issue.duplicateOf ? [issue.duplicateOf] : []}>
+          <DuplicatePicker
+            value={issue.duplicateOf}
+            onChange={(duplicateOf) => patch({ duplicateOf })}
+            exclude={[issue.id, ...issue.duplicates]}
+            className={issue.duplicateOf ? "icon-btn xs" : "prop-btn"}
+          >
+            {issue.duplicateOf ? <PencilIcon /> : none}
+          </DuplicatePicker>
+        </Relations>
+      </Prop>
+      {issue.duplicates.length > 0 && (
+        <Prop label="Duplicates">
+          <Relations ids={issue.duplicates} />
         </Prop>
       )}
       <div className="props-meta">

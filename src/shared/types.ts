@@ -174,6 +174,8 @@ export interface IssueSummary {
   delegate: UserRef | null; // an agent working on it for the assignee (Linear's delegate)
   parent: string | null; // identifier
   blockedBy: string[]; // identifiers
+  relatedTo: string[]; // identifiers, either direction: related is symmetric
+  duplicateOf: string | null; // identifier of the canonical issue this one duplicates
   createdAt: string;
   updatedAt: string;
   completedAt: string | null; // set when status becomes done/canceled
@@ -221,6 +223,8 @@ export const ACTIVITY_KINDS = [
   "labels",
   "parent",
   "blockedBy",
+  "relatedTo",
+  "duplicateOf",
   "claimed",
   "trashed",
   "restored",
@@ -228,8 +232,8 @@ export const ACTIVITY_KINDS = [
 export type ActivityKind = (typeof ACTIVITY_KINDS)[number];
 
 /**
- * One change to an issue. from/to by kind: title, parent (identifier), status and claimed (Status) are strings;
- * priority a number; assignee, delegate a UserRef; labels, blockedBy string arrays; null when unset, and both
+ * One change to an issue. from/to by kind: title, parent and duplicateOf (identifiers), status and claimed (Status) are
+ * strings; priority a number; assignee, delegate a UserRef; labels, blockedBy, relatedTo string arrays; null when unset, and both
  * null for created, description, trashed, restored.
  */
 export type ActivityValue = string | number | string[] | UserRef | null;
@@ -248,6 +252,7 @@ export interface Issue extends IssueSummary {
   creator: UserRef;
   children: IssueSummary[];
   blocks: string[]; // identifiers this issue blocks
+  duplicates: string[]; // identifiers of issues marked as duplicates of this one
   comments: Comment[];
   activity: Activity[]; // its history, oldest first
   docs: DocumentSummary[]; // documents whose content mentions this issue
@@ -318,6 +323,8 @@ export interface IssueInput {
   delegate?: string | null; // an agent's username, or "me" (as an agent)
   parent?: string | null;
   blockedBy?: string[];
+  relatedTo?: string[]; // replaces the whole list, on both sides
+  duplicateOf?: string | null; // marks it a duplicate of that issue and sets it canceled; null clears (status stays)
 }
 
 export type IssuePatch = Partial<Omit<IssueInput, "team">> & {

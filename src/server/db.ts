@@ -406,6 +406,18 @@ const MIGRATIONS: (string | (() => void))[] = [
   CREATE INDEX webhook_deliveries_due ON webhook_deliveries(next_attempt_at) WHERE status = 'pending';
   CREATE INDEX webhook_deliveries_webhook ON webhook_deliveries(webhook_id, id);
   `,
+  // Related and duplicate issues (Linear's other two relations; blocks keep issue_blocks). "related" is undirected:
+  // one row per pair, from_id < to_id. "duplicate" is directional: from_id duplicates to_id, at most one per from_id.
+  `
+  CREATE TABLE issue_relations (
+    from_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+    to_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN ('related', 'duplicate')),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (from_id, to_id, kind)
+  );
+  CREATE INDEX issue_relations_to ON issue_relations(to_id, kind);
+  `,
 ];
 
 db.run("PRAGMA foreign_keys = OFF"); // a migration may rebuild a table (SQLite's 12-step ALTER); checked before each commit

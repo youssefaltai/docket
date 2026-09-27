@@ -47,7 +47,7 @@ async function patch(req: Request, what: string, fields: readonly string[], why:
   return data;
 }
 
-const ISSUE_FIELDS = ["title", "description", "status", "priority", "labels", "assignee", "delegate", "parent", "blockedBy", "baseUpdatedAt"];
+const ISSUE_FIELDS = ["title", "description", "status", "priority", "labels", "assignee", "delegate", "parent", "blockedBy", "relatedTo", "duplicateOf", "baseUpdatedAt"];
 const DOCUMENT_FIELDS = ["title", "content", "edits", "team", "position", "checkpoint", "baseUpdatedAt"];
 
 const param = (req: Request, name: string) => new URL(req.url).searchParams.get(name) || undefined;

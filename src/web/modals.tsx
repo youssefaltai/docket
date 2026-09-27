@@ -52,7 +52,7 @@ function TeamCrumb({ value, onChange }: { value: string; onChange: (key: string)
   );
 }
 
-type Draft = Required<Omit<IssueInput, "blockedBy" | "assignee" | "delegate">> & { assignee: UserRef | null };
+type Draft = Required<Omit<IssueInput, "blockedBy" | "relatedTo" | "duplicateOf" | "assignee" | "delegate">> & { assignee: UserRef | null };
 
 export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueInput>; onClose: () => void }) {
   const [draft, setDraft] = useState<Draft>(() => ({

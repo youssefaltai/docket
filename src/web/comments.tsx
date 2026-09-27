@@ -130,7 +130,7 @@ function describe({ kind, from, to }: Activity, actor: UserRef): ReactNode {
         {show(item)}
       </Fragment>
     ));
-  // Labels and blockers: what was added, then what was removed.
+  // Labels, blockers and related issues: what was added, then what was removed.
   const diff = (show: (item: string) => ReactNode, add: string, remove: string) => {
     const [was, now] = [(from ?? []) as string[], (to ?? []) as string[]];
     const added = now.filter((v) => !was.includes(v));
@@ -172,6 +172,10 @@ function describe({ kind, from, to }: Activity, actor: UserRef): ReactNode {
       return to ? <>set parent to {issue(to as string)}</> : "removed parent";
     case "blockedBy":
       return diff(issue, "marked as blocked by", "removed blocker");
+    case "relatedTo":
+      return diff(issue, "marked as related to", "removed related");
+    case "duplicateOf":
+      return to ? <>marked as a duplicate of {issue(to as string)}</> : "unmarked as a duplicate";
     case "claimed":
       return "claimed the issue";
     case "trashed":

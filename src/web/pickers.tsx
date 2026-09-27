@@ -345,7 +345,7 @@ export function TeamPicker({ value, onChange, children, ...rest }: Trigger & { v
 
 function useIssueOptions(team: string | undefined, exclude: string[]) {
   const [issues, setIssues] = useState<IssueSummary[]>([]);
-  // A team's issues, or (Blocked by, any team) the current workspace's.
+  // A team's issues, or (blocked by, related, duplicate of: any team) the current workspace's.
   const load = () =>
     void api
       .issues(team ? { team } : {})
@@ -357,19 +357,22 @@ function useIssueOptions(team: string | undefined, exclude: string[]) {
   return { options, load };
 }
 
-export function ParentPicker({
+/** One issue or none: a parent, or the issue a duplicate points to. `team`: only that team's issues. */
+function IssuePicker({
   value,
   onChange,
+  label,
+  none,
   team,
   exclude = [],
   children,
   ...rest
-}: Trigger & { value: string | null; onChange: (id: string | null) => void; team: string; exclude?: string[]; children: ReactNode }) {
+}: Trigger & { value: string | null; onChange: (id: string | null) => void; label: string; none: string; team?: string; exclude?: string[]; children: ReactNode }) {
   const { options, load } = useIssueOptions(team, exclude);
   return (
     <Picker
-      label="Set parent"
-      options={[{ value: "", label: "No parent", icon: <CloseIcon className="muted" /> }, ...options]}
+      label={label}
+      options={[{ value: "", label: none, icon: <CloseIcon className="muted" /> }, ...options]}
       selected={[value ?? ""]}
       onPick={(v) => (v || null) !== value && onChange(v || null)}
       onOpen={load}
@@ -380,25 +383,31 @@ export function ParentPicker({
   );
 }
 
-export function BlockedByPicker({
+type IssuePickerProps = Omit<Parameters<typeof IssuePicker>[0], "label" | "none">;
+
+export const ParentPicker = (props: IssuePickerProps & { team: string }) => <IssuePicker label="Set parent" none="No parent" {...props} />;
+
+export const DuplicatePicker = (props: IssuePickerProps) => <IssuePicker label="Duplicate of" none="Not a duplicate" {...props} />;
+
+/** Several issues of the workspace, any team: blockers or related issues. */
+function IssuesPicker({
   value,
   onChange,
+  label,
   exclude = [],
   children,
   ...rest
-}: Trigger & { value: string[]; onChange: (ids: string[]) => void; exclude?: string[]; children: ReactNode }) {
+}: Trigger & { value: string[]; onChange: (ids: string[]) => void; label: string; exclude?: string[]; children: ReactNode }) {
   const { options, load } = useIssueOptions(undefined, exclude);
   return (
-    <Picker
-      label="Blocked by"
-      multi
-      options={options}
-      selected={value}
-      onPick={(v) => onChange(toggle(value, v))}
-      onOpen={load}
-      {...rest}
-    >
+    <Picker label={label} multi options={options} selected={value} onPick={(v) => onChange(toggle(value, v))} onOpen={load} {...rest}>
       {children}
     </Picker>
   );
 }
+
+type IssuesPickerProps = Omit<Parameters<typeof IssuesPicker>[0], "label">;
+
+export const BlockedByPicker = (props: IssuesPickerProps) => <IssuesPicker label="Blocked by" {...props} />;
+
+export const RelatedPicker = (props: IssuesPickerProps) => <IssuesPicker label="Related" {...props} />;

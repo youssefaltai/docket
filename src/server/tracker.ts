@@ -321,6 +321,8 @@ type IssueRow = Record<string, unknown> & {
   labels: string; // JSON array
   parent: string | null; // identifier
   blocked_by: string; // JSON array of identifiers
+  related_to: string; // JSON array of identifiers
+  duplicate_of: string | null; // identifier
   created_at: string;
   updated_at: string;
   completed_at: string | null;
@@ -336,7 +338,14 @@ const ISSUE_SELECT = `
     (SELECT json_group_array(ref) FROM (
       SELECT ${ident("bt", "b")} AS ref FROM issue_blocks x JOIN issues b ON b.id = x.blocker_id JOIN teams bt ON bt.id = b.team_id
       WHERE x.blocked_id = i.id AND b.deleted_at IS NULL ORDER BY bt.key, b.number
-    )) AS blocked_by
+    )) AS blocked_by,
+    (SELECT json_group_array(ref) FROM (
+      SELECT ${ident("rt", "r")} AS ref FROM issue_relations x
+      JOIN issues r ON r.id = CASE WHEN x.from_id = i.id THEN x.to_id ELSE x.from_id END JOIN teams rt ON rt.id = r.team_id
+      WHERE x.kind = 'related' AND (x.from_id = i.id OR x.to_id = i.id) AND r.deleted_at IS NULL ORDER BY rt.key, r.number
+    )) AS related_to,
+    (SELECT ${ident("dt", "d")} FROM issue_relations x JOIN issues d ON d.id = x.to_id JOIN teams dt ON dt.id = d.team_id
+      WHERE x.kind = 'duplicate' AND x.from_id = i.id AND d.deleted_at IS NULL) AS duplicate_of
   FROM issues i
   JOIN teams t ON t.id = i.team_id
   ${userJoin("uc", "i.creator_id", "t.workspace")}
@@ -364,6 +373,8 @@ const toSummary = (row: IssueRow): IssueSummary => ({
   delegate: ref(row, "delegate"),
   parent: row.parent,
   blockedBy: JSON.parse(row.blocked_by),
+  relatedTo: JSON.parse(row.related_to),
+  duplicateOf: row.duplicate_of,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
   completedAt: row.completed_at,
@@ -427,6 +438,63 @@ function blockerIds(a: Actor, identifiers: unknown, self?: number): number[] {
 function setBlockers(id: number, blockers: number[]) {
   db.query("DELETE FROM issue_blocks WHERE blocked_id = ? AND blocker_id IN (SELECT id FROM issues WHERE deleted_at IS NULL)").run(id);
   for (const blocker of blockers) db.query("INSERT OR IGNORE INTO issue_blocks (blocker_id, blocked_id) VALUES (?, ?)").run(blocker, id);
+}
+
+/** Issues to relate to: live, in the request's workspace, never the issue itself. */
+function relatedIds(a: Actor, identifiers: unknown, self?: number): number[] {
+  if (!Array.isArray(identifiers)) throw new AppError("relatedTo must be an array of issue identifiers");
+  const ids = [...new Set(identifiers.map((i) => relatedId(a, i, "relatedTo")))];
+  if (self !== undefined && ids.includes(self)) throw new AppError("An issue can't be related to itself");
+  return ids;
+}
+
+const duplicateOfId = (id: number) =>
+  db.query<{ to_id: number }, [number]>("SELECT to_id FROM issue_relations WHERE kind = 'duplicate' AND from_id = ?").get(id)?.to_id ?? null;
+
+/** The issue a duplicate points to (null clears it): never itself, directly or through a chain of duplicates. */
+function duplicateId(a: Actor, identifier: unknown, self?: number): number | null {
+  if (identifier === null) return null;
+  const id = relatedId(a, identifier, "duplicateOf");
+  if (id === self) throw new AppError("An issue can't be a duplicate of itself");
+  for (let d = duplicateOfId(id); self !== undefined && d !== null; d = duplicateOfId(d)) {
+    if (d === self) throw new AppError(`${String(identifier).trim().toUpperCase()} is already a duplicate of this issue (directly or indirectly); that would be a cycle`);
+  }
+  return id;
+}
+
+/** An issue's live related issues, either direction. */
+const relatedOf = (id: number) =>
+  db
+    .query<{ id: number }, [number]>(
+      `SELECT r.id FROM issue_relations x JOIN issues r ON r.id = CASE WHEN x.from_id = ?1 THEN x.to_id ELSE x.from_id END
+       WHERE x.kind = 'related' AND (x.from_id = ?1 OR x.to_id = ?1) AND r.deleted_at IS NULL`,
+    )
+    .all(id)
+    .map((r) => r.id);
+
+/**
+ * Replaces an issue's related issues, on both sides: a pair is one row, (lower id, higher id). Links to trashed
+ * issues are hidden, not edited, as with blockers. Returns the issues that gained or lost the relation.
+ */
+function setRelated(id: number, related: number[], time: string): number[] {
+  const was = relatedOf(id);
+  const pair = (other: number) => [Math.min(id, other), Math.max(id, other)] as const;
+  for (const other of was) {
+    if (!related.includes(other)) db.query("DELETE FROM issue_relations WHERE from_id = ? AND to_id = ? AND kind = 'related'").run(...pair(other));
+  }
+  for (const other of related) {
+    if (!was.includes(other)) db.query("INSERT OR IGNORE INTO issue_relations (from_id, to_id, kind, created_at) VALUES (?, ?, 'related', ?)").run(...pair(other), time);
+  }
+  return [...was, ...related].filter((other) => was.includes(other) !== related.includes(other));
+}
+
+/** Points a duplicate at its canonical issue, or clears it. Returns the canonical issues before and after, if it changed. */
+function setDuplicate(id: number, canonical: number | null, time: string): number[] {
+  const was = duplicateOfId(id);
+  if (was === canonical) return [];
+  db.query("DELETE FROM issue_relations WHERE kind = 'duplicate' AND from_id = ?").run(id);
+  if (canonical !== null) db.query("INSERT INTO issue_relations (from_id, to_id, kind, created_at) VALUES (?, ?, 'duplicate', ?)").run(id, canonical, time);
+  return [was, canonical].filter((c) => c !== null);
 }
 
 /** Validates the patch fields that map directly to issue columns. */
@@ -635,9 +703,11 @@ const TRACKED: [ActivityKind, (row: IssueRow) => unknown][] = [
   ["labels", (r) => JSON.parse(r.labels)],
   ["parent", (r) => r.parent],
   ["blockedBy", (r) => JSON.parse(r.blocked_by)],
+  ["relatedTo", (r) => JSON.parse(r.related_to)],
+  ["duplicateOf", (r) => r.duplicate_of],
 ];
 
-/** What really changed between two reads of an issue; labels and blockers compare as sets. */
+/** What really changed between two reads of an issue; lists (labels, blockers, related) compare as sets. */
 function changes(before: IssueRow, after: IssueRow): Change[] {
   const key = (v: unknown) => JSON.stringify(Array.isArray(v) ? [...v].sort() : v);
   return TRACKED.map(([kind, get]) => ({ kind, from: get(before), to: get(after) })).filter((c) => key(c.from) !== key(c.to));
@@ -675,6 +745,13 @@ export function getIssue(a: Actor, identifier: string): Issue {
   const { id } = issueRef(a, identifier);
   const row = db.query<IssueRow, [number]>(`${ISSUE_SELECT} WHERE i.id = ?`).get(id)!;
   const children = db.query<IssueRow, [number]>(`${ISSUE_SELECT} WHERE i.parent_id = ? AND ${LIVE} ${ISSUE_ORDER}`).all(id).map(toSummary);
+  const duplicates = db
+    .query<{ ref: string }, [number]>(
+      `SELECT ${ident("dt", "d")} AS ref FROM issue_relations x JOIN issues d ON d.id = x.from_id JOIN teams dt ON dt.id = d.team_id
+       WHERE x.kind = 'duplicate' AND x.to_id = ? AND d.deleted_at IS NULL ORDER BY dt.key, d.number`,
+    )
+    .all(id)
+    .map((r) => r.ref);
   const blocks = db
     .query<{ ref: string }, [number]>(
       `SELECT ${ident("bt", "b")} AS ref FROM issue_blocks x JOIN issues b ON b.id = x.blocked_id JOIN teams bt ON bt.id = b.team_id
@@ -694,6 +771,7 @@ export function getIssue(a: Actor, identifier: string): Issue {
     creator: ref(row, "creator")!,
     children,
     blocks,
+    duplicates,
     comments: listComments("issue", id, row.workspace),
     activity: listActivity(id, row.workspace),
     docs,
@@ -723,6 +801,9 @@ export function createIssue(a: Actor, input: IssueInput): Issue {
     title: requireText(input.title, "title"),
   };
   const blockers = input.blockedBy === undefined ? [] : blockerIds(a, input.blockedBy);
+  const related = input.relatedTo === undefined ? [] : relatedIds(a, input.relatedTo);
+  const duplicate = input.duplicateOf === undefined ? null : duplicateId(a, input.duplicateOf);
+  if (duplicate !== null) cols.status = "canceled"; // a duplicate is closed, as in Linear
   const time = now();
   const { identifier, docs, refs } = db.transaction(() => {
     const { number } = db
@@ -742,8 +823,10 @@ export function createIssue(a: Actor, input: IssueInput): Issue {
       .query<{ id: number }, SQLQueryBindings[]>(`INSERT INTO issues (${names.join(", ")}) VALUES (${names.map(() => "?").join(", ")}) RETURNING id`)
       .get(...Object.values(row))!;
     setBlockers(id, blockers);
-    // Its parent and blockers change too (they gain a sub-issue or something they block), as on update and delete.
-    const refs = bumpIssues(new Set([cols.parent_id as number | null, ...blockers].filter((r): r is number => r !== null)), time);
+    setRelated(id, related, time);
+    setDuplicate(id, duplicate, time);
+    // Its parent, blockers, related and canonical issues change too (they gain a sub-issue, something they block, a relation).
+    const refs = bumpIssues(new Set([cols.parent_id as number | null, ...blockers, ...related, duplicate].filter((r): r is number => r !== null)), time);
     const identifier = `${team.key}-${number}`;
     // Docs in the workspace that mentioned this identifier before the issue existed now link to it.
     const mention = new RegExp(`\\b${identifier}\\b`);
@@ -774,6 +857,9 @@ export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Is
     p = db.query<{ parent_id: number | null }, [number]>("SELECT parent_id FROM issues WHERE id = ?").get(p)!.parent_id;
   }
   const blockers = patch.blockedBy === undefined ? undefined : blockerIds(a, patch.blockedBy, id);
+  const relatedTo = patch.relatedTo === undefined ? undefined : relatedIds(a, patch.relatedTo, id);
+  const duplicate = patch.duplicateOf === undefined ? undefined : duplicateId(a, patch.duplicateOf, id);
+  if (duplicate != null) cols.status = "canceled"; // marking a duplicate closes it; clearing leaves the status alone
   const time = now();
   const read = db.query<IssueRow, [number]>(`${ISSUE_SELECT} WHERE i.id = ?`);
   // IMMEDIATE holds the write lock from the read (the version check, the history's "before") to the write.
@@ -786,7 +872,7 @@ export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Is
       const closing = isClosed(cols.status as Status);
       if (closing !== isClosed(before.status)) cols.completed_at = closing ? time : null;
     }
-    // The old and new parent and any blocker added or removed change too.
+    // The old and new parent, and any blocker, related or canonical issue added or removed, change too.
     const related = new Set<number>();
     const parentBefore = before.parent_id as number | null;
     if (cols.parent_id !== undefined && cols.parent_id !== parentBefore) {
@@ -804,6 +890,8 @@ export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Is
     const assignments = [...Object.keys(cols).map((c) => `${c} = ?`), BUMPED_AT];
     db.query(`UPDATE issues SET ${assignments.join(", ")} WHERE id = ?`).run(...Object.values(cols), time, time, id);
     if (blockers) setBlockers(id, blockers);
+    if (relatedTo) for (const r of setRelated(id, relatedTo, time)) related.add(r);
+    if (duplicate !== undefined) for (const r of setDuplicate(id, duplicate, time)) related.add(r);
     const refs = bumpIssues(related, time);
     if (cols.description !== undefined) saveMentions(a, workspace, `issue:${id}`, { issueId: id }, cols.description as string, time);
     logActivity(a, id, workspace, changes(before, read.get(id)!), time);
@@ -815,16 +903,18 @@ export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Is
   return issue;
 }
 
-/** Issues that gain or lose a relation when `id` enters or leaves the trash: its parent, sub-issues and blockers. */
+/** Issues that gain or lose a relation when `id` enters or leaves the trash: its parent, sub-issues, blockers, related and duplicates. */
 function relatives(id: number): number[] {
   return db
-    .query<{ id: number }, [number, number, number, number]>(
+    .query<{ id: number }, [number]>(
       `SELECT i.id FROM issues i
-       WHERE i.parent_id = ? OR i.id = (SELECT parent_id FROM issues WHERE id = ?)
-         OR i.id IN (SELECT blocked_id FROM issue_blocks WHERE blocker_id = ?)
-         OR i.id IN (SELECT blocker_id FROM issue_blocks WHERE blocked_id = ?)`,
+       WHERE i.parent_id = ?1 OR i.id = (SELECT parent_id FROM issues WHERE id = ?1)
+         OR i.id IN (SELECT blocked_id FROM issue_blocks WHERE blocker_id = ?1)
+         OR i.id IN (SELECT blocker_id FROM issue_blocks WHERE blocked_id = ?1)
+         OR i.id IN (SELECT to_id FROM issue_relations WHERE from_id = ?1)
+         OR i.id IN (SELECT from_id FROM issue_relations WHERE to_id = ?1)`,
     )
-    .all(id, id, id, id)
+    .all(id)
     .map((r) => r.id);
 }
 
