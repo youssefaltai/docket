@@ -136,28 +136,28 @@ Editing a comment sets `editedAt`; deleting is permanent. Both bump the issue li
 
 ## MCP
 
-Streamable HTTP at `/mcp`, stateless (`WebStandardStreamableHTTPServerTransport` from `@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js`, new server+transport per request, JSON responses). Server name `docket`. Needs an API key; tools act as its owner.
+Streamable HTTP at `/mcp`, stateless (`WebStandardStreamableHTTPServerTransport` from `@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js`, new server+transport per request, JSON responses). Server name `docket`. Needs an API key; tools act as its owner. `tools/list` shows only what the key can use: a read key sees the read tools (`readOnlyHint`); agents don't see workspace or team management; only admins see `update_workspace`. A call to a hidden tool is a tool error ("not found").
 
 Tools return short markdown text (one line per issue: `BRD-3 · todo · high · Title · @assignee · →@delegate · #label`; comments as `**@author** · #id · time`) plus `structuredContent` with the JSON.
 
-| Tool | Input | Notes |
-|---|---|---|
-| list_workspaces | | yours, with your role and team counts |
-| create_workspace | key?, name | people only |
-| update_workspace | key, name | admins |
-| list_members | workspace? | `@username · name · role`, marking you; assignees are people, delegates agents |
-| list_teams | workspace? | with workspace and open-issue counts |
-| create_team | key, name, workspace?, description? | people only; workspace required when you're in more than one |
-| update_team | key, name?, description? | people only |
-| list_labels | workspace? | `label · N open`, so agents reuse existing labels |
-| list_issues | workspace?, team?, status?[], label?, assignee?, delegate?, parent?, query?, limit? (page size, default 50), after? | excludes done/canceled unless `status` given; a page ends with `after: "<cursor>"` when there's more |
-| get_issue | id | full issue with description, creator, sub-issues, blockers, docs, comments |
-| create_issue | team, title, description?, status?, priority?, labels?, assignee?, delegate?, parent?, blockedBy? | |
-| update_issue | id + any of title, description, status, priority, labels, assignee, delegate, parent, blockedBy, baseUpdatedAt | |
-| claim_issue | id | see Data |
-| comment_issue | id, body | |
-| list_documents / get_document / create_document / update_document / comment_document / delete_document | see Documents | |
-| update_comment / delete_comment | issue? or document?, comment, body | exactly one of issue/document; own comments only |
+| Tool | Input | Who sees it | Notes |
+|---|---|---|---|
+| list_workspaces | | all | yours, with your role and team counts |
+| create_workspace | key?, name | people, write key | |
+| update_workspace | key, name | admins, write key | |
+| list_members | workspace? | all | `@username · name · role`, marking you; assignees are people, delegates agents |
+| list_teams | workspace? | all | with workspace and open-issue counts |
+| create_team | key, name, workspace?, description? | people, write key | workspace required when you're in more than one |
+| update_team | key, name?, description? | people, write key | |
+| list_labels | workspace? | all | `label · N open`, so agents reuse existing labels |
+| list_issues | workspace?, team?, status?[], label?, assignee?, delegate?, parent?, query?, limit? (page size, default 50), after? | all | excludes done/canceled unless `status` given; a page ends with `after: "<cursor>"` when there's more |
+| get_issue | id | all | full issue with description, creator, sub-issues, blockers, docs, comments |
+| create_issue | team, title, description?, status?, priority?, labels?, assignee?, delegate?, parent?, blockedBy? | write key | |
+| update_issue | id + any of title, description, status, priority, labels, assignee, delegate, parent, blockedBy, baseUpdatedAt | write key | |
+| claim_issue | id | write key | see Data |
+| comment_issue | id, body | write key | |
+| list_documents / get_document / create_document / update_document / comment_document / delete_document | see Documents | all for list/get; write key for the rest | |
+| update_comment / delete_comment | issue? or document?, comment, body | write key | exactly one of issue/document; own comments only |
 
 Tool descriptions must explain the conventions (workspace → team → issue/doc, statuses, priority numbers, identifiers, assignee vs delegate) so an agent can use them without reading docs. No issue delete tool: agents cancel instead. No tool touches credentials or membership (invites, keys, agents, suspension): agents never mint access.
 
