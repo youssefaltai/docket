@@ -1,6 +1,6 @@
 // The app-wide context: current workspace/teams/labels/members and the actions views trigger on the shell.
 import { createContext, useContext } from "react";
-import type { IssueInput, Team, Workspace, WorkspaceMember } from "../shared/types";
+import type { Inbox, IssueInput, Team, Workspace, WorkspaceMember } from "../shared/types";
 
 export interface AppState {
   workspaces: Workspace[] | null;
@@ -11,6 +11,11 @@ export interface AppState {
   labels: string[];
   /** The current workspace's members (assignee and delegate pickers). */
   members: WorkspaceMember[];
+  /** Your inbox in the current workspace (the sidebar shows its unread count), null until it loads. */
+  inbox: Inbox | null;
+  /** Shows an inbox a write answered with; `reloadInbox` fetches it again. */
+  setInbox: (inbox: Inbox) => void;
+  reloadInbox: () => void;
   /** Refresh labels and members (called when a picker opens). */
   loadDirectory: () => void;
   /** Refetch teams and workspaces now, without waiting for the live update. */

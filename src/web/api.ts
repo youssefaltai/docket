@@ -8,6 +8,7 @@ import type {
   DocumentSummary,
   DocumentVersion,
   DocumentVersionSummary,
+  Inbox,
   Issue,
   IssueFilter,
   IssueInput,
@@ -154,6 +155,7 @@ export const api = {
     request<Issue>("PATCH", `/api/issues/${enc(id)}/comments/${cid}`, { body }),
   deleteComment: (id: string, cid: number) =>
     request<Issue>("DELETE", `/api/issues/${enc(id)}/comments/${cid}`),
+  subscribeIssue: (id: string, on: boolean) => request<Issue>(on ? "PUT" : "DELETE", `/api/issues/${enc(id)}/subscription`),
 
   labels: () => request<string[]>("GET", "/api/labels"),
   /** Which of your workspaces a link made before URLs carried one points into (404 if none). */
@@ -177,6 +179,13 @@ export const api = {
     request<Document>("DELETE", `/api/documents/${enc(slug)}/comments/${cid}`),
   versions: (slug: string) => request<DocumentVersionSummary[]>("GET", `/api/documents/${enc(slug)}/versions`),
   version: (slug: string, id: number) => request<DocumentVersion>("GET", `/api/documents/${enc(slug)}/versions/${id}`),
+  subscribeDocument: (slug: string, on: boolean) => request<Document>(on ? "PUT" : "DELETE", `/api/documents/${enc(slug)}/subscription`),
+
+  inbox: () => request<Inbox>("GET", "/api/notifications"),
+  /** Marks `ids`, or all of yours in this workspace, read or unread. */
+  markRead: (read: boolean, ids?: number[]) => request<Inbox>("PATCH", "/api/notifications", { ids, read }),
+  /** Deletes `ids`, or with none all your read ones. */
+  deleteNotifications: (ids?: number[]) => request<Inbox>("DELETE", `/api/notifications?${ids ? `ids=${ids.join(",")}` : "read=true"}`),
 };
 
 /**

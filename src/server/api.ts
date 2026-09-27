@@ -4,6 +4,7 @@ import * as access from "./access.ts";
 import { actorOf, isJson } from "./auth.ts";
 import { AppError } from "./db.ts";
 import { originOf } from "./http.ts";
+import * as inbox from "./inbox.ts";
 import * as tracker from "./tracker.ts";
 
 /** Wraps a handler: its return value becomes the JSON body (unless it's a Response); errors become `{ error }`. */
@@ -58,6 +59,7 @@ const issueFilter = (req: Request): IssueFilter => ({
   delegate: param(req, "delegate"),
   parent: param(req, "parent"),
   q: param(req, "q"),
+  subscribed: param(req, "subscribed") === "true" || undefined,
 });
 
 const link = (req: Request, { code, expiresAt }: { code: string; expiresAt: string }) => ({
@@ -186,8 +188,21 @@ export const apiRoutes = {
     ),
     DELETE: handle<"/api/issues/:id/comments/:cid">((req) => tracker.deleteIssueComment(actorOf(req), req.params.id, req.params.cid)),
   },
+  "/api/issues/:id/subscription": {
+    PUT: handle<"/api/issues/:id/subscription">((req) => tracker.subscribeIssue(actorOf(req), req.params.id, true)),
+    DELETE: handle<"/api/issues/:id/subscription">((req) => tracker.subscribeIssue(actorOf(req), req.params.id, false)),
+  },
   "/api/labels": {
     GET: handle((req) => tracker.listLabels(actorOf(req)).map((l) => l.label)),
+  },
+
+  // --- Inbox ---
+  "/api/notifications": {
+    GET: handle((req) => inbox.listInbox(actorOf(req), { unread: param(req, "unread") === "true" })),
+    PATCH: handle(async (req) => inbox.markRead(actorOf(req), await patch(req, "notifications", ["ids", "read"]))),
+    DELETE: handle((req) =>
+      inbox.deleteNotifications(actorOf(req), { ids: param(req, "ids")?.split(",").map(Number), read: param(req, "read") === "true" }),
+    ),
   },
 
   // --- Documents ---
@@ -228,6 +243,10 @@ export const apiRoutes = {
     DELETE: handle<"/api/documents/:slug/comments/:cid">((req) =>
       tracker.deleteDocumentComment(actorOf(req), req.params.slug, req.params.cid),
     ),
+  },
+  "/api/documents/:slug/subscription": {
+    PUT: handle<"/api/documents/:slug/subscription">((req) => tracker.subscribeDocument(actorOf(req), req.params.slug, true)),
+    DELETE: handle<"/api/documents/:slug/subscription">((req) => tracker.subscribeDocument(actorOf(req), req.params.slug, false)),
   },
   "/api/documents/:slug/versions": {
     GET: handle<"/api/documents/:slug/versions">((req) => tracker.listDocumentVersions(actorOf(req), req.params.slug)),

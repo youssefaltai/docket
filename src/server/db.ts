@@ -1,9 +1,10 @@
 // The SQLite connection, the schema, change events and the validation helpers the data modules share.
 import { Database } from "bun:sqlite";
+import { marked, type Token } from "marked";
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { xdgDataHome } from "./paths.ts";
-import type { ServerEvent } from "../shared/types.ts";
+import { MENTION_PATTERN, mentionOf, type ServerEvent } from "../shared/types.ts";
 
 /** An error with an HTTP status; REST returns it as `{ error }`, MCP as a tool error. */
 export class AppError extends Error {
@@ -23,8 +24,8 @@ export const db = new Database(path, { create: true });
 db.run("PRAGMA journal_mode = WAL");
 db.run("PRAGMA busy_timeout = 5000");
 
-// Append-only: each entry upgrades the schema by one PRAGMA user_version.
-const MIGRATIONS = [
+// Append-only: each entry upgrades the schema by one PRAGMA user_version: SQL, or a function for what SQL can't do.
+const MIGRATIONS: (string | (() => void))[] = [
   `
   -- People and agents; the username is the identity. Email is unverified contact info (there's no mail),
   -- so it's never used to find an account. Agents sign in only with API keys.
@@ -323,13 +324,60 @@ const MIGRATIONS = [
   );
   CREATE INDEX mentions_user ON mentions(user_id);
   `,
+  // The inbox: who follows which issue or doc, and what they're told. Existing work is subscribed the way new
+  // work will be. Texts written before migration 8 get their mentions now, so their next save doesn't announce
+  // old mentions as new; whoever they mention is subscribed too. Nothing is notified.
+  () => {
+    db.run(`
+    CREATE TABLE subscriptions (
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      issue_id INTEGER REFERENCES issues(id) ON DELETE CASCADE,
+      document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE,
+      created_at TEXT NOT NULL,
+      CHECK ((issue_id IS NULL) != (document_id IS NULL))
+    );
+    CREATE UNIQUE INDEX subscriptions_issue ON subscriptions(issue_id, user_id) WHERE issue_id IS NOT NULL;
+    CREATE UNIQUE INDEX subscriptions_document ON subscriptions(document_id, user_id) WHERE document_id IS NOT NULL;
+    CREATE INDEX subscriptions_user ON subscriptions(user_id);
+    CREATE TABLE notifications (
+      id INTEGER PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id), -- the recipient
+      workspace TEXT NOT NULL REFERENCES workspaces(key) ON DELETE CASCADE,
+      kind TEXT NOT NULL, -- assigned | delegated | mentioned | commented | status
+      actor_id INTEGER NOT NULL REFERENCES users(id),
+      issue_id INTEGER REFERENCES issues(id) ON DELETE CASCADE,
+      document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE,
+      comment_id INTEGER, -- in comments (issue) or document_comments (doc); no FK: two tables
+      status TEXT, -- kind status: the new status
+      created_at TEXT NOT NULL,
+      read_at TEXT
+    );
+    CREATE INDEX notifications_user ON notifications(user_id, workspace, id);
+    INSERT OR IGNORE INTO subscriptions (user_id, issue_id, created_at) SELECT creator_id, id, created_at FROM issues;
+    INSERT OR IGNORE INTO subscriptions (user_id, issue_id, created_at) SELECT assignee_id, id, updated_at FROM issues WHERE assignee_id IS NOT NULL;
+    INSERT OR IGNORE INTO subscriptions (user_id, issue_id, created_at) SELECT delegate_id, id, updated_at FROM issues WHERE delegate_id IS NOT NULL;
+    INSERT OR IGNORE INTO subscriptions (user_id, issue_id, created_at) SELECT author_id, issue_id, MIN(created_at) FROM comments GROUP BY author_id, issue_id;
+    -- A doc's creator is the author of its first version.
+    INSERT OR IGNORE INTO subscriptions (user_id, document_id, created_at) SELECT v.author_id, v.document_id, v.created_at FROM document_versions v
+      WHERE v.id = (SELECT MIN(id) FROM document_versions WHERE document_id = v.document_id);
+    INSERT OR IGNORE INTO subscriptions (user_id, document_id, created_at) SELECT author_id, document_id, MIN(created_at) FROM document_comments GROUP BY author_id, document_id;
+    `);
+    backfillMentions();
+    db.run(`
+    INSERT OR IGNORE INTO subscriptions (user_id, issue_id, created_at)
+      SELECT user_id, issue_id, MIN(created_at) FROM mentions WHERE issue_id IS NOT NULL GROUP BY user_id, issue_id;
+    INSERT OR IGNORE INTO subscriptions (user_id, document_id, created_at)
+      SELECT user_id, document_id, MIN(created_at) FROM mentions WHERE document_id IS NOT NULL GROUP BY user_id, document_id;
+    `);
+  },
 ];
 
 db.run("PRAGMA foreign_keys = OFF"); // a migration may rebuild a table (SQLite's 12-step ALTER); checked before each commit
 const { user_version } = db.query("PRAGMA user_version").get() as { user_version: number };
-MIGRATIONS.slice(user_version).forEach((sql, i) =>
+MIGRATIONS.slice(user_version).forEach((step, i) =>
   db.transaction(() => {
-    db.run(sql);
+    if (typeof step === "string") db.run(step);
+    else step();
     const broken = db.query("PRAGMA foreign_key_check").all();
     if (broken.length) throw new Error(`Migration ${user_version + i + 1} broke foreign keys: ${JSON.stringify(broken.slice(0, 5))}`);
     db.run(`PRAGMA user_version = ${user_version + i + 1}`);
@@ -339,15 +387,18 @@ db.run("PRAGMA foreign_keys = ON");
 
 // --- Change events ---
 
-let listener: (event: ServerEvent) => void = () => {};
+let listener: (event: ServerEvent, userId?: number) => void = () => {};
 
-/** Called after every committed mutation (the server sends it over /ws to the workspace's members). */
-export function onChange(fn: (event: ServerEvent) => void) {
+/**
+ * Called after every committed mutation: the server sends it over /ws to the workspace's members, or with
+ * `userId` (an inbox, a subscription) only to that user's sockets in the workspace.
+ */
+export function onChange(fn: typeof listener) {
   listener = fn;
 }
 
-export function changed(entity: ServerEvent["entity"], workspace: string, id: string) {
-  listener({ type: "changed", entity, workspace, id });
+export function changed(entity: ServerEvent["entity"], workspace: string, id: string, userId?: number) {
+  listener({ type: "changed", entity, workspace, id }, userId);
 }
 
 // --- Validation ---
@@ -425,5 +476,70 @@ export function pickSlug(
   for (let n = 1; ; n++) {
     const slug = base ? (n === 1 ? base : `${base}-${n}`) : `${fallback}-${n}`;
     if (!taken(slug)) return slug;
+  }
+}
+
+// --- Mentions: tracker.ts records them on every save of a text; migration 9 backfilled older texts the same way ---
+
+/** The @username candidates in markdown, as the renderer sees them: in prose, never in code or link text. */
+function mentionCandidates(text: string): string[] {
+  if (!text.includes("@")) return [];
+  const found: string[] = [];
+  const pattern = new RegExp(MENTION_PATTERN, "giu");
+  const inLinks = new Set<Token>(); // walkTokens visits a parent before its children
+  marked.walkTokens(marked.lexer(text), (t) => {
+    const children = "tokens" in t ? (t.tokens as Token[] | undefined) : undefined;
+    if (t.type === "link" || inLinks.has(t)) for (const child of children ?? []) inLinks.add(child);
+    else if (t.type === "text" && !children) for (const m of t.raw.matchAll(pattern)) found.push(m[1]!);
+  });
+  return found;
+}
+
+/**
+ * Who a text mentions: the ids of active members of `workspace` it names as @username (see MENTION_PATTERN).
+ * `typing`: a doc autosaves mid-word, so a mention at the very end of the text doesn't count yet.
+ */
+export function mentionedIn(workspace: string, text: string, typing = false): Set<number> {
+  const candidates = mentionCandidates(typing ? text.replace(/@[a-z0-9._-]*$/i, "") : text);
+  if (!candidates.length) return new Set();
+  const members = new Map(
+    db
+      .query<{ username: string; user_id: number }, [string]>("SELECT username, user_id FROM workspace_members WHERE workspace = ? AND suspended_at IS NULL")
+      .all(workspace)
+      .map((m) => [m.username, m.user_id]),
+  );
+  return new Set(candidates.map((c) => members.get(mentionOf(c, (u) => members.has(u)) ?? "")).filter((id) => id !== undefined));
+}
+
+/**
+ * Records every text's mentions as its last save would have (migration 9): by its last author (a description's
+ * last editor, else the issue's creator; a doc's last version's author), at that save's time, never the author
+ * themselves. Mentions already recorded stay as they are.
+ */
+function backfillMentions() {
+  type Text = { source: string; issue_id: number | null; document_id: number | null; workspace: string; text: string; author_id: number; time: string; typing: number };
+  const texts = db
+    .query<Text, []>(
+      `SELECT 'issue:' || i.id AS source, i.id AS issue_id, NULL AS document_id, t.workspace, i.description AS text,
+         COALESCE((SELECT actor_id FROM issue_activity x WHERE x.issue_id = i.id AND x.kind = 'description' ORDER BY x.id DESC LIMIT 1), i.creator_id) AS author_id,
+         i.updated_at AS time, 0 AS typing
+       FROM issues i JOIN teams t ON t.id = i.team_id
+       UNION ALL
+       SELECT 'comment:' || c.id, c.issue_id, NULL, t.workspace, c.body, c.author_id, COALESCE(c.edited_at, c.created_at), 0
+       FROM comments c JOIN issues i ON i.id = c.issue_id JOIN teams t ON t.id = i.team_id
+       UNION ALL
+       SELECT 'document:' || d.id, NULL, d.id, d.workspace, d.content,
+         COALESCE((SELECT author_id FROM document_versions v WHERE v.document_id = d.id ORDER BY v.id DESC LIMIT 1), d.updated_by_id), d.updated_at, 1
+       FROM documents d
+       UNION ALL
+       SELECT 'document_comment:' || c.id, NULL, c.document_id, d.workspace, c.body, c.author_id, COALESCE(c.edited_at, c.created_at), 0
+       FROM document_comments c JOIN documents d ON d.id = c.document_id`,
+    )
+    .all();
+  const insert = db.query("INSERT OR IGNORE INTO mentions (source, user_id, issue_id, document_id, author_id, created_at) VALUES (?, ?, ?, ?, ?, ?)");
+  for (const t of texts) {
+    for (const id of mentionedIn(t.workspace, t.text, t.typing === 1)) {
+      if (id !== t.author_id) insert.run(t.source, id, t.issue_id, t.document_id, t.author_id, t.time);
+    }
   }
 }

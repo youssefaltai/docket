@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startServer, type TestServer } from "./server.ts";
+import { startServer, type Caller, type TestServer } from "./server.ts";
 
 // Migrations 1–3 exactly as they shipped (src/server/db.ts). Frozen: never edit this fixture.
 const SCHEMA_V3 = [
@@ -788,8 +788,8 @@ describe("migration 7", () => {
   });
 });
 
-// Migration 8 (mentions) on a database written under schema 7: nothing changes, the table starts empty (texts
-// written before count from their next save), and an edit afterwards records its mentions.
+// Migration 8 (mentions) on a database written under schema 7: nothing changes, and the table starts empty; migration 9,
+// which runs next, backfills the mentions of texts written before. An edit afterwards records its new mentions.
 describe("migration 8", () => {
   // Migrations 1–7 exactly as they shipped (src/server/db.ts): 1–3 above, then 4, 5, 6 and 7. Frozen: never edit this fixture.
   const SCHEMA_V7 = [
@@ -958,9 +958,13 @@ describe("migration 8", () => {
   });
   afterAll(() => server.stop());
 
-  test("the data is untouched and mentions start empty", () => {
+  test("the data is untouched, and mentions are those migration 9 backfills", () => {
     expect(UNCHANGED.map((sql) => rows(v7, sql))).toEqual(before);
-    expect(rows(v7, "SELECT * FROM mentions")).toEqual([]);
+    expect(rows(v7, "SELECT source, user_id FROM mentions ORDER BY source")).toEqual([
+      { source: "comment:301", user_id: 3 },
+      { source: "document_comment:401", user_id: 1 },
+      { source: "issue:101", user_id: 3 },
+    ]);
     expect(rows(v7, "PRAGMA foreign_key_check")).toEqual([]);
     expect((rows(v7, "PRAGMA user_version")[0] as { user_version: number }).user_version).toBeGreaterThanOrEqual(8);
   });
@@ -973,9 +977,258 @@ describe("migration 8", () => {
     const doc = (await sam.api("GET", "/api/documents/plan")).body;
     expect([doc.content, doc.comments.map((c: any) => [c.author.username, c.body])]).toEqual(["Owner: @bot.", [["bot", "@sam ok"]]]);
     expect((await sam.api("PATCH", "/api/issues/ACM-1/comments/301", { body: "hi @ana and @bot" })).status).toBe(200);
-    expect(rows(v7, "SELECT source, user_id, issue_id, document_id, author_id FROM mentions ORDER BY user_id")).toEqual([
+    expect(rows(v7, "SELECT source, user_id, issue_id, document_id, author_id FROM mentions WHERE source = 'comment:301' ORDER BY user_id")).toEqual([
       { source: "comment:301", user_id: 2, issue_id: 101, document_id: null, author_id: 1 },
       { source: "comment:301", user_id: 3, issue_id: 101, document_id: null, author_id: 1 },
+    ]);
+  });
+});
+
+// Migration 9 (the inbox) on a database written under schema 8: nothing changes, existing work is subscribed the
+// way new work will be, and texts written before migration 8 get their mentions, so saving them again announces
+// nothing old (only new mentions notify).
+describe("migration 9", () => {
+  // Migrations 1–8 exactly as they shipped (src/server/db.ts): 1–3 above, then 4, 5, 6, 7 and 8. Frozen: never edit this fixture.
+  const SCHEMA_V8 = [
+    ...SCHEMA_V3,
+    `
+  ALTER TABLE api_keys ADD COLUMN workspace TEXT REFERENCES workspaces(key) ON DELETE CASCADE;
+  DELETE FROM api_keys WHERE session_id IS NOT NULL; -- chat keys: short-lived, minted again per workspace
+  UPDATE api_keys SET workspace = (SELECT m.workspace FROM workspace_members m
+    WHERE m.user_id = api_keys.user_id AND m.suspended_at IS NULL ORDER BY m.created_at, m.workspace LIMIT 1);
+  DELETE FROM api_keys WHERE workspace IS NULL; -- the owner has no active workspace left
+  CREATE INDEX api_keys_workspace ON api_keys(user_id, workspace);
+  `,
+    `
+  CREATE TABLE members_new (
+    workspace TEXT NOT NULL REFERENCES workspaces(key) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    username TEXT NOT NULL,
+    name TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('admin', 'member', 'guest', 'agent')),
+    created_at TEXT NOT NULL,
+    suspended_at TEXT,
+    PRIMARY KEY (workspace, user_id),
+    UNIQUE (workspace, username)
+  );
+  INSERT INTO members_new SELECT m.workspace, m.user_id, u.username, u.name, m.role, m.created_at, m.suspended_at
+    FROM workspace_members m JOIN users u ON u.id = m.user_id;
+  DROP TABLE workspace_members;
+  ALTER TABLE members_new RENAME TO workspace_members;
+  CREATE INDEX workspace_members_user ON workspace_members(user_id);
+  CREATE TABLE users_new (
+    id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('person', 'agent')),
+    email TEXT,
+    created_at TEXT NOT NULL
+  );
+  INSERT INTO users_new SELECT id, kind, email, created_at FROM users;
+  DROP TABLE users;
+  ALTER TABLE users_new RENAME TO users;
+  CREATE UNIQUE INDEX users_email ON users(lower(email)) WHERE email IS NOT NULL;
+  `,
+    `
+  CREATE TABLE teams_new (
+    id INTEGER PRIMARY KEY,
+    workspace TEXT NOT NULL REFERENCES workspaces(key),
+    key TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    next_number INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (workspace, key)
+  );
+  INSERT INTO teams_new (workspace, key, name, description, next_number, created_at, updated_at)
+    SELECT workspace, key, name, description, next_number, created_at, updated_at FROM teams ORDER BY created_at, key;
+  CREATE TABLE issues_new (
+    id INTEGER PRIMARY KEY,
+    team_id INTEGER NOT NULL REFERENCES teams(id),
+    number INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL,
+    priority INTEGER NOT NULL DEFAULT 0,
+    labels TEXT NOT NULL DEFAULT '[]',
+    assignee_id INTEGER REFERENCES users(id),
+    delegate_id INTEGER REFERENCES users(id),
+    creator_id INTEGER NOT NULL REFERENCES users(id),
+    parent_id INTEGER REFERENCES issues(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT,
+    deleted_at TEXT,
+    UNIQUE (team_id, number)
+  );
+  INSERT INTO issues_new SELECT i.id, t.id, i.number, i.title, i.description, i.status, i.priority, i.labels, i.assignee_id,
+    i.delegate_id, i.creator_id, i.parent_id, i.created_at, i.updated_at, i.completed_at, i.deleted_at
+    FROM issues i LEFT JOIN teams_new t ON t.key = i.team_key;
+  CREATE TABLE documents_new (
+    id INTEGER PRIMARY KEY,
+    workspace TEXT NOT NULL REFERENCES workspaces(key),
+    team_id INTEGER NOT NULL REFERENCES teams(id),
+    slug TEXT NOT NULL,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    position REAL NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    updated_by_id INTEGER NOT NULL REFERENCES users(id),
+    deleted_at TEXT,
+    UNIQUE (workspace, slug)
+  );
+  INSERT INTO documents_new SELECT d.id, t.workspace, t.id, d.slug, d.title, d.content, d.position, d.created_at,
+    d.updated_at, d.updated_by_id, d.deleted_at FROM documents d LEFT JOIN teams_new t ON t.key = d.team_key;
+  DROP TABLE documents;
+  DROP TABLE issues;
+  DROP TABLE teams;
+  ALTER TABLE teams_new RENAME TO teams;
+  ALTER TABLE issues_new RENAME TO issues;
+  ALTER TABLE documents_new RENAME TO documents;
+  CREATE INDEX issues_parent ON issues(parent_id);
+  CREATE INDEX issues_deleted ON issues(deleted_at) WHERE deleted_at IS NOT NULL;
+  CREATE INDEX documents_team ON documents(team_id, position);
+  CREATE INDEX documents_deleted ON documents(deleted_at) WHERE deleted_at IS NOT NULL;
+  `,
+    `
+  CREATE TABLE issue_activity (
+    id INTEGER PRIMARY KEY,
+    issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+    actor_id INTEGER NOT NULL REFERENCES users(id),
+    on_behalf_of_id INTEGER REFERENCES users(id),
+    kind TEXT NOT NULL,
+    from_value TEXT,
+    to_value TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX issue_activity_issue ON issue_activity(issue_id, id);
+  INSERT INTO issue_activity (issue_id, actor_id, kind, created_at) SELECT id, creator_id, 'created', created_at FROM issues ORDER BY id;
+  `,
+    `
+  CREATE TABLE mentions (
+    source TEXT NOT NULL, -- 'issue:<id>' (description), 'comment:<id>', 'document:<id>' (content), 'document_comment:<id>'
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    issue_id INTEGER REFERENCES issues(id) ON DELETE CASCADE,       -- the issue it's in or on
+    document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE, -- the doc it's in or on
+    author_id INTEGER NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (source, user_id)
+  );
+  CREATE INDEX mentions_user ON mentions(user_id);
+  `,
+  ];
+  const t = (minutes: number) => new Date(Date.UTC(2026, 0, 1, 0, minutes)).toISOString();
+  const rows = (file: string, sql: string) => {
+    const db = new Database(file, { readonly: true });
+    try {
+      return db.query(sql).all();
+    } finally {
+      db.close();
+    }
+  };
+  const ANA_KEY = `dk_${"f".repeat(64)}`;
+
+  let v8: string;
+  let before: unknown[][];
+  let server: TestServer;
+  // Everything migration 9 leaves alone (it adds subscriptions and notifications, and backfills mentions).
+  const UNCHANGED = [
+    "SELECT * FROM users ORDER BY id",
+    "SELECT * FROM workspace_members ORDER BY workspace, user_id",
+    "SELECT * FROM teams ORDER BY id",
+    "SELECT * FROM issues ORDER BY id",
+    "SELECT * FROM comments ORDER BY id",
+    "SELECT * FROM documents ORDER BY id",
+    "SELECT * FROM document_versions ORDER BY id",
+    "SELECT * FROM document_comments ORDER BY id",
+    "SELECT * FROM issue_activity ORDER BY id",
+  ];
+  beforeAll(async () => {
+    v8 = join(dir, "v8.db");
+    const db = new Database(v8, { create: true });
+    for (const sql of SCHEMA_V8) db.run(sql);
+    db.run("PRAGMA user_version = 8");
+    // sam (admin), bot (agent), ana, kim (suspended) in acme; zed only in side.
+    db.run(`INSERT INTO users (id, kind, email, created_at) VALUES (1, 'person', NULL, '${t(0)}'), (2, 'agent', NULL, '${t(0)}'),
+      (3, 'person', NULL, '${t(0)}'), (4, 'person', NULL, '${t(0)}'), (5, 'person', NULL, '${t(0)}')`);
+    db.run(`INSERT INTO workspaces (key, name, created_at, updated_at) VALUES ('acme', 'Acme', '${t(0)}', '${t(0)}'), ('side', 'Side', '${t(0)}', '${t(0)}')`);
+    db.run(`INSERT INTO workspace_members (workspace, user_id, username, name, role, created_at, suspended_at) VALUES
+      ('acme', 1, 'sam', 'Sam', 'admin', '${t(0)}', NULL), ('acme', 2, 'bot', 'Bot', 'agent', '${t(0)}', NULL),
+      ('acme', 3, 'ana', 'Ana', 'member', '${t(0)}', NULL), ('acme', 4, 'kim', 'Kim', 'member', '${t(0)}', '${t(1)}'),
+      ('side', 5, 'zed', 'Zed', 'admin', '${t(0)}', NULL)`);
+    db.run(`INSERT INTO api_keys (id, user_id, name, scope, token_hash, created_at, workspace) VALUES
+      (11, 1, 'sam', 'write', '${hash(ADMIN_KEY)}', '${t(0)}', 'acme'), (12, 2, 'bot', 'write', '${hash(AGENT_KEY)}', '${t(0)}', 'acme'),
+      (13, 3, 'ana', 'write', '${hash(ANA_KEY)}', '${t(0)}', 'acme')`);
+    db.run(`INSERT INTO teams (id, workspace, key, name, created_at, updated_at, next_number) VALUES
+      (5, 'acme', 'ACM', 'Acme', '${t(0)}', '${t(0)}', 3), (6, 'side', 'SID', 'Side', '${t(0)}', '${t(0)}', 2)`);
+    // ACM-1: sam's, assigned to ana, delegated to bot. ACM-2: ana's, its description last edited by sam. SID-1: zed's.
+    db.run(`INSERT INTO issues (id, team_id, number, title, description, status, assignee_id, delegate_id, creator_id, created_at, updated_at) VALUES
+      (101, 5, 1, 'Old one', 'For @ana and @kim', 'todo', 3, 2, 1, '${t(2)}', '${t(3)}'),
+      (102, 5, 2, 'Edited', 'cc @bot', 'todo', NULL, NULL, 3, '${t(2)}', '${t(8)}'),
+      (501, 6, 1, 'Elsewhere', 'ping @ana and @zed', 'todo', NULL, NULL, 5, '${t(2)}', '${t(2)}')`);
+    db.run(`INSERT INTO issue_activity (issue_id, actor_id, kind, created_at) VALUES
+      (101, 1, 'created', '${t(2)}'), (102, 3, 'created', '${t(2)}'), (102, 1, 'description', '${t(8)}'), (501, 5, 'created', '${t(2)}')`);
+    db.run(`INSERT INTO comments (id, issue_id, author_id, body, created_at, edited_at) VALUES
+      (301, 101, 2, 'hi @ana, see @sam', '${t(4)}', NULL), (302, 101, 1, 'cc @bot', '${t(9)}', NULL)`);
+    // Written after migration 8: its mention is on record already.
+    db.run(`INSERT INTO mentions (source, user_id, issue_id, document_id, author_id, created_at) VALUES ('comment:302', 2, 101, NULL, 1, '${t(9)}')`);
+    // A doc sam created and ana edited last; its content ends in a mention still being typed.
+    db.run(`INSERT INTO documents (id, workspace, team_id, slug, title, content, position, created_at, updated_at, updated_by_id) VALUES
+      (201, 'acme', 5, 'plan', 'Plan', 'Owner: @sam. Draft by @ana', 1, '${t(5)}', '${t(7)}', 3)`);
+    db.run(`INSERT INTO document_versions (id, document_id, title, content, author_id, created_at) VALUES
+      (1, 201, 'Plan', 'Owner: @sam.', 1, '${t(5)}'), (2, 201, 'Plan', 'Owner: @sam. Draft by @ana', 3, '${t(7)}')`);
+    db.run(`INSERT INTO document_comments (id, document_id, author_id, body, created_at) VALUES (401, 201, 2, '@ana ok', '${t(6)}')`);
+    db.close();
+    before = UNCHANGED.map((sql) => rows(v8, sql));
+    server = await startServer({ setup: false, env: { DATABASE_PATH: v8 } });
+  });
+  afterAll(() => server.stop());
+
+  test("the data is untouched and the inbox starts empty", () => {
+    expect(UNCHANGED.map((sql) => rows(v8, sql))).toEqual(before);
+    expect(rows(v8, "SELECT * FROM notifications")).toEqual([]);
+    expect(rows(v8, "PRAGMA foreign_key_check")).toEqual([]);
+    expect((rows(v8, "PRAGMA user_version")[0] as { user_version: number }).user_version).toBeGreaterThanOrEqual(9);
+  });
+
+  test("older texts get their mentions, by their last author at its time", () => {
+    expect(rows(v8, "SELECT source, user_id, issue_id, document_id, author_id, created_at FROM mentions ORDER BY source, user_id")).toEqual([
+      { source: "comment:301", user_id: 1, issue_id: 101, document_id: null, author_id: 2, created_at: t(4) },
+      { source: "comment:301", user_id: 3, issue_id: 101, document_id: null, author_id: 2, created_at: t(4) },
+      { source: "comment:302", user_id: 2, issue_id: 101, document_id: null, author_id: 1, created_at: t(9) },
+      { source: "document:201", user_id: 1, issue_id: null, document_id: 201, author_id: 3, created_at: t(7) },
+      { source: "document_comment:401", user_id: 3, issue_id: null, document_id: 201, author_id: 2, created_at: t(6) },
+      { source: "issue:101", user_id: 3, issue_id: 101, document_id: null, author_id: 1, created_at: t(3) },
+      { source: "issue:102", user_id: 2, issue_id: 102, document_id: null, author_id: 1, created_at: t(8) },
+    ]);
+  });
+
+  test("creators, assignees, delegates, commenters and the mentioned are subscribed", () => {
+    expect(rows(v8, "SELECT user_id, issue_id, document_id FROM subscriptions ORDER BY issue_id, document_id, user_id")).toEqual([
+      { user_id: 1, issue_id: null, document_id: 201 },
+      { user_id: 2, issue_id: null, document_id: 201 },
+      { user_id: 3, issue_id: null, document_id: 201 },
+      { user_id: 1, issue_id: 101, document_id: null },
+      { user_id: 2, issue_id: 101, document_id: null },
+      { user_id: 3, issue_id: 101, document_id: null },
+      { user_id: 2, issue_id: 102, document_id: null },
+      { user_id: 3, issue_id: 102, document_id: null },
+      { user_id: 5, issue_id: 501, document_id: null },
+    ]);
+  });
+
+  test("saving an older text again announces nothing; a new mention does", async () => {
+    const [sam, bot, ana] = [ADMIN_KEY, AGENT_KEY, ANA_KEY].map((token) => server.with({ token })) as [Caller, Caller, Caller];
+    expect((await sam.api("GET", "/api/issues/ACM-1")).body.subscribed).toBe(true);
+    expect((await ana.api("GET", "/api/issues?subscribed=true")).body.map((i: any) => i.id)).toEqual(["ACM-2", "ACM-1"]);
+    expect((await bot.api("PATCH", "/api/issues/ACM-1/comments/301", { body: "hi @ana, see @sam!" })).status).toBe(200);
+    expect((await sam.api("PATCH", "/api/issues/ACM-1", { description: "For @ana and @kim, updated" })).status).toBe(200);
+    expect((await ana.api("PATCH", "/api/documents/plan", { edits: [{ oldText: "Owner", newText: "Lead" }] })).status).toBe(200);
+    expect((await bot.api("PATCH", "/api/documents/plan/comments/401", { body: "@ana ok!" })).status).toBe(200);
+    expect(rows(v8, "SELECT * FROM notifications")).toEqual([]);
+    expect((await sam.api("PATCH", "/api/issues/ACM-2", { description: "cc @bot and @ana" })).status).toBe(200);
+    expect((await ana.api("GET", "/api/notifications")).body.notifications.map((n: any) => [n.kind, n.actor.username, n.issue.id])).toEqual([
+      ["mentioned", "sam", "ACM-2"],
     ]);
   });
 });

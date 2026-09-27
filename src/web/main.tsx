@@ -1,11 +1,12 @@
 // App shell: boot, sidebar, routing, live updates, global shortcuts.
 import { Fragment, StrictMode, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
-import type { IssueInput, Team, Workspace, WorkspaceMember } from "../shared/types";
+import type { Inbox, IssueInput, Team, Workspace, WorkspaceMember } from "../shared/types";
 import { api, connectionStore, setCurrentWorkspace, setOnAccessLost, setOnUnauthorized, store, subscribe } from "./api";
 import { auth, getMe, getYou, loadMe } from "./auth";
 import { ChatDock, ChatNavItem } from "./chat";
 import { DocPage, DocsView } from "./docs";
+import { InboxView } from "./inbox";
 import { IssuePage } from "./issue";
 import { IssuesView } from "./issues";
 import { Login, Setup } from "./login";
@@ -20,6 +21,7 @@ import {
   ComposeIcon,
   DocIcon,
   EmptyState,
+  InboxIcon,
   IssuesIcon,
   Kbd,
   Link,
@@ -118,32 +120,43 @@ function App() {
     loadIndex();
   }, [currentKey, loadIndex]);
 
+  // Your inbox in the workspace shown: its unread count is in the sidebar.
+  const [inbox, setInbox] = useState<{ workspace: string; data: Inbox } | null>(null);
+  const loadInbox = useCallback(() => {
+    const key = shown.current;
+    if (key) api.inbox().then((data) => shown.current === key && setInbox({ workspace: key, data }), () => {});
+  }, []);
+  useEffect(loadInbox, [currentKey, loadInbox]);
+
   // Live updates: coalesce bursts of server events into one refetch. The socket hears all your workspaces:
-  // only the shown one's events refetch its data (the index only for issue and team events); workspace and
-  // member events refetch the workspace list.
+  // only the shown one's events refetch its data (the index only for issue and team events, the inbox only
+  // for inbox events); workspace and member events refetch the workspace list.
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let data = false;
     let index = false;
     let list = false;
+    let mail = false;
     const stop = subscribe((event) => {
       const here = !event || event.workspace === shown.current; // null: reconnected, anything may have changed
       if (!event || event.entity === "workspace" || event.entity === "member") list = true;
-      if (here) data = true;
-      if (here && event?.entity !== "document") index = true;
+      if (here && (!event || event.entity === "inbox")) mail = true;
+      if (here && event?.entity !== "inbox") data = true;
+      if (here && event?.entity !== "document" && event?.entity !== "inbox") index = true;
       clearTimeout(timer);
       timer = setTimeout(() => {
         if (data) setLive((v) => v + 1);
         if (list) setListTick((v) => v + 1);
         if (index) loadIndex();
-        data = index = list = false;
+        if (mail) loadInbox();
+        data = index = list = mail = false;
       }, 100);
     });
     return () => {
       stop();
       clearTimeout(timer);
     };
-  }, [loadIndex]);
+  }, [loadIndex, loadInbox]);
 
   useEffect(() => {
     api.workspaces().then(setWorkspaces, errorToast);
@@ -169,9 +182,9 @@ function App() {
   }, [currentKey]);
   useEffect(loadDirectory, [loadDirectory, live]);
 
-  // Switching keeps you on the same kind of page: settings, docs, or issues.
-  const switchWorkspace = (key: string) =>
-    navigate(`/${key}${route.view === "settings" ? `/settings/${route.section}` : route.view === "docs" || route.view === "doc" ? "/docs" : ""}`);
+  // Switching keeps you on the same kind of page: settings, docs, the inbox, or issues.
+  const same = route.view === "settings" ? `/settings/${route.section}` : route.view === "docs" || route.view === "doc" ? "/docs" : route.view === "inbox" ? "/inbox" : "";
+  const switchWorkspace = (key: string) => navigate(`/${key}${same}`);
 
   // Access changed under us (the socket closed with 4401): ask who we are now. A 401 goes to the sign-in
   // screen; losing just this workspace moves to another one and says why, instead of showing "not found".
@@ -204,6 +217,9 @@ function App() {
     teams: workspaceTeams,
     labels,
     members,
+    inbox: inbox?.workspace === currentKey ? inbox.data : null,
+    setInbox: (data) => currentKey && setInbox({ workspace: currentKey, data }),
+    reloadInbox: loadInbox,
     loadDirectory,
     reloadTeams: () => setTeamsTick((t) => t + 1),
     newIssue: (defaults = {}) => {
@@ -239,7 +255,7 @@ function App() {
       else if (route.view === "issue") navigate(nav.lastList);
       else if (route.view === "doc") navigate(nav.lastDocs);
       else (document.activeElement as HTMLElement | null)?.blur?.();
-    } else if ((route.view === "issues" || route.view === "docs") && (key === "j" || key === "k" || key === "ArrowDown" || key === "ArrowUp")) {
+    } else if (["issues", "docs", "inbox"].includes(route.view) && (key === "j" || key === "k" || key === "ArrowDown" || key === "ArrowUp")) {
       if (moveFocus(key === "j" || key === "ArrowDown" ? 1 : -1)) e.preventDefault();
     }
   });
@@ -265,6 +281,8 @@ function App() {
     </EmptyState>
   ) : route.view === "settings" ? (
     <SettingsPage section={route.section} />
+  ) : route.view === "inbox" ? (
+    <InboxView />
   ) : route.view === "issue" ? (
     <IssuePage key={route.id} id={route.id} />
   ) : route.view === "doc" ? (
@@ -316,11 +334,11 @@ function App() {
 function routeTeam(route: Route, docTeam: string | null): string | null {
   if (route.view === "issue") return route.id.replace(/-\d+$/, "");
   if (route.view === "doc") return docTeam;
-  return route.view === "settings" ? null : route.team;
+  return "team" in route ? route.team : null;
 }
 
 function Sidebar({ route, active, onSwitch }: { route: Route; active: string | null; onSwitch: (key: string) => void }) {
-  const { workspaces, workspace, teams, newIssue, newTeam, newWorkspace } = useApp();
+  const { workspaces, workspace, teams, inbox, newIssue, newTeam, newWorkspace } = useApp();
   const total = teams?.reduce((n, t) => n + openCount(t), 0) ?? 0;
   const docs = teams?.reduce((n, t) => n + t.docCount, 0) ?? 0;
   const options = [
@@ -349,6 +367,15 @@ function Sidebar({ route, active, onSwitch }: { route: Route; active: string | n
         <Kbd>C</Kbd>
       </button>
       <nav className="nav">
+        <Link to="/inbox" className={cls("nav-item", on("inbox") && "active")}>
+          <InboxIcon />
+          <span className="nav-label">Inbox</span>
+          {!!inbox?.unread && (
+            <span className="nav-count nav-unread" aria-label={`${inbox.unread} unread`}>
+              {inbox.unread}
+            </span>
+          )}
+        </Link>
         <Link to="/" className={cls("nav-item", on("issues") && "active")}>
           <IssuesIcon />
           <span className="nav-label">All issues</span>

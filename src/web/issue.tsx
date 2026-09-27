@@ -3,6 +3,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { CLOSED_STATUSES, PRIORITY_LABELS, STATUS_LABELS, type Issue } from "../shared/types";
 import { HttpError, api } from "./api";
 import { useMentionMenu } from "./editor";
+import { SubscribeButton } from "./inbox";
 import { AssigneePicker, BlockedByPicker, DelegatePicker, LabelsPicker, ParentPicker, PriorityPicker, StatusPicker } from "./pickers";
 import {
   Avatar,
@@ -204,6 +205,7 @@ export function IssuePage({ id }: { id: string }) {
               Claim
             </button>
           )}
+          {!issue.deletedAt && <SubscribeButton subscribed={issue.subscribed} onToggle={() => withFresh(() => api.subscribeIssue(issue.id, !issue.subscribed)).catch(errorToast)} />}
           <button className="icon-btn" onClick={copyId} aria-label="Copy ID" title="Copy ID">
             <CopyIcon />
           </button>
