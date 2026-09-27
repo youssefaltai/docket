@@ -435,6 +435,19 @@ const MIGRATIONS: (string | (() => void))[] = [
   CREATE INDEX comments_parent ON comments(parent_id) WHERE parent_id IS NOT NULL;
   CREATE INDEX document_comments_parent ON document_comments(parent_id) WHERE parent_id IS NOT NULL;
   `,
+  // Emoji reactions (Linear's): on an issue's description, a comment or a document comment. Never activity,
+  // a notification or a webhook event, and never bumps updated_at; deleting a comment deletes its rows.
+  `
+  CREATE TABLE reactions (
+    target TEXT NOT NULL,   -- 'issue:<id>' (the description), 'comment:<id>', 'document_comment:<id>'
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    emoji TEXT NOT NULL,
+    issue_id INTEGER REFERENCES issues(id) ON DELETE CASCADE,       -- the issue it's on (purge cascades)
+    document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE, -- the doc it's on
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (target, user_id, emoji)
+  );
+  `,
 ];
 
 db.run("PRAGMA foreign_keys = OFF"); // a migration may rebuild a table (SQLite's 12-step ALTER); checked before each commit

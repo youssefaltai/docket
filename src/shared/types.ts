@@ -209,6 +209,13 @@ export interface Comment {
   parent: number | null; // the thread's root comment id; null for a root (one level: a reply to a reply joins its thread)
   resolvedAt: string | null; // roots only: the thread was resolved then (a new reply reopens it)
   resolvedBy: UserRef | null;
+  reactions: Reaction[]; // emoji reactions, ordered by first reaction
+}
+
+/** One emoji reaction on an issue's description, a comment or a doc comment: who reacted with it, in order. */
+export interface Reaction {
+  emoji: string;
+  users: UserRef[]; // in the order they reacted
 }
 
 export interface LabelCount {
@@ -262,6 +269,7 @@ export interface Issue extends IssueSummary {
   activity: Activity[]; // its history, oldest first
   docs: DocumentSummary[]; // documents whose content mentions this issue
   subscribed: boolean; // you (the caller) get its new comments and status changes in your inbox
+  reactions: Reaction[]; // emoji reactions on the description
 }
 
 export interface DocumentSummary {

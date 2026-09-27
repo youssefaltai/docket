@@ -36,6 +36,7 @@ import {
   PencilIcon,
   PlusIcon,
   PriorityIcon,
+  Reactions,
   TeamMark,
   Section,
   StatusIcon,
@@ -168,6 +169,7 @@ export function IssuePage({ id }: { id: string }) {
     remove: (cid) => withFresh(() => api.deleteComment(issue.id, cid)),
     reply: (parent, body) => withFresh(() => api.comment(issue.id, body, parent)),
     resolve: (cid, resolved) => withFresh(() => api.resolveThread(issue.id, cid, resolved)),
+    react: (cid, emoji, on) => withFresh(() => api.reactToComment(issue.id, cid, emoji, on)),
   };
 
   // You can claim an open issue no other active member holds (a suspended member doesn't hold one),
@@ -249,7 +251,14 @@ export function IssuePage({ id }: { id: string }) {
               <div className="issue-props-inline">
                 <Properties issue={issue} patch={patch} />
               </div>
-              <Description key={`d-${issue.id}`} value={issue.description} updatedAt={issue.updatedAt} onSave={saveDescription} />
+              <Description
+                key={`d-${issue.id}`}
+                value={issue.description}
+                updatedAt={issue.updatedAt}
+                onSave={saveDescription}
+                reactions={issue.reactions}
+                onReact={(emoji, on) => withFresh(() => api.reactToIssue(issue.id, emoji, on)).catch(errorToast)}
+              />
               <SubIssues issue={issue} onPatch={patchChild} />
               <Docs issue={issue} />
               {!issue.deletedAt && <Activity issue={issue} actions={comments} />}
@@ -273,10 +282,14 @@ function Description({
   value,
   updatedAt,
   onSave,
+  reactions,
+  onReact,
 }: {
   value: string;
   updatedAt: string;
   onSave: (v: string, start: Edit) => Promise<void>;
+  reactions: Issue["reactions"];
+  onReact: (emoji: string, on: boolean) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
@@ -378,6 +391,7 @@ function Description({
       <button className="icon-btn sm desc-edit" onClick={start} aria-label="Edit description" title="Edit description">
         <PencilIcon />
       </button>
+      <Reactions reactions={reactions} onToggle={onReact} />
     </div>
   );
 }

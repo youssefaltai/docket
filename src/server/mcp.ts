@@ -19,6 +19,7 @@ import {
   type IssueSummary,
   type Notification,
   type Priority,
+  type Reaction,
   type UserRef,
 } from "../shared/types.ts";
 import * as access from "./access.ts";
@@ -85,6 +86,13 @@ const THREADS = "Comments are threaded: top-level comments start threads, replie
 
 const at = (user: UserRef) => `@${user.username}`;
 
+/** "👍 2 🎉 1", or "" with none. */
+const reactionsText = (reactions: Reaction[]) => reactions.map((r) => `${r.emoji} ${r.users.length}`).join(" ");
+
+/** "Reactions: 👀 1 (@claude), 👍 2 (@ana, @bob)", or false with none. */
+const reactionsLine = (reactions: Reaction[]) =>
+  reactions.length > 0 && `Reactions: ${reactions.map((r) => `${r.emoji} ${r.users.length} (${r.users.map(at).join(", ")})`).join(", ")}`;
+
 /** "due 2026-10-01", or "overdue 2026-09-20" for an open issue due before today (the server's date, UTC). */
 function due(issue: IssueSummary): string | null {
   if (!issue.dueOn) return null;
@@ -121,6 +129,8 @@ function details(issue: Issue): string {
     `updated ${issue.updatedAt}`,
   ];
   const parts = [line(issue), meta.filter(Boolean).join(" · "), issue.description || "_No description._"];
+  const reactions = reactionsLine(issue.reactions);
+  if (reactions) parts.push(reactions);
   if (issue.deletedAt) parts.unshift(`**In the trash** since ${issue.deletedAt}: read-only until someone restores it.`);
   if (issue.children.length) parts.push(`## Sub-issues\n${issue.children.map(line).join("\n")}`);
   if (issue.docs.length) parts.push(`## Docs\n${issue.docs.map(docLine).join("\n")}`);
@@ -191,13 +201,15 @@ function historySection(activity: Activity[]): string {
 
 /** Threads in order: each root, then its replies (`↳`); a resolved thread is its root's header only (bodies are in structuredContent). */
 function commentsSection(comments: Comment[]): string {
-  const header = (c: Comment) => [`**${at(c.author)}**`, `#${c.id}`, c.createdAt, c.editedAt && "edited"].filter(Boolean).join(" · ");
+  // A collapsed resolved thread hides reactions along with the bodies.
+  const headerBase = (c: Comment) => [`**${at(c.author)}**`, `#${c.id}`, c.createdAt, c.editedAt && "edited"].filter(Boolean).join(" · ");
+  const header = (c: Comment) => [headerBase(c), reactionsText(c.reactions)].filter(Boolean).join(" · ");
   const threads = comments
     .filter((c) => c.parent === null)
     .map((root) => {
       const replies = comments.filter((c) => c.parent === root.id);
       if (root.resolvedAt) {
-        return `${header(root)} · resolved by ${at(root.resolvedBy!)} · ${replies.length} ${replies.length === 1 ? "reply" : "replies"}`;
+        return `${headerBase(root)} · resolved by ${at(root.resolvedBy!)} · ${replies.length} ${replies.length === 1 ? "reply" : "replies"}`;
       }
       return [root, ...replies].map((c) => `${c.parent === null ? "" : "↳ "}${header(c)}\n${c.body}`).join("\n\n");
     });
@@ -775,6 +787,37 @@ function createServer(a: Actor, origin: string): McpServer {
         },
       ),
     ),
+  );
+
+  register(
+    "react",
+    {
+      description:
+        "Add (or with remove, take back) your emoji reaction on an issue's description or on a comment, e.g. 👀 to show you've picked up a request, 👍 to agree. It doesn't notify anyone; use a comment for anything that needs an answer.",
+      inputSchema: {
+        issue: identifier.optional().describe("The issue; pass this or document"),
+        document: slug.optional().describe("The document; pass this or issue (comment is then required)"),
+        comment: z.number().int().optional().describe("React to this comment instead of the issue's description (required for a document)"),
+        emoji: z.string().describe("A single emoji, e.g. 👍"),
+        remove: z.boolean().optional().describe("Default false; true takes back your reaction"),
+      },
+    },
+    writes(({ comment, emoji, remove = false, ...target }) => {
+      const on = !remove;
+      const done = (what: string) => `${on ? "Reacted" : "Removed reaction"} ${emoji} on ${what}`;
+      return commentOn(
+        target,
+        (id) => {
+          const issue = comment === undefined ? tracker.reactToIssue(a, id, emoji, on) : tracker.reactToIssueComment(a, id, comment, emoji, on);
+          return result(done(comment === undefined ? issue.id : `#${comment} on ${issue.id}`), { issue });
+        },
+        (slug) => {
+          if (comment === undefined) throw new AppError("comment is required to react on a document");
+          const document = tracker.reactToDocumentComment(a, slug, comment, emoji, on);
+          return result(done(`#${comment} on document ${document.slug}`), docMeta(document));
+        },
+      );
+    }),
   );
 
   return server;

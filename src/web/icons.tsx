@@ -46,6 +46,7 @@ export const SettingsIcon = icon("M2.5 4.5h6M12 4.5h1.5M2.5 11.5h1.5M7.5 11.5h6M
 export const InboxIcon = icon("M2.5 9.5l1.6-5.3a1 1 0 0 1 1-.7h5.8a1 1 0 0 1 1 .7l1.6 5.3v3a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1zM2.5 9.5h3l1 1.5h3l1-1.5h3");
 export const BellIcon = icon("M4 11.5V7a4 4 0 0 1 8 0v4.5l1 1.5H3zM6.5 13.5a1.5 1.5 0 0 0 3 0");
 export const ComposeIcon =icon("M13.5 8.5v4a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1h4M11.5 2.5l2 2L8 10H6V8z");
+export const SmileIcon = icon("M8 14A6 6 0 1 0 8 2a6 6 0 0 0 0 12zM5.75 6.5h.01M10.25 6.5h.01M5.3 9.3a3.2 3.2 0 0 0 5.4 0");
 
 export function Logo() {
   return (

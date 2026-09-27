@@ -1,14 +1,15 @@
 // Comment threads with composer, shared by issues and docs; an issue's history interleaves with them.
-import { Fragment, useState, type ReactNode } from "react";
-import { PRIORITY_LABELS, STATUS_LABELS, type Activity, type Comment, type Priority, type Status, type UserRef } from "../shared/types";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
+import { PRIORITY_LABELS, STATUS_LABELS, type Activity, type Comment, type Priority, type Reaction, type Status, type UserRef } from "../shared/types";
 import { Avatar, isMe, Kbd, Section } from "./components";
 import { RichEditor } from "./editor";
-import { CheckIcon, PencilIcon, ReplyIcon, StatusIcon, TrashIcon } from "./icons";
+import { CheckIcon, PencilIcon, ReplyIcon, SmileIcon, StatusIcon, TrashIcon } from "./icons";
 import { Link } from "./routing";
 import { useRun } from "./hooks";
 import { Markdown } from "./markdown";
 import { ask, errorToast } from "./toast";
-import { ago, dayLabel, fullDate, MOD } from "./util";
+import { ago, cls, dayLabel, fullDate, MOD } from "./util";
 
 export interface CommentActions {
   add: (body: string) => Promise<void>;
@@ -16,6 +17,169 @@ export interface CommentActions {
   remove: (id: number) => Promise<void>;
   reply: (parent: number, body: string) => Promise<void>;
   resolve: (id: number, resolved: boolean) => Promise<void>;
+  react: (id: number, emoji: string, on: boolean) => Promise<void>;
+}
+
+// A short, common set (Linear-like); the input takes any single emoji besides.
+const COMMON_EMOJI = ["👍", "👎", "😄", "🎉", "😕", "❤️", "🚀", "👀", "✅", "❌", "🔥", "💯", "🙏", "🤔", "👏", "⏳"];
+const REACTION_COLS = 8;
+
+/** The smiley button that opens the emoji grid + free-input popover, anchored like a Picker. */
+function AddReaction({ onAdd }: { onAdd: (emoji: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [custom, setCustom] = useState("");
+  const trigger = useRef<HTMLButtonElement>(null);
+  const pop = useRef<HTMLDivElement>(null);
+  const grid = useRef<(HTMLButtonElement | null)[]>([]);
+
+  const close = () => {
+    setOpen(false);
+    setCustom("");
+  };
+  const pick = (emoji: string) => {
+    const trimmed = emoji.trim();
+    if (trimmed) onAdd(trimmed);
+    close();
+    trigger.current?.focus();
+  };
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    const place = () => {
+      const t = trigger.current?.getBoundingClientRect();
+      const el = pop.current;
+      if (!t || !el) return;
+      const m = 8;
+      const { offsetWidth: w, offsetHeight: h } = el;
+      const left = Math.max(m, Math.min(t.left, innerWidth - w - m));
+      let top = t.bottom + 4;
+      if (top + h > innerHeight - m && t.top - 4 - h > m) top = t.top - 4 - h;
+      el.style.left = `${left}px`;
+      el.style.top = `${top}px`;
+    };
+    place();
+    addEventListener("resize", place);
+    addEventListener("scroll", place, true);
+    return () => {
+      removeEventListener("resize", place);
+      removeEventListener("scroll", place, true);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: PointerEvent) => {
+      const t = e.target as Node;
+      if (!pop.current?.contains(t) && !trigger.current?.contains(t)) close();
+    };
+    document.addEventListener("pointerdown", onDown, true);
+    return () => document.removeEventListener("pointerdown", onDown, true);
+  }, [open]);
+
+  const moveGrid = (i: number, key: string) => {
+    let next = i;
+    if (key === "ArrowRight") next = Math.min(i + 1, COMMON_EMOJI.length - 1);
+    else if (key === "ArrowLeft") next = Math.max(i - 1, 0);
+    else if (key === "ArrowDown") next = Math.min(i + REACTION_COLS, COMMON_EMOJI.length - 1);
+    else if (key === "ArrowUp") next = Math.max(i - REACTION_COLS, 0);
+    else return;
+    grid.current[next]?.focus();
+  };
+
+  return (
+    <>
+      <button
+        ref={trigger}
+        type="button"
+        className="icon-btn xs reaction-add"
+        aria-label="Add reaction"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        title="Add reaction"
+        onClick={() => setOpen((o) => !o)}
+      >
+        <SmileIcon />
+      </button>
+      {open &&
+        createPortal(
+          <div
+            ref={pop}
+            className="pop reaction-pop"
+            role="dialog"
+            aria-label="Add reaction"
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.preventDefault();
+                close();
+                trigger.current?.focus();
+              }
+            }}
+          >
+            <div className="reaction-grid" role="listbox" aria-label="Common emoji">
+              {COMMON_EMOJI.map((emoji, i) => (
+                <button
+                  key={emoji}
+                  ref={(el) => {
+                    grid.current[i] = el;
+                  }}
+                  type="button"
+                  className="reaction-option"
+                  role="option"
+                  aria-selected={false}
+                  autoFocus={i === 0}
+                  onClick={() => pick(emoji)}
+                  onKeyDown={(e) => moveGrid(i, e.key)}
+                >
+                  {emoji}
+                </button>
+              ))}
+            </div>
+            <input
+              className="reaction-custom"
+              placeholder="Any emoji…"
+              dir="auto"
+              value={custom}
+              onChange={(e) => setCustom(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  pick(custom);
+                } else if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  grid.current[0]?.focus();
+                }
+              }}
+            />
+          </div>,
+          document.body,
+        )}
+    </>
+  );
+}
+
+/** Reaction pills under a comment's body or the issue description; click toggles yours, hover title lists names. */
+export function Reactions({ reactions, onToggle }: { reactions: Reaction[]; onToggle: (emoji: string, on: boolean) => void }) {
+  return (
+    <div className="reactions">
+      {reactions.map((r) => {
+        const mine = r.users.some(isMe);
+        return (
+          <button
+            key={r.emoji}
+            type="button"
+            className={cls("reaction", mine && "on")}
+            aria-pressed={mine}
+            title={r.users.map((u) => u.name).join(", ")}
+            onClick={() => onToggle(r.emoji, !mine)}
+          >
+            <span>{r.emoji}</span>
+            <span className="reaction-count">{r.users.length}</span>
+          </button>
+        );
+      })}
+      <AddReaction onAdd={(emoji) => onToggle(emoji, true)} />
+    </div>
+  );
 }
 
 /** Comment threads with composer, shared by issues and docs; `activity` (an issue's history) interleaves by the roots' times. */
@@ -328,7 +492,10 @@ function CommentItem({
       {editing ? (
         <Composer initial={c.body} action="Save" onSubmit={save} onCancel={() => setEditing(false)} />
       ) : (
-        <Markdown text={c.body} />
+        <>
+          <Markdown text={c.body} />
+          <Reactions reactions={c.reactions} onToggle={(emoji, on) => actions.react(c.id, emoji, on).catch(errorToast)} />
+        </>
       )}
     </div>
   );
