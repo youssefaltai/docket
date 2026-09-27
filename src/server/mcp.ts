@@ -23,7 +23,7 @@ import * as tracker from "./tracker.ts";
 
 const instructions = (a: Actor) => `Docket is an issue tracker shared by people and agents, modeled on Linear.
 - Workspace → team → issues and docs. Your key works in one workspace: everything you list, read and change is there.
-- Teams have a 2–5 letter key (e.g. BRD), unique across all workspaces. Issues are identified as KEY-number, e.g. BRD-12.
+- Teams have a 2–5 letter key (e.g. BRD), unique within this workspace. Issues are identified as KEY-number, e.g. BRD-12.
 - Statuses: backlog, todo, in_progress, in_review, done, canceled. Priority: 0 none, 1 urgent, 2 high, 3 medium, 4 low.
 - People and agents are named by username (@alice), unique within this workspace. An issue's assignee is a person who owns it; its delegate is an agent working on it for them. "me" means you.
 ${
@@ -215,7 +215,7 @@ function createServer(a: Actor): McpServer {
     "create_team",
     {
       description:
-        "Create a team in a workspace (people only). The key is 2–5 letters (uppercased), permanent, unique across all workspaces, and prefixes every issue identifier: key BRD gives BRD-1, BRD-2… Check list_teams first; only create a team when asked to.",
+        "Create a team in a workspace (people only). The key is 2–5 letters (uppercased), permanent, unique within this workspace, and prefixes every issue identifier: key BRD gives BRD-1, BRD-2… Check list_teams first; only create a team when asked to.",
       inputSchema: {
         key: z.string().describe('2–5 letters, e.g. "BRD"'),
         name: z.string(),

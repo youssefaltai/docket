@@ -47,7 +47,7 @@ export interface TestServer {
   databasePath: string;
   /** The workspace setup created ("acme"), or null with `setup: false`. */
   workspace: string | null;
-  /** The setup admin (cookie for REST, key for MCP); `s.api` and `s.tool` are shorthands for it. */
+  /** The setup admin (cookie for REST, key for MCP), in setup's workspace; `s.api` and `s.tool` are shorthands for it. */
   admin: Caller;
   api: Caller["api"];
   tool: Caller["tool"];
@@ -57,6 +57,7 @@ export interface TestServer {
   /**
    * A user made earlier by s.user or s.agent (by its label), here or on a server this one shares with. People default to their cookie,
    * agents to their key. Keys act in one workspace: `workspace` picks that one's key (default: the workspace they joined first).
+   * On cookie requests, `workspace` is sent as X-Docket-Workspace, as the web app does (a session in several needs it).
    */
   as: (label: string, via?: Via, workspace?: string) => Caller;
   /**
@@ -108,10 +109,11 @@ export async function startServer(
   const users: Map<string, Known> = (opts.sharing as Internal | undefined)?.users ?? new Map();
   const mcps: Client[] = [];
 
-  function caller(username: string | null, creds: Creds, via: Via): Caller {
+  function caller(username: string | null, creds: Creds, via: Via, workspace?: string): Caller {
     const auth: Record<string, string> = {};
     if (via === "bearer" && creds.token) auth.Authorization = `Bearer ${creds.token}`;
     if (via === "cookie" && creds.cookie) auth.Cookie = creds.cookie;
+    if (via === "cookie" && workspace) auth["X-Docket-Workspace"] = workspace;
     let mcp: Promise<Client> | undefined;
     // One MCP client per caller, connected on first use.
     const client = () =>
@@ -187,11 +189,13 @@ export async function startServer(
   function as(username: string, via?: Via, workspace?: string): Caller {
     const known = users.get(username);
     if (!known) throw new Error(`no test user "${username}"; make it with s.user or s.agent first`);
+    const how = via ?? (known.cookie ? "cookie" : "bearer");
     const token = workspace ? known.keys.get(workspace) : known.keys.values().next().value;
-    if (workspace && !token) throw new Error(`test user "${username}" has no key in ${workspace}`);
-    return caller(username, { token, cookie: known.cookie }, via ?? (known.cookie ? "cookie" : "bearer"));
+    if (workspace && !token && how === "bearer") throw new Error(`test user "${username}" has no key in ${workspace}`);
+    return caller(username, { token, cookie: known.cookie }, how, workspace);
   }
-  const admin = users.has("admin") ? as("admin") : anon;
+  // The admin acts in setup's workspace, as the web app would there (they may join others).
+  const admin = users.has("admin") ? as("admin", undefined, workspace ?? undefined) : anon;
 
   const server: Internal = {
     url,

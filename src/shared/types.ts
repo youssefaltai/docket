@@ -44,8 +44,11 @@ export interface User extends UserRef {
 // Workspace roles. Agents are members with role "agent": they work in teams but manage nothing (no teams, members or access).
 export type Role = "admin" | "member" | "agent";
 
+/** The first segment of app URLs other than a workspace's (/<ws>/…): no workspace can take these keys. */
+export const RESERVED_WORKSPACE_KEYS = ["api", "doc", "docs", "icons", "issue", "login", "mcp", "settings", "setup", "t", "ws"];
+
 export interface Workspace {
-  key: string; // URL-safe lowercase slug, e.g. "acme"
+  key: string; // URL-safe lowercase slug, e.g. "acme"; not one of RESERVED_WORKSPACE_KEYS
   name: string;
   role: Role; // yours
   teamCount: number;
@@ -125,7 +128,7 @@ export interface SetupInput {
 }
 
 export interface Team {
-  key: string; // 2–5 uppercase letters, e.g. "BRD"; globally unique; prefixes its issue identifiers
+  key: string; // 2–5 uppercase letters, e.g. "BRD"; unique within its workspace; prefixes its issue identifiers
   workspace: string; // workspace key
   name: string;
   description: string;
@@ -137,7 +140,7 @@ export interface Team {
 
 export interface TeamInput {
   key: string;
-  workspace?: string; // default: the request's (an API key's own)
+  workspace?: string; // optional: teams are created in the request's workspace, and this must name it if given
   name: string;
   description?: string;
 }
@@ -202,7 +205,7 @@ export interface Issue extends IssueSummary {
 }
 
 export interface DocumentSummary {
-  slug: string; // globally unique, stable, URL-safe: "architecture", "spec-customer"
+  slug: string; // unique within its workspace, stable, URL-safe: "architecture", "spec-customer"
   team: string; // team key
   title: string;
   position: number; // manual order within the team, ascending
@@ -231,7 +234,6 @@ export interface DocumentVersion extends DocumentVersionSummary {
 }
 
 export interface DocumentFilter {
-  workspace?: string;
   team?: string;
   q?: string; // matches title and content
 }
@@ -272,7 +274,6 @@ export type IssuePatch = Partial<Omit<IssueInput, "team">> & {
 };
 
 export interface IssueFilter {
-  workspace?: string;
   team?: string;
   status?: Status[];
   label?: string;

@@ -56,8 +56,6 @@ export function IssuesView({ teamKey }: { teamKey: string | null }) {
     document.title = `${team?.name ?? (teamKey || "All issues")} · Docket`;
   }, [teamKey, team?.name]);
 
-  // "All issues" is the current workspace's; wait until it's known.
-  const workspace = teamKey ? undefined : app.workspace?.key;
   const {
     data: issues,
     setData: setIssues,
@@ -65,8 +63,8 @@ export function IssuesView({ teamKey }: { teamKey: string | null }) {
     reload,
     invalidate,
   } = useFetch(
-    teamKey || workspace ? () => api.issues({ team: teamKey ?? undefined, workspace, q, label, assignee, delegate }) : null,
-    [teamKey, workspace, q, label, assignee, delegate],
+    () => api.issues({ team: teamKey ?? undefined, q, label, assignee, delegate }),
+    [teamKey, q, label, assignee, delegate],
   );
 
   const patch: Patch = (id, p) => {
@@ -91,7 +89,7 @@ export function IssuesView({ teamKey }: { teamKey: string | null }) {
   };
 
   let body;
-  if (!teamKey && app.workspaceTeams?.length === 0) {
+  if (!teamKey && app.teams?.length === 0) {
     body = (
       <EmptyState
         icon={<IssuesIcon />}

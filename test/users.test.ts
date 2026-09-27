@@ -16,6 +16,8 @@ afterAll(() => s.stop());
 const members = async () => (await s.api("GET", `/api/workspaces/${ws}/members`)).body as any[];
 const role = async (username: string) => (await members()).find((m) => m.user.username === username)?.role;
 const patch = (username: string, body: object, by = s.admin) => by.api("PATCH", `/api/workspaces/${ws}/members/${username}`, body);
+/** The admin in another of their workspaces (data routes act in one). */
+const inWs = (key: string) => s.as("admin", "cookie", key);
 
 test("/api/me says who you are and where you belong", async () => {
   const me = (await s.api("GET", "/api/me")).body;
@@ -76,7 +78,7 @@ test("usernames are validated and unique per workspace", async () => {
 
 test("the same agent username in two workspaces: separate agents, each acting on its own", async () => {
   await s.api("POST", "/api/workspaces", { name: "Twin", key: "twin" });
-  await s.api("POST", "/api/teams", { key: "TWN", workspace: "twin", name: "Twin" });
+  await inWs("twin").api("POST", "/api/teams", { key: "TWN", workspace: "twin", name: "Twin" });
   const acme = await s.agent("claude", { name: "Claude Acme" });
   const twin = await s.agent("claude", { workspace: "twin", name: "Claude Twin", as: "claude@twin" });
   for (const [agent, key, name] of [[acme, ws, "Claude Acme"], [twin, "twin", "Claude Twin"]] as const) {
@@ -86,41 +88,43 @@ test("the same agent username in two workspaces: separate agents, each acting on
     expect(await agent.tool("list_members")).toContain(`@claude · ${name} · agent · you`);
   }
   const acmeIssue = (await s.api("POST", "/api/issues", { team: "USR", title: "Acme work" })).body.id;
-  const twinIssue = (await s.api("POST", "/api/issues", { team: "TWN", title: "Twin work" })).body.id;
+  const twinIssue = (await inWs("twin").api("POST", "/api/issues", { team: "TWN", title: "Twin work" })).body.id;
   await acme.tool("comment_issue", { id: acmeIssue, body: "from acme" });
   await twin.tool("comment_issue", { id: twinIssue, body: "from twin" });
-  const author = async (id: string) => (await s.api("GET", `/api/issues/${id}`)).body.comments[0].author;
-  expect(await author(acmeIssue)).toEqual({ username: "claude", name: "Claude Acme", kind: "agent" });
-  expect(await author(twinIssue)).toEqual({ username: "claude", name: "Claude Twin", kind: "agent" });
+  const author = async (id: string, key: string) => (await inWs(key).api("GET", `/api/issues/${id}`)).body.comments[0].author;
+  expect(await author(acmeIssue, ws)).toEqual({ username: "claude", name: "Claude Acme", kind: "agent" });
+  expect(await author(twinIssue, "twin")).toEqual({ username: "claude", name: "Claude Twin", kind: "agent" });
   // Each claims for itself: one being the delegate doesn't make the other one.
   await acme.tool("claim_issue", { id: acmeIssue });
   await expect(twin.tool("claim_issue", { id: acmeIssue })).rejects.toThrow(/not found/);
-  expect((await s.api("GET", `/api/issues/${twinIssue}`)).body.delegate).toBeNull();
+  expect((await inWs("twin").api("GET", `/api/issues/${twinIssue}`)).body.delegate).toBeNull();
 });
 
-test("?assignee= and ?delegate= find whoever holds the username in each workspace searched", async () => {
+test("?assignee= and ?delegate= find whoever holds the username in the request's workspace", async () => {
   await s.api("POST", "/api/workspaces", { name: "Filters", key: "filt" });
-  await s.api("POST", "/api/teams", { key: "FLT", workspace: "filt", name: "Filters" });
+  const filt = inWs("filt");
+  await filt.api("POST", "/api/teams", { key: "FLT", name: "Filters" });
   await s.user("fay"); // two different people called fay, one in each workspace
   await s.user("fay", { workspace: "filt", as: "fay@filt" });
   await s.user("zed", { workspace: "filt", username: "sam-f" });
   await s.agent("helper", { workspace: "filt" });
   await s.agent("helper", { as: "helper@acme" });
   const inAcme = (await s.api("POST", "/api/issues", { team: "USR", title: "Acme fay", assignee: "fay", delegate: "helper" })).body.id;
-  const inFilt = (await s.api("POST", "/api/issues", { team: "FLT", title: "Filt fay", assignee: "fay", delegate: "helper" })).body.id;
-  const byZed = (await s.api("POST", "/api/issues", { team: "FLT", title: "Filt zed", assignee: "sam-f" })).body.id;
+  const inFilt = (await filt.api("POST", "/api/issues", { team: "FLT", title: "Filt fay", assignee: "fay", delegate: "helper" })).body.id;
+  const byZed = (await filt.api("POST", "/api/issues", { team: "FLT", title: "Filt zed", assignee: "sam-f" })).body.id;
   await s.user("zed", { username: "zed" }); // zed is sam-f in filt only: acme's issue for zed isn't sam-f's
   await s.api("POST", "/api/issues", { team: "USR", title: "Acme zed", assignee: "zed" });
-  const ids = async (query: string) => ((await s.api("GET", `/api/issues?${query}`)).body as any[]).map((i) => i.id).sort();
+  const ids = async (query: string, who = s.admin) => ((await who.api("GET", `/api/issues?${query}`)).body as any[]).map((i) => i.id).sort();
   const id = async (label: string) => (await s.as(label).api("GET", "/api/me")).body.user.id;
   expect(await id("fay")).not.toBe(await id("fay@filt"));
-  expect(await ids("assignee=fay")).toEqual([inAcme, inFilt].sort());
-  expect(await ids("assignee=fay&workspace=filt")).toEqual([inFilt]);
-  expect(await ids("delegate=helper")).toEqual([inAcme, inFilt].sort());
-  expect(await ids("assignee=sam-f")).toEqual([byZed]);
-  // Unknown in every workspace searched stays a 400.
-  expect((await s.api("GET", "/api/issues?assignee=sam-f&workspace=acme")).status).toBe(400);
-  expect((await s.as("zed").api("GET", "/api/issues?assignee=me&workspace=filt")).body.map((i: any) => i.id)).toEqual([byZed]);
+  expect(await ids("assignee=fay")).toEqual([inAcme]);
+  expect(await ids("assignee=fay", filt)).toEqual([inFilt]);
+  expect(await ids("delegate=helper")).toEqual([inAcme]);
+  expect(await ids("delegate=helper", filt)).toEqual([inFilt]);
+  expect(await ids("assignee=sam-f", filt)).toEqual([byZed]);
+  // Unknown in the request's workspace stays a 400, even if someone holds it elsewhere.
+  expect((await s.api("GET", "/api/issues?assignee=sam-f")).status).toBe(400);
+  expect((await s.as("zed", "cookie", "filt").api("GET", "/api/issues?assignee=me")).body.map((i: any) => i.id)).toEqual([byZed]);
 });
 
 test("an invite to a second workspace adds it to the same user", async () => {
@@ -132,11 +136,14 @@ test("an invite to a second workspace adds it to the same user", async () => {
 
 test("a workspace you're not in is invisible: 404, and absent from lists", async () => {
   await s.api("POST", "/api/workspaces", { name: "Hidden", key: "hidden" });
-  await s.api("POST", "/api/teams", { key: "HID", workspace: "hidden", name: "Hidden" });
-  const issue = (await s.api("POST", "/api/issues", { team: "HID", title: "Secret" })).body;
-  await s.api("POST", "/api/documents", { team: "HID", title: "Secret plan" });
+  const hidden = inWs("hidden");
+  await hidden.api("POST", "/api/teams", { key: "HID", name: "Hidden" });
+  const issue = (await hidden.api("POST", "/api/issues", { team: "HID", title: "Secret" })).body;
+  await hidden.api("POST", "/api/documents", { team: "HID", title: "Secret plan" });
+  // Naming it is as if it didn't exist.
+  expect((await s.as("ana", "cookie", "hidden").api("GET", "/api/teams")).status).toBe(404);
 
-  for (const who of [s.as("ana"), s.as("bot")]) {
+  for (const who of [s.as("ana", "cookie", ws), s.as("bot")]) {
     expect((await who.api("GET", `/api/issues/${issue.id}`)).status).toBe(404);
     expect((await who.api("GET", "/api/documents/secret-plan")).status).toBe(404);
     expect((await who.api("GET", "/api/workspaces/hidden/members")).status).toBe(404);
@@ -153,7 +160,7 @@ test("a workspace you're not in is invisible: 404, and absent from lists", async
     expect(await who.tool("list_teams")).not.toContain("HID");
   }
   // And people outside it can't be assigned there.
-  expect((await s.api("PATCH", `/api/issues/${issue.id}`, { assignee: "ana" })).status).toBeGreaterThanOrEqual(400);
+  expect((await hidden.api("PATCH", `/api/issues/${issue.id}`, { assignee: "ana" })).status).toBe(400);
 });
 
 test("events only reach members of the event's workspace", async () => {
@@ -161,7 +168,7 @@ test("events only reach members of the event's workspace", async () => {
   const admin = s.admin.ws();
   expect(await ana.opened).toBeTrue();
   expect(await admin.opened).toBeTrue();
-  const secret = (await s.api("POST", "/api/issues", { team: "HID", title: "Quiet" })).body;
+  const secret = (await inWs("hidden").api("POST", "/api/issues", { team: "HID", title: "Quiet" })).body;
   const open = (await s.api("POST", "/api/issues", { team: "USR", title: "Loud" })).body;
   expect((await admin.until((e) => e.id === secret.id)).workspace).toBe("hidden");
   expect((await ana.until((e) => e.id === open.id)).workspace).toBe(ws);
@@ -249,8 +256,8 @@ test("your profile is per workspace: renaming in one leaves the others, and your
   expect(inSide).toMatchObject({ username: "ana-s", name: "Ana S" });
   expect((await s.as("ana", "bearer", ws).api("GET", "/api/me")).body.user).toMatchObject({ username: "ana", name: "ana" });
   // An issue in side shows her there as ana-s.
-  await s.api("POST", "/api/teams", { key: "SDE", workspace: "side", name: "Side" });
-  const issue = (await s.api("POST", "/api/issues", { team: "SDE", title: "Hers", assignee: "ana-s" })).body;
+  await inWs("side").api("POST", "/api/teams", { key: "SDE", name: "Side" });
+  const issue = (await inWs("side").api("POST", "/api/issues", { team: "SDE", title: "Hers", assignee: "ana-s" })).body;
   expect(issue.assignee).toEqual({ username: "ana-s", name: "Ana S", kind: "person" });
   const inSideKey = s.as("ana", "bearer", "side");
   const commented = (await inSideKey.api("POST", `/api/issues/${issue.id}/comments`, { body: "mine" })).body;

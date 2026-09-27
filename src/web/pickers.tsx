@@ -334,8 +334,8 @@ export function LabelsPicker({
 }
 
 export function TeamPicker({ value, onChange, children, ...rest }: Trigger & { value: string; onChange: (key: string) => void }) {
-  const { workspaceTeams } = useApp();
-  const options = (workspaceTeams ?? []).map((t) => ({ value: t.key, label: t.name, icon: <TeamMark id={t.key} /> }));
+  const { teams } = useApp();
+  const options = (teams ?? []).map((t) => ({ value: t.key, label: t.name, icon: <TeamMark id={t.key} /> }));
   return (
     <Picker label="Team" options={options} selected={[value]} onPick={onChange} {...rest}>
       {children}
@@ -344,13 +344,11 @@ export function TeamPicker({ value, onChange, children, ...rest }: Trigger & { v
 }
 
 function useIssueOptions(team: string | undefined, exclude: string[]) {
-  const { workspace } = useApp();
   const [issues, setIssues] = useState<IssueSummary[]>([]);
-  // A team already scopes tightly enough; otherwise (Blocked by, any team) stay
-  // within the current workspace instead of leaking every workspace's issues.
+  // A team's issues, or (Blocked by, any team) the current workspace's.
   const load = () =>
     void api
-      .issues(team ? { team } : workspace ? { workspace: workspace.key } : {})
+      .issues(team ? { team } : {})
       .then(setIssues)
       .catch(errorToast);
   const options: Option[] = issues

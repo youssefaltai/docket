@@ -10,9 +10,9 @@ beforeAll(async () => {
   s = await startServer();
   expect((await s.api("POST", "/api/workspaces", { name: "Side", key: "side" })).status).toBe(201);
   await s.api("POST", "/api/teams", { key: "ACM", workspace: "acme", name: "Acme team" });
-  await s.api("POST", "/api/teams", { key: "SID", workspace: "side", name: "Side team" });
+  await s.as("admin", "cookie", "side").api("POST", "/api/teams", { key: "SID", workspace: "side", name: "Side team" });
   acmeIssue = (await s.api("POST", "/api/issues", { team: "ACM", title: "Acme secret" })).body.id;
-  sideIssue = (await s.api("POST", "/api/issues", { team: "SID", title: "Side work" })).body.id;
+  sideIssue = (await s.as("admin", "cookie", "side").api("POST", "/api/issues", { team: "SID", title: "Side work" })).body.id;
   await s.api("POST", "/api/documents", { team: "ACM", title: "Acme plan" });
   await s.user("ana");
   await s.user("ana", { workspace: "side" });
@@ -48,7 +48,7 @@ test("a key's socket hears only its workspace", async () => {
   const socket = side.ws();
   expect(await socket.opened).toBeTrue();
   await s.api("PATCH", `/api/issues/${acmeIssue}`, { priority: 1 });
-  await s.api("PATCH", `/api/issues/${sideIssue}`, { priority: 1 });
+  await s.as("admin", "cookie", "side").api("PATCH", `/api/issues/${sideIssue}`, { priority: 1 });
   await socket.until((e) => e.id === sideIssue);
   expect(socket.events.some((e) => e.workspace === "acme")).toBeFalse();
   socket.close();

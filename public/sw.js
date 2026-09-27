@@ -1,4 +1,4 @@
-const CACHE = "docket-v2";
+const CACHE = "docket-v3"; // v3: API answers vary by workspace; drop older ones cached without Vary
 
 self.addEventListener("install", () => {
   self.skipWaiting();

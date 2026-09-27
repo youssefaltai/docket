@@ -4,7 +4,7 @@ import { Marked } from "marked";
 import type { IssueSummary } from "../shared/types";
 import { useApp } from "./context";
 import { statusSvg } from "./icons";
-import { isPlainClick, navigate } from "./routing";
+import { isPlainClick, navigate, wsPath } from "./routing";
 import { useIssueIndex } from "./issueIndex";
 import { cls } from "./util";
 
@@ -67,7 +67,7 @@ const marked = new Marked({
       renderer({ raw }) {
         const issue = chipFor(raw);
         if (!issue) return raw;
-        return `<a class="issue-ref" href="/issue/${raw}" title="${escapeHtml(issue.title)}">${statusSvg(issue.status)}${raw}</a>`;
+        return `<a class="issue-ref" href="${wsPath(`/issue/${raw}`)}" title="${escapeHtml(issue.title)}">${statusSvg(issue.status)}${raw}</a>`;
       },
     },
   ],
@@ -82,8 +82,10 @@ const marked = new Marked({
       const url = safeUrl(href);
       if (!url) return text;
       const t = title ? ` title="${escapeHtml(title)}"` : "";
-      const target = isInternal(url) ? "" : ` target="_blank" rel="noopener noreferrer"`;
-      return `<a href="${escapeHtml(url)}"${t}${target}>${text}</a>`;
+      const internal = isInternal(url);
+      const target = internal ? "" : ` target="_blank" rel="noopener noreferrer"`;
+      // Stored content says [Title](/doc/slug): the doc in the content's workspace, the one shown.
+      return `<a href="${escapeHtml(internal ? wsPath(url) : url)}"${t}${target}>${text}</a>`;
     },
     image({ href, title, text }) {
       if (!allowImages) return escapeHtml(text);
@@ -100,7 +102,7 @@ const marked = new Marked({
  * prompt injected into what it read could make it write an image URL that carries data out on render.
  */
 export function Markdown({ text, className, images = true }: { text: string; className?: string; images?: boolean }) {
-  const { teams } = useApp();
+  const { teams, workspace } = useApp();
   const index = useIssueIndex();
   const html = useMemo(() => {
     chipKeys = new Set(teams?.map((t) => t.key));
@@ -111,7 +113,7 @@ export function Markdown({ text, className, images = true }: { text: string; cla
     } finally {
       allowImages = true;
     }
-  }, [text, teams, index, images]);
+  }, [text, teams, index, images, workspace?.key]);
   return (
     <div
       className={cls("md", className)}

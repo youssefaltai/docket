@@ -88,12 +88,15 @@ test("new issues start in backlog, over REST and MCP", async () => {
 });
 
 test("a filter naming something unknown is 400, not an empty list", async () => {
-  for (const query of ["assignee=nobody", "delegate=nobody", "team=ZZZ", "workspace=nope", "parent=PAR-9999", "parent=garbage"]) {
+  for (const query of ["assignee=nobody", "delegate=nobody", "team=ZZZ", "parent=PAR-9999", "parent=garbage"]) {
     const res = await s.api("GET", `/api/issues?${query}`);
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/Unknown/);
   }
   expect((await s.api("GET", "/api/documents?team=ZZZ")).status).toBe(400);
+  // ?workspace= is no longer read; a workspace you aren't in, named in the header, is 404.
+  expect((await s.api("GET", "/api/issues?workspace=nope")).status).toBe(200);
+  expect((await s.api("GET", "/api/issues", undefined, { "X-Docket-Workspace": "nope" })).status).toBe(404);
   // A label nobody uses yet is a fine question with an empty answer.
   expect((await s.api("GET", "/api/issues?label=never-used")).body).toEqual([]);
   expect((await s.api("GET", "/api/issues?assignee=ana")).status).toBe(200);

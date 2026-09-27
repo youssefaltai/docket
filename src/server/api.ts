@@ -50,7 +50,6 @@ const DOCUMENT_FIELDS = ["title", "content", "edits", "team", "position", "check
 const param = (req: Request, name: string) => new URL(req.url).searchParams.get(name) || undefined;
 
 const issueFilter = (req: Request): IssueFilter => ({
-  workspace: param(req, "workspace"),
   team: param(req, "team"),
   status: param(req, "status")?.split(",") as Status[] | undefined,
   label: param(req, "label"),
@@ -99,6 +98,10 @@ export const apiRoutes = {
   "/api/api-keys/:id": {
     DELETE: handle<"/api/api-keys/:id">((req) => access.revokeApiKey(actorOf(req), req.params.id)),
   },
+  // Which of your workspaces a link made before URLs carried one points into.
+  "/api/locate": {
+    GET: handle((req) => tracker.locate(actorOf(req), { issue: param(req, "issue"), doc: param(req, "doc"), team: param(req, "team") })),
+  },
 
   // --- Workspaces and members ---
   "/api/workspaces": {
@@ -142,7 +145,7 @@ export const apiRoutes = {
 
   // --- Teams and issues ---
   "/api/teams": {
-    GET: handle((req) => tracker.listTeams(actorOf(req), { workspace: param(req, "workspace") })),
+    GET: handle((req) => tracker.listTeams(actorOf(req))),
     POST: handle(async (req) => tracker.createTeam(actorOf(req), await body<TeamInput>(req)), 201),
   },
   "/api/teams/:key": {
@@ -190,13 +193,13 @@ export const apiRoutes = {
     DELETE: handle<"/api/issues/:id/comments/:cid">((req) => tracker.deleteIssueComment(actorOf(req), req.params.id, req.params.cid)),
   },
   "/api/labels": {
-    GET: handle((req) => tracker.listLabels(actorOf(req), { workspace: param(req, "workspace") }).map((l) => l.label)),
+    GET: handle((req) => tracker.listLabels(actorOf(req)).map((l) => l.label)),
   },
 
   // --- Documents ---
   "/api/documents": {
     GET: handle((req) =>
-      tracker.listDocuments(actorOf(req), { workspace: param(req, "workspace"), team: param(req, "team"), q: param(req, "q") }),
+      tracker.listDocuments(actorOf(req), { team: param(req, "team"), q: param(req, "q") }),
     ),
     POST: handle(async (req) => tracker.createDocument(actorOf(req), await body<DocumentInput>(req)), 201),
   },
