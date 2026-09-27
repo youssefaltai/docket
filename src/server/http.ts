@@ -20,6 +20,13 @@ const CSP = [
   "frame-ancestors 'none'", // no other page (even one on another port of this host) can frame the app
 ].join("; ");
 
+/** Where links point: the origin the browser used (the proxy's, behind one). */
+export function originOf(req: Request): string {
+  const url = new URL(req.url);
+  const proto = req.headers.get("x-forwarded-proto") ?? url.protocol.replace(":", "");
+  return `${proto}://${req.headers.get("x-forwarded-host") ?? req.headers.get("host") ?? url.host}`;
+}
+
 const https = (req: Request) => new URL(req.url).protocol === "https:" || req.headers.get("x-forwarded-proto") === "https";
 
 /**

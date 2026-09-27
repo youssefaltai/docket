@@ -19,9 +19,15 @@ import * as access from "./access.ts";
 import type { Actor } from "./access.ts";
 import { actorOf } from "./auth.ts";
 import { AppError } from "./db.ts";
+import { originOf } from "./http.ts";
 import * as tracker from "./tracker.ts";
 
-const instructions = (a: Actor) => `Docket is an issue tracker shared by people and agents, modeled on Linear.
+/** Where this connection is and who it acts as. `username`: yours in `workspace`. */
+type Here = { origin: string; workspace: string; workspaceName: string; username: string };
+
+// The first line says which Docket and workspace this is, so an agent with several connections can tell them apart.
+const instructions = (a: Actor, here: Here) => `You're connected to Docket at ${here.origin}, workspace "${here.workspaceName}" (${here.workspace}), as @${here.username} (${a.kind}). Every tool acts there.
+Docket is an issue tracker shared by people and agents, modeled on Linear.
 - Workspace → team → issues and docs. Your key works in one workspace: everything you list, read and change is there.
 - Teams have a 2–5 letter key (e.g. BRD), unique within this workspace. Issues are identified as KEY-number, e.g. BRD-12.
 - Statuses: backlog, todo, in_progress, in_review, done, canceled. Priority: 0 none, 1 urgent, 2 high, 3 medium, 4 low.
@@ -136,8 +142,18 @@ function result(text: string, structuredContent: Record<string, unknown>): CallT
   return { content: [{ type: "text", text }], structuredContent };
 }
 
-function createServer(a: Actor): McpServer {
-  const server = new McpServer({ name: "docket", version: "1.0.0" }, { instructions: instructions(a) });
+function createServer(a: Actor, origin: string): McpServer {
+  const workspace = access.requestWorkspace(a); // a key's own
+  const here = {
+    origin,
+    workspace,
+    workspaceName: access.listWorkspaces(a).find((w) => w.key === workspace)!.name,
+    username: access.usernameOf(a)!,
+  };
+  const server = new McpServer(
+    { name: `docket-${workspace}`, title: `Docket · ${here.workspaceName}`, version: "1.0.0", websiteUrl: origin },
+    { instructions: instructions(a, here) },
+  );
   /**
    * Registers a tool only if this caller can use it, so tools/list shows just those: a read key gets
    * the read-only tools, and `who` narrows the rest. Calling a hidden one is a "not found" tool error.
@@ -553,7 +569,9 @@ export async function handleMcp(req: Request): Promise<Response> {
       { status: 405, headers: { Allow: "POST" } },
     );
   }
-  const server = createServer(actorOf(req));
+  // The public origin: DOCKET_URL (as for sign-in-link), else the one the client used.
+  const origin = process.env.DOCKET_URL?.replace(/\/+$/, "") || originOf(req);
+  const server = createServer(actorOf(req), origin);
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
     enableJsonResponse: true,

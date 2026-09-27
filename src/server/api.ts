@@ -3,6 +3,7 @@ import type { DocumentInput, IssueFilter, IssueInput, Status, TeamInput, Workspa
 import * as access from "./access.ts";
 import { actorOf, isJson } from "./auth.ts";
 import { AppError } from "./db.ts";
+import { originOf } from "./http.ts";
 import * as tracker from "./tracker.ts";
 
 /** Wraps a handler: its return value becomes the JSON body (unless it's a Response); errors become `{ error }`. */
@@ -58,13 +59,6 @@ const issueFilter = (req: Request): IssueFilter => ({
   parent: param(req, "parent"),
   q: param(req, "q"),
 });
-
-/** Where links point: the origin the browser used (the proxy's, behind one). */
-function originOf(req: Request): string {
-  const url = new URL(req.url);
-  const proto = req.headers.get("x-forwarded-proto") ?? url.protocol.replace(":", "");
-  return `${proto}://${req.headers.get("x-forwarded-host") ?? req.headers.get("host") ?? url.host}`;
-}
 
 const link = (req: Request, { code, expiresAt }: { code: string; expiresAt: string }) => ({
   code,

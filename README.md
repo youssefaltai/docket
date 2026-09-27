@@ -53,9 +53,11 @@ The first time it starts, Docket prints a one-time setup code (`docker compose l
 Then give Claude Code its own token: **Settings → Workspace → Add agent** shows a ready-to-paste command:
 
 ```sh
-claude mcp add --transport http --scope user docket http://localhost:7100/mcp \
+claude mcp add --transport http docket-<workspace> http://localhost:7100/mcp \
   --header "Authorization: Bearer dk_…"
 ```
+
+Run it in your project folder. Each workspace is its own server (`docket-acme`, `docket-side`), so they never clash.
 
 Try: *"Create a team called Website in Docket and file issues for everything in TODO.md."*
 
