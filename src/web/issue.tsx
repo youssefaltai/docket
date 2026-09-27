@@ -18,7 +18,9 @@ import {
 import {
   Avatar,
   ago,
+  CalendarIcon,
   ChevronRightIcon,
+  CloseIcon,
   Comments,
   CopyIcon,
   DocIcon,
@@ -41,6 +43,8 @@ import {
   TrashIcon,
   copyText,
   cls,
+  dayLabel,
+  dueInfo,
   errorToast,
   fullDate,
   isMe,
@@ -439,6 +443,46 @@ function Activity({ issue, actions }: { issue: Issue; actions: CommentActions })
   return <Comments title="Activity" comments={issue.comments} activity={issue.activity} actions={actions} />;
 }
 
+/**
+ * A plain date input under the property button: clicking opens the browser's own picker. It saves on blur, so typing
+ * a date digit by digit saves once, not at every intermediate valid date.
+ */
+function DueDate({ issue, patch }: { issue: Issue; patch: (p: IssueChange) => void }) {
+  const [draft, setDraft] = useState<string | null>(null); // while editing
+  const value = draft ?? issue.dueOn ?? "";
+  const due = dueInfo({ ...issue, dueOn: value || null });
+  const save = () => {
+    // A year typed past 4 digits (12026) is a valid date to the browser but not a due date: keep the saved one.
+    if (draft !== null && /^(\d{4}-\d{2}-\d{2})?$/.test(draft) && (draft || null) !== issue.dueOn) patch({ dueOn: draft || null });
+    setDraft(null);
+  };
+  return (
+    <>
+      <label className={cls("prop-btn due-prop", due?.tone)} title={due?.title}>
+        <CalendarIcon />
+        {value ? dayLabel(value) : <span className="muted">No due date</span>}
+        <input
+          type="date"
+          aria-label="Due date"
+          value={value}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={save}
+          onClick={(e) => {
+            try {
+              e.currentTarget.showPicker();
+            } catch {}
+          }}
+        />
+      </label>
+      {value && (
+        <button className="icon-btn xs" onClick={() => patch({ dueOn: null })} aria-label="Remove due date" title="Remove due date">
+          <CloseIcon />
+        </button>
+      )}
+    </>
+  );
+}
+
 function Prop({ label, cmd, children }: { label: string; cmd?: string; children: ReactNode }) {
   return (
     <div className="prop" data-cmd={cmd}>
@@ -502,6 +546,9 @@ function Properties({ issue, patch }: { issue: Issue; patch: (p: IssueChange) =>
         <LabelsPicker value={issue.labels} onChange={(labels) => patch({ labels })} className="prop-btn prop-wrap">
           {issue.labels.length ? issue.labels.map((l) => <LabelChip key={l} name={l} />) : <span className="muted">Add labels</span>}
         </LabelsPicker>
+      </Prop>
+      <Prop label="Due date">
+        <DueDate issue={issue} patch={patch} />
       </Prop>
       <Prop label="Team">
         <Link to={`/t/${issue.team}`} className="prop-btn">

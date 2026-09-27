@@ -24,6 +24,23 @@ export function ago(iso: string): string {
 export const fullDate = (iso: string) =>
   new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 
+// Due dates are calendar dates ("YYYY-MM-DD"), shown against the browser's own date so they match the viewer's
+// calendar (the server's due filters use its UTC date).
+const dayOf = (ymd: string) => new Date(Number(ymd.slice(0, 4)), Number(ymd.slice(5, 7)) - 1, Number(ymd.slice(8, 10)));
+
+/** Days from today (local) to `ymd`: 0 today, negative when past. */
+export function daysUntil(ymd: string): number {
+  const t = new Date();
+  return Math.round((dayOf(ymd).getTime() - new Date(t.getFullYear(), t.getMonth(), t.getDate()).getTime()) / 86400000);
+}
+
+/** "Oct 1", with the year when it isn't this year's. */
+export function dayLabel(ymd: string): string {
+  const date = dayOf(ymd);
+  const sameYear = date.getFullYear() === new Date().getFullYear();
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: sameYear ? undefined : "numeric" });
+}
+
 // A small set of distinct hues reads calmer than the whole wheel.
 const HUES = [212, 152, 32, 268, 350, 186, 48, 232, 12, 300];
 

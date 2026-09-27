@@ -4,6 +4,9 @@ import type { ZodRawShapeCompat } from "@modelcontextprotocol/sdk/server/zod-com
 import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import {
+  CLOSED_STATUSES,
+  DUE_FILTERS,
+  ISSUE_SORTS,
   OPEN_STATUSES,
   PRIORITIES,
   PRIORITY_LABELS,
@@ -55,6 +58,10 @@ const relatedTo = z
   .array(identifier)
   .describe("Identifiers of issues connected to this one that aren't duplicates or blockers; related is two-way. Replaces the whole list");
 const duplicateOf = identifier.describe("The issue this one duplicates: it's set to canceled and the relation is recorded");
+const dueOn = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/)
+  .describe('Due date, a calendar date like "2026-09-30" (no time)');
 const assignee = z.string().describe('A person\'s username (see list_members), or "me"');
 const delegate = z.string().describe('An agent\'s username (see list_members), or "me" if you are one');
 
@@ -70,7 +77,14 @@ const body = z.string().describe(`Markdown. ${MENTION}`);
 
 const at = (user: UserRef) => `@${user.username}`;
 
-/** One line per issue: `BRD-3 · todo · high · Title · @assignee · →@delegate · #label`. */
+/** "due 2026-10-01", or "overdue 2026-09-20" for an open issue due before today (the server's date, UTC). */
+function due(issue: IssueSummary): string | null {
+  if (!issue.dueOn) return null;
+  const overdue = issue.dueOn < new Date().toISOString().slice(0, 10) && !CLOSED_STATUSES.includes(issue.status);
+  return `${overdue ? "overdue" : "due"} ${issue.dueOn}`;
+}
+
+/** One line per issue: `BRD-3 · todo · high · Title · @assignee · →@delegate · #label · due 2026-10-01`. */
 function line(issue: IssueSummary): string {
   return [
     issue.id,
@@ -80,6 +94,7 @@ function line(issue: IssueSummary): string {
     issue.assignee && at(issue.assignee),
     issue.delegate && `→${at(issue.delegate)}`,
     issue.labels.map((l) => `#${l}`).join(" "),
+    due(issue),
   ]
     .filter(Boolean)
     .join(" · ");
@@ -132,6 +147,8 @@ function change({ kind, from, to }: Activity): string {
       return `related ${diff()}`;
     case "duplicateOf":
       return `duplicate of ${show(from)} → ${show(to)}`;
+    case "dueOn":
+      return `due date ${show(from)} → ${show(to)}`;
     case "claimed":
       return `claimed (${from} → ${to})`;
     case "trashed":
@@ -362,7 +379,7 @@ function createServer(a: Actor, origin: string): McpServer {
     "list_issues",
     {
       description:
-        "List issues, one line each: identifier · status · priority · title · @assignee · →@delegate · #labels. Sorted by status, then priority (urgent first, none last), then most recently updated. Only open issues (backlog, todo, in_progress, in_review) unless you pass `status`; there is no 'open' status, so for open issues leave `status` out. Pages of `limit` (default 50): when there are more, the output ends with a cursor to pass as `after` for the next page. Unknown team, assignee, delegate, creator or parent is an error, not an empty list. Use get_issue for the description, comments, sub-issues and blockers.",
+        "List issues, one line each: identifier · status · priority · title · @assignee · →@delegate · #labels · due date (\"overdue\" when an open issue's date has passed). Sorted by status, then priority (urgent first, none last), then most recently updated; sort \"due\" puts the earliest due date first (none last). Only open issues (backlog, todo, in_progress, in_review) unless you pass `status`; there is no 'open' status, so for open issues leave `status` out. Pages of `limit` (default 50): when there are more, the output ends with a cursor to pass as `after` for the next page. Unknown team, assignee, delegate, creator or parent is an error, not an empty list. Use get_issue for the description, comments, sub-issues and blockers.",
       inputSchema: {
         team: teamKey.optional(),
         status: z
@@ -378,6 +395,11 @@ function createServer(a: Actor, origin: string): McpServer {
         parent: identifier.optional().describe("Only sub-issues of this issue, e.g. BRD-12"),
         query: z.string().optional().describe("Text to find in identifier, title or description"),
         subscribed: z.boolean().optional().describe("true: only issues you're subscribed to"),
+        due: z
+          .enum(DUE_FILTERS)
+          .optional()
+          .describe("By due date (the server's date, UTC): overdue (past, open issues only), soon (today to 7 days ahead), today, any (has one), none"),
+        sort: z.enum(ISSUE_SORTS).optional().describe("default (status, priority, recently updated) or due (earliest due date first, none last)"),
         limit: z.number().int().min(1).max(500).optional().describe("Page size (default 50)"),
         after: z.string().optional().describe("The cursor from the end of the previous page"),
       },
@@ -423,6 +445,7 @@ function createServer(a: Actor, origin: string): McpServer {
         blockedBy: blockedBy.optional(),
         relatedTo: relatedTo.optional(),
         duplicateOf: duplicateOf.optional(),
+        dueOn: dueOn.optional(),
       },
     },
     writes((input) => {
@@ -449,6 +472,7 @@ function createServer(a: Actor, origin: string): McpServer {
         blockedBy: blockedBy.optional(),
         relatedTo: relatedTo.optional(),
         duplicateOf: duplicateOf.nullable().optional().describe("The issue this one duplicates (it's set to canceled); null to clear"),
+        dueOn: dueOn.nullable().optional().describe('Due date, a calendar date like "2026-09-30"; null to clear'),
         baseUpdatedAt: z
           .string()
           .optional()

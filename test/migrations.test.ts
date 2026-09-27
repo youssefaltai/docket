@@ -764,7 +764,7 @@ describe("migration 7", () => {
       { issue_id: 101, actor_id: 1, on_behalf_of_id: null, kind: "created", from_value: null, to_value: null, created_at: t(2) },
       { issue_id: 102, actor_id: 2, on_behalf_of_id: null, kind: "created", from_value: null, to_value: null, created_at: t(4) },
     ]);
-    expect(UNCHANGED.map((sql) => rows(v6, sql))).toEqual(before);
+    expect(UNCHANGED.map((sql) => rows(v6, sql))).toMatchObject(before); // later migrations may add columns (12: issues.due_on)
     expect(rows(v6, "PRAGMA foreign_key_check")).toEqual([]);
     expect((rows(v6, "PRAGMA user_version")[0] as { user_version: number }).user_version).toBeGreaterThanOrEqual(7);
   });
@@ -959,7 +959,7 @@ describe("migration 8", () => {
   afterAll(() => server.stop());
 
   test("the data is untouched, and mentions are those migration 9 backfills", () => {
-    expect(UNCHANGED.map((sql) => rows(v7, sql))).toEqual(before);
+    expect(UNCHANGED.map((sql) => rows(v7, sql))).toMatchObject(before); // later migrations may add columns (12: issues.due_on)
     expect(rows(v7, "SELECT source, user_id FROM mentions ORDER BY source")).toEqual([
       { source: "comment:301", user_id: 3 },
       { source: "document_comment:401", user_id: 1 },
@@ -1185,7 +1185,7 @@ describe("migration 9", () => {
   afterAll(() => server.stop());
 
   test("the data is untouched and the inbox starts empty", () => {
-    expect(UNCHANGED.map((sql) => rows(v8, sql))).toEqual(before);
+    expect(UNCHANGED.map((sql) => rows(v8, sql))).toMatchObject(before); // later migrations may add columns (12: issues.due_on)
     expect(rows(v8, "SELECT * FROM notifications")).toEqual([]);
     expect(rows(v8, "PRAGMA foreign_key_check")).toEqual([]);
     expect((rows(v8, "PRAGMA user_version")[0] as { user_version: number }).user_version).toBeGreaterThanOrEqual(9);
@@ -1476,7 +1476,7 @@ describe("migration 10", () => {
   afterAll(() => server.stop());
 
   test("the data is untouched and the webhook tables start empty", () => {
-    expect(UNCHANGED.map((sql) => rows(v9, sql))).toEqual(before);
+    expect(UNCHANGED.map((sql) => rows(v9, sql))).toMatchObject(before); // later migrations may add columns (12: issues.due_on)
     expect(rows(v9, "SELECT * FROM webhooks")).toEqual([]);
     expect(rows(v9, "SELECT * FROM webhook_deliveries")).toEqual([]);
     expect(rows(v9, "PRAGMA foreign_key_check")).toEqual([]);
@@ -1765,7 +1765,7 @@ describe("migration 11", () => {
   afterAll(() => server.stop());
 
   test("the data is untouched and issue_relations starts empty", () => {
-    expect(UNCHANGED.map((sql) => rows(v10, sql))).toEqual(before);
+    expect(UNCHANGED.map((sql) => rows(v10, sql))).toMatchObject(before); // later migrations may add columns (12: issues.due_on)
     expect(rows(v10, "SELECT * FROM issue_relations")).toEqual([]);
     expect(rows(v10, "PRAGMA foreign_key_check")).toEqual([]);
     expect((rows(v10, "PRAGMA user_version")[0] as { user_version: number }).user_version).toBeGreaterThanOrEqual(11);
@@ -1788,5 +1788,308 @@ describe("migration 11", () => {
       { from_id: 102, to_id: 101, kind: "duplicate" },
       { from_id: 101, to_id: 102, kind: "related" },
     ]);
+  });
+});
+
+// Migration 12 (due dates) on a database written under schema 11: every row stays as it was, issues gain an empty due_on,
+// and due dates work on the migrated database.
+describe("migration 12", () => {
+  // Migrations 1–11 exactly as they shipped (src/server/db.ts): migration 11's fixture above (1–10, with migration 9's
+  // two SQL blocks and its backfill left out, as noted at migration 10), then migration 11. Frozen: never edit this fixture.
+  const SCHEMA_V11 = [
+    ...SCHEMA_V3,
+    `
+  ALTER TABLE api_keys ADD COLUMN workspace TEXT REFERENCES workspaces(key) ON DELETE CASCADE;
+  DELETE FROM api_keys WHERE session_id IS NOT NULL; -- chat keys: short-lived, minted again per workspace
+  UPDATE api_keys SET workspace = (SELECT m.workspace FROM workspace_members m
+    WHERE m.user_id = api_keys.user_id AND m.suspended_at IS NULL ORDER BY m.created_at, m.workspace LIMIT 1);
+  DELETE FROM api_keys WHERE workspace IS NULL; -- the owner has no active workspace left
+  CREATE INDEX api_keys_workspace ON api_keys(user_id, workspace);
+  `,
+    `
+  CREATE TABLE members_new (
+    workspace TEXT NOT NULL REFERENCES workspaces(key) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    username TEXT NOT NULL,
+    name TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('admin', 'member', 'guest', 'agent')),
+    created_at TEXT NOT NULL,
+    suspended_at TEXT,
+    PRIMARY KEY (workspace, user_id),
+    UNIQUE (workspace, username)
+  );
+  INSERT INTO members_new SELECT m.workspace, m.user_id, u.username, u.name, m.role, m.created_at, m.suspended_at
+    FROM workspace_members m JOIN users u ON u.id = m.user_id;
+  DROP TABLE workspace_members;
+  ALTER TABLE members_new RENAME TO workspace_members;
+  CREATE INDEX workspace_members_user ON workspace_members(user_id);
+  CREATE TABLE users_new (
+    id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('person', 'agent')),
+    email TEXT,
+    created_at TEXT NOT NULL
+  );
+  INSERT INTO users_new SELECT id, kind, email, created_at FROM users;
+  DROP TABLE users;
+  ALTER TABLE users_new RENAME TO users;
+  CREATE UNIQUE INDEX users_email ON users(lower(email)) WHERE email IS NOT NULL;
+  `,
+    `
+  CREATE TABLE teams_new (
+    id INTEGER PRIMARY KEY,
+    workspace TEXT NOT NULL REFERENCES workspaces(key),
+    key TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    next_number INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (workspace, key)
+  );
+  INSERT INTO teams_new (workspace, key, name, description, next_number, created_at, updated_at)
+    SELECT workspace, key, name, description, next_number, created_at, updated_at FROM teams ORDER BY created_at, key;
+  CREATE TABLE issues_new (
+    id INTEGER PRIMARY KEY,
+    team_id INTEGER NOT NULL REFERENCES teams(id),
+    number INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL,
+    priority INTEGER NOT NULL DEFAULT 0,
+    labels TEXT NOT NULL DEFAULT '[]',
+    assignee_id INTEGER REFERENCES users(id),
+    delegate_id INTEGER REFERENCES users(id),
+    creator_id INTEGER NOT NULL REFERENCES users(id),
+    parent_id INTEGER REFERENCES issues(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT,
+    deleted_at TEXT,
+    UNIQUE (team_id, number)
+  );
+  INSERT INTO issues_new SELECT i.id, t.id, i.number, i.title, i.description, i.status, i.priority, i.labels, i.assignee_id,
+    i.delegate_id, i.creator_id, i.parent_id, i.created_at, i.updated_at, i.completed_at, i.deleted_at
+    FROM issues i LEFT JOIN teams_new t ON t.key = i.team_key;
+  CREATE TABLE documents_new (
+    id INTEGER PRIMARY KEY,
+    workspace TEXT NOT NULL REFERENCES workspaces(key),
+    team_id INTEGER NOT NULL REFERENCES teams(id),
+    slug TEXT NOT NULL,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    position REAL NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    updated_by_id INTEGER NOT NULL REFERENCES users(id),
+    deleted_at TEXT,
+    UNIQUE (workspace, slug)
+  );
+  INSERT INTO documents_new SELECT d.id, t.workspace, t.id, d.slug, d.title, d.content, d.position, d.created_at,
+    d.updated_at, d.updated_by_id, d.deleted_at FROM documents d LEFT JOIN teams_new t ON t.key = d.team_key;
+  DROP TABLE documents;
+  DROP TABLE issues;
+  DROP TABLE teams;
+  ALTER TABLE teams_new RENAME TO teams;
+  ALTER TABLE issues_new RENAME TO issues;
+  ALTER TABLE documents_new RENAME TO documents;
+  CREATE INDEX issues_parent ON issues(parent_id);
+  CREATE INDEX issues_deleted ON issues(deleted_at) WHERE deleted_at IS NOT NULL;
+  CREATE INDEX documents_team ON documents(team_id, position);
+  CREATE INDEX documents_deleted ON documents(deleted_at) WHERE deleted_at IS NOT NULL;
+  `,
+    `
+  CREATE TABLE issue_activity (
+    id INTEGER PRIMARY KEY,
+    issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+    actor_id INTEGER NOT NULL REFERENCES users(id),
+    on_behalf_of_id INTEGER REFERENCES users(id),
+    kind TEXT NOT NULL,
+    from_value TEXT,
+    to_value TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX issue_activity_issue ON issue_activity(issue_id, id);
+  INSERT INTO issue_activity (issue_id, actor_id, kind, created_at) SELECT id, creator_id, 'created', created_at FROM issues ORDER BY id;
+  `,
+    `
+  CREATE TABLE mentions (
+    source TEXT NOT NULL, -- 'issue:<id>' (description), 'comment:<id>', 'document:<id>' (content), 'document_comment:<id>'
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    issue_id INTEGER REFERENCES issues(id) ON DELETE CASCADE,       -- the issue it's in or on
+    document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE, -- the doc it's in or on
+    author_id INTEGER NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (source, user_id)
+  );
+  CREATE INDEX mentions_user ON mentions(user_id);
+  `,
+    `
+    CREATE TABLE subscriptions (
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      issue_id INTEGER REFERENCES issues(id) ON DELETE CASCADE,
+      document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE,
+      created_at TEXT NOT NULL,
+      CHECK ((issue_id IS NULL) != (document_id IS NULL))
+    );
+    CREATE UNIQUE INDEX subscriptions_issue ON subscriptions(issue_id, user_id) WHERE issue_id IS NOT NULL;
+    CREATE UNIQUE INDEX subscriptions_document ON subscriptions(document_id, user_id) WHERE document_id IS NOT NULL;
+    CREATE INDEX subscriptions_user ON subscriptions(user_id);
+    CREATE TABLE notifications (
+      id INTEGER PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id), -- the recipient
+      workspace TEXT NOT NULL REFERENCES workspaces(key) ON DELETE CASCADE,
+      kind TEXT NOT NULL, -- assigned | delegated | mentioned | commented | status
+      actor_id INTEGER NOT NULL REFERENCES users(id),
+      issue_id INTEGER REFERENCES issues(id) ON DELETE CASCADE,
+      document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE,
+      comment_id INTEGER, -- in comments (issue) or document_comments (doc); no FK: two tables
+      status TEXT, -- kind status: the new status
+      created_at TEXT NOT NULL,
+      read_at TEXT
+    );
+    CREATE INDEX notifications_user ON notifications(user_id, workspace, id);
+    INSERT OR IGNORE INTO subscriptions (user_id, issue_id, created_at) SELECT creator_id, id, created_at FROM issues;
+    INSERT OR IGNORE INTO subscriptions (user_id, issue_id, created_at) SELECT assignee_id, id, updated_at FROM issues WHERE assignee_id IS NOT NULL;
+    INSERT OR IGNORE INTO subscriptions (user_id, issue_id, created_at) SELECT delegate_id, id, updated_at FROM issues WHERE delegate_id IS NOT NULL;
+    INSERT OR IGNORE INTO subscriptions (user_id, issue_id, created_at) SELECT author_id, issue_id, MIN(created_at) FROM comments GROUP BY author_id, issue_id;
+    -- A doc's creator is the author of its first version.
+    INSERT OR IGNORE INTO subscriptions (user_id, document_id, created_at) SELECT v.author_id, v.document_id, v.created_at FROM document_versions v
+      WHERE v.id = (SELECT MIN(id) FROM document_versions WHERE document_id = v.document_id);
+    INSERT OR IGNORE INTO subscriptions (user_id, document_id, created_at) SELECT author_id, document_id, MIN(created_at) FROM document_comments GROUP BY author_id, document_id;
+    `,
+    `
+    INSERT OR IGNORE INTO subscriptions (user_id, issue_id, created_at)
+      SELECT user_id, issue_id, MIN(created_at) FROM mentions WHERE issue_id IS NOT NULL GROUP BY user_id, issue_id;
+    INSERT OR IGNORE INTO subscriptions (user_id, document_id, created_at)
+      SELECT user_id, document_id, MIN(created_at) FROM mentions WHERE document_id IS NOT NULL GROUP BY user_id, document_id;
+    `,
+    `
+  CREATE TABLE webhooks (
+    id INTEGER PRIMARY KEY,
+    workspace TEXT NOT NULL REFERENCES workspaces(key) ON DELETE CASCADE,
+    url TEXT NOT NULL,
+    label TEXT NOT NULL DEFAULT '',
+    resource_types TEXT NOT NULL,         -- JSON array of Issue | Comment | Document | Notification
+    secret TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    failures INTEGER NOT NULL DEFAULT 0,  -- deliveries in a row that failed for good; 10 disables the webhook
+    created_by INTEGER NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX webhooks_workspace ON webhooks(workspace);
+  CREATE TABLE webhook_deliveries (
+    id INTEGER PRIMARY KEY,
+    webhook_id INTEGER NOT NULL REFERENCES webhooks(id) ON DELETE CASCADE,
+    uuid TEXT NOT NULL,                   -- Docket-Delivery, the same on every attempt
+    type TEXT NOT NULL,
+    action TEXT NOT NULL,
+    entity TEXT NOT NULL,                 -- identifier, slug, comment id or notification id
+    payload TEXT NOT NULL,                -- JSON without webhookTimestamp (set per attempt)
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'delivered', 'failed')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT,
+    response_status INTEGER,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    last_attempt_at TEXT
+  );
+  CREATE INDEX webhook_deliveries_due ON webhook_deliveries(next_attempt_at) WHERE status = 'pending';
+  CREATE INDEX webhook_deliveries_webhook ON webhook_deliveries(webhook_id, id);
+  `,
+    `
+  CREATE TABLE issue_relations (
+    from_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+    to_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN ('related', 'duplicate')),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (from_id, to_id, kind)
+  );
+  CREATE INDEX issue_relations_to ON issue_relations(to_id, kind);
+  `,
+  ];
+  const t = (minutes: number) => new Date(Date.UTC(2026, 0, 1, 0, minutes)).toISOString();
+  const rows = (file: string, sql: string) => {
+    const db = new Database(file, { readonly: true });
+    try {
+      return db.query(sql).all();
+    } finally {
+      db.close();
+    }
+  };
+  // Everything migration 12 leaves alone: all of schema 11's tables but issues, which gains a column.
+  const UNCHANGED = [
+    "users",
+    "workspaces",
+    "workspace_members",
+    "sessions",
+    "api_keys",
+    "codes",
+    "teams",
+    "issue_blocks",
+    "issue_relations",
+    "comments",
+    "documents",
+    "document_versions",
+    "document_refs",
+    "document_comments",
+    "issue_activity",
+    "mentions",
+    "subscriptions",
+    "notifications",
+    "webhooks",
+    "webhook_deliveries",
+  ].map((table) => `SELECT * FROM ${table} ORDER BY rowid`);
+  const ISSUES = "SELECT * FROM issues ORDER BY id";
+
+  let v11: string;
+  let before: unknown[][];
+  let issuesBefore: Record<string, unknown>[];
+  let server: TestServer;
+  beforeAll(async () => {
+    v11 = join(dir, "v11.db");
+    const db = new Database(v11, { create: true });
+    for (const sql of SCHEMA_V11) db.run(sql);
+    db.run("PRAGMA user_version = 11");
+    db.run(`INSERT INTO users (id, kind, email, created_at) VALUES (1, 'person', 'sam@example.com', '${t(0)}'), (2, 'agent', NULL, '${t(0)}')`);
+    db.run(`INSERT INTO workspaces (key, name, created_at, updated_at) VALUES ('acme', 'Acme', '${t(0)}', '${t(0)}')`);
+    db.run(`INSERT INTO workspace_members (workspace, user_id, username, name, role, created_at) VALUES
+      ('acme', 1, 'sam', 'Sam', 'admin', '${t(0)}'), ('acme', 2, 'bot', 'Bot', 'agent', '${t(0)}')`);
+    db.run(`INSERT INTO api_keys (id, user_id, name, scope, token_hash, created_at, workspace) VALUES (12, 2, 'bot', 'write', '${hash(AGENT_KEY)}', '${t(0)}', 'acme')`);
+    db.run(`INSERT INTO teams (id, workspace, key, name, created_at, updated_at, next_number) VALUES (5, 'acme', 'ACM', 'Acme', '${t(0)}', '${t(0)}', 4)`);
+    db.run(`INSERT INTO issues (id, team_id, number, title, status, priority, labels, creator_id, created_at, updated_at, completed_at) VALUES
+      (101, 5, 1, 'Open', 'todo', 2, '["bug"]', 1, '${t(1)}', '${t(1)}', NULL),
+      (102, 5, 2, 'Done', 'done', 0, '[]', 1, '${t(2)}', '${t(2)}', '${t(2)}'),
+      (103, 5, 3, 'Duplicate', 'canceled', 0, '[]', 1, '${t(3)}', '${t(3)}', '${t(3)}')`);
+    db.run(`INSERT INTO issue_relations (from_id, to_id, kind, created_at) VALUES (103, 101, 'duplicate', '${t(3)}'), (101, 102, 'related', '${t(3)}')`);
+    db.run(`INSERT INTO issue_activity (issue_id, actor_id, kind, from_value, to_value, created_at) VALUES
+      (101, 1, 'created', NULL, NULL, '${t(1)}'), (102, 1, 'created', NULL, NULL, '${t(2)}'), (103, 1, 'created', NULL, NULL, '${t(3)}'),
+      (103, 1, 'duplicateOf', NULL, '"ACM-1"', '${t(3)}')`);
+    db.run(`INSERT INTO subscriptions (user_id, issue_id, created_at) VALUES (1, 101, '${t(1)}')`);
+    db.close();
+    before = UNCHANGED.map((sql) => rows(v11, sql));
+    issuesBefore = rows(v11, ISSUES) as Record<string, unknown>[];
+    server = await startServer({ setup: false, env: { DATABASE_PATH: v11 } });
+  });
+  afterAll(() => server.stop());
+
+  test("the data is untouched; issues gain due_on, empty, and its index", () => {
+    expect(UNCHANGED.map((sql) => rows(v11, sql))).toEqual(before);
+    expect(rows(v11, ISSUES)).toEqual(issuesBefore.map((issue) => ({ ...issue, due_on: null })));
+    expect(rows(v11, "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'issues' AND name = 'issues_due'")).toEqual([{ name: "issues_due" }]);
+    expect(rows(v11, "PRAGMA foreign_key_check")).toEqual([]);
+    expect((rows(v11, "PRAGMA user_version")[0] as { user_version: number }).user_version).toBeGreaterThanOrEqual(12);
+  });
+
+  test("issues read as before with no due date, and due dates work on the migrated database", async () => {
+    const bot = server.with({ token: AGENT_KEY });
+    const list = (query: string) => bot.api("GET", `/api/issues?${query}`).then((r) => r.body.map((i: any) => i.id));
+    expect((await bot.api("GET", "/api/issues/ACM-1")).body).toMatchObject({ title: "Open", priority: 2, labels: ["bug"], relatedTo: ["ACM-2"], duplicates: ["ACM-3"], dueOn: null });
+    expect(await list("due=none")).toEqual(["ACM-1", "ACM-2", "ACM-3"]);
+    expect(await list("due=any")).toEqual([]);
+    expect((await bot.api("PATCH", "/api/issues/ACM-2", { dueOn: "2026-01-01" })).body).toMatchObject({ dueOn: "2026-01-01", status: "done" });
+    expect(await list("due=any")).toEqual(["ACM-2"]);
+    expect(await list("due=overdue")).toEqual([]); // done: never overdue
+    expect(await list("sort=due")).toEqual(["ACM-2", "ACM-1", "ACM-3"]);
   });
 });

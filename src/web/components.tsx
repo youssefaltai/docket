@@ -8,13 +8,13 @@ import {
 } from "react";
 import { api } from "./api";
 import { getYou } from "./auth";
-import type { Team, UserRef } from "../shared/types";
+import { CLOSED_STATUSES, type IssueSummary, type Team, type UserRef } from "../shared/types";
 import { useApp } from "./context";
-import { PlusIcon, SearchIcon, SettingsIcon, MenuIcon, TrashIcon } from "./icons";
+import { CalendarIcon, PlusIcon, SearchIcon, SettingsIcon, MenuIcon, TrashIcon } from "./icons";
 import { Link } from "./routing";
 import { useAutosize, useRun } from "./hooks";
 import { errorToast } from "./toast";
-import { ago, cls, fullDate, hueStyle } from "./util";
+import { ago, cls, dayLabel, daysUntil, fullDate, hueStyle } from "./util";
 
 export const Kbd = ({ children }: { children: ReactNode }) => <kbd>{children}</kbd>;
 
@@ -44,6 +44,35 @@ export function LabelChip({ name }: { name: string }) {
     <span className="label" dir="auto">
       <LabelDot name={name} />
       {name}
+    </span>
+  );
+}
+
+/**
+ * An issue's due date against today, Linear's colors: red when an open issue is due today or overdue, orange within a
+ * week, gray otherwise (finished work is never flagged).
+ */
+export function dueInfo(issue: Pick<IssueSummary, "dueOn" | "status">) {
+  if (!issue.dueOn) return null;
+  const days = daysUntil(issue.dueOn);
+  const open = !CLOSED_STATUSES.includes(issue.status);
+  const date = dayLabel(issue.dueOn);
+  const n = (d: number) => `${d} day${d === 1 ? "" : "s"}`;
+  const relative = days === 0 ? "today" : days < 0 ? `${n(-days)} overdue` : `in ${n(days)}`;
+  return {
+    tone: open && days <= 0 ? "due-now" : open && days <= 7 ? "due-soon" : "",
+    short: !open || days > 7 ? date : days === 0 ? "Today" : days < 0 ? `${-days}d overdue` : `in ${days}d`,
+    title: `Due ${date}${open ? ` · ${relative}` : ""}`,
+  };
+}
+
+export function DueChip({ issue }: { issue: IssueSummary }) {
+  const due = dueInfo(issue);
+  if (!due) return null;
+  return (
+    <span className={cls("due", due.tone)} title={due.title}>
+      <CalendarIcon />
+      {due.short}
     </span>
   );
 }

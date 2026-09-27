@@ -8,7 +8,7 @@ import { Link } from "./routing";
 import { useRun } from "./hooks";
 import { Markdown } from "./markdown";
 import { ask, errorToast } from "./toast";
-import { ago, fullDate, MOD } from "./util";
+import { ago, dayLabel, fullDate, MOD } from "./util";
 
 export interface CommentActions {
   add: (body: string) => Promise<void>;
@@ -176,6 +176,8 @@ function describe({ kind, from, to }: Activity, actor: UserRef): ReactNode {
       return diff(issue, "marked as related to", "removed related");
     case "duplicateOf":
       return to ? <>marked as a duplicate of {issue(to as string)}</> : "unmarked as a duplicate";
+    case "dueOn":
+      return to ? `set the due date to ${dayLabel(to as string)}` : "removed the due date";
     case "claimed":
       return "claimed the issue";
     case "trashed":

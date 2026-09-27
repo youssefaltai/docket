@@ -418,6 +418,11 @@ const MIGRATIONS: (string | (() => void))[] = [
   );
   CREATE INDEX issue_relations_to ON issue_relations(to_id, kind);
   `,
+  // Due dates: a calendar date, "YYYY-MM-DD" (sorts and compares as text); NULL = none.
+  `
+  ALTER TABLE issues ADD COLUMN due_on TEXT;
+  CREATE INDEX issues_due ON issues(due_on) WHERE due_on IS NOT NULL;
+  `,
 ];
 
 db.run("PRAGMA foreign_keys = OFF"); // a migration may rebuild a table (SQLite's 12-step ALTER); checked before each commit
