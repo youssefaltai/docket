@@ -130,8 +130,11 @@ export function listInbox(a: Actor, { unread = false, limit = MAX_LIST }: { unre
     .query<Record<string, any>, [number, string]>(`${SELECT}${unread ? " AND n.read_at IS NULL" : ""} ORDER BY n.id DESC LIMIT ${Math.min(limit, MAX_LIST)}`)
     .all(a.id, workspace)
     .map(toNotification);
+  // Counted like the inbox shows them: one per issue or doc with anything unread.
   const { n } = db
-    .query<{ n: number }, [number, string]>("SELECT COUNT(*) AS n FROM notifications WHERE user_id = ? AND workspace = ? AND read_at IS NULL")
+    .query<{ n: number }, [number, string]>(
+      "SELECT COUNT(DISTINCT COALESCE('i' || issue_id, 'd' || document_id)) AS n FROM notifications WHERE user_id = ? AND workspace = ? AND read_at IS NULL",
+    )
     .get(a.id, workspace)!;
   return { notifications, unread: n };
 }

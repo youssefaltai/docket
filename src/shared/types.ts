@@ -352,7 +352,7 @@ export interface Notification {
   readAt: string | null;
 }
 
-/** GET /api/notifications: yours in the request's workspace, newest first, at most 500; `unread` counts them all. */
+/** GET /api/notifications: yours in the request's workspace, newest first, at most 500; `unread` counts the issues and docs with unread ones, as the inbox groups them. */
 export interface Inbox {
   notifications: Notification[];
   unread: number;
