@@ -439,9 +439,9 @@ function Activity({ issue, actions }: { issue: Issue; actions: CommentActions })
   return <Comments title="Activity" comments={issue.comments} activity={issue.activity} actions={actions} />;
 }
 
-function Prop({ label, children }: { label: string; children: ReactNode }) {
+function Prop({ label, cmd, children }: { label: string; cmd?: string; children: ReactNode }) {
   return (
-    <div className="prop">
+    <div className="prop" data-cmd={cmd}>
       <div className="prop-label">{label}</div>
       <div className="prop-value">{children}</div>
     </div>
@@ -474,25 +474,25 @@ function Properties({ issue, patch }: { issue: Issue; patch: (p: IssueChange) =>
   const resolved = useResolved();
   return (
     <>
-      <Prop label="Status">
+      <Prop label="Status" cmd="status">
         <StatusPicker value={issue.status} onChange={(status) => patch({ status })} className="prop-btn">
           <StatusIcon status={issue.status} />
           {STATUS_LABELS[issue.status]}
         </StatusPicker>
       </Prop>
-      <Prop label="Priority">
+      <Prop label="Priority" cmd="priority">
         <PriorityPicker value={issue.priority} onChange={(priority) => patch({ priority })} className="prop-btn">
           <PriorityIcon priority={issue.priority} />
           {PRIORITY_LABELS[issue.priority]}
         </PriorityPicker>
       </Prop>
-      <Prop label="Assignee">
+      <Prop label="Assignee" cmd="assignee">
         <AssigneePicker value={issue.assignee} onChange={(assignee) => patch({ assignee })} className="prop-btn">
           <Avatar user={issue.assignee} />
           {issue.assignee ? <span dir="auto">{issue.assignee.name}</span> : <span className="muted">Unassigned</span>}
         </AssigneePicker>
       </Prop>
-      <Prop label="Delegate">
+      <Prop label="Delegate" cmd="delegate">
         <DelegatePicker value={issue.delegate} onChange={(delegate) => patch({ delegate })} className="prop-btn">
           <Avatar user={issue.delegate} />
           {issue.delegate ? <span dir="auto">{issue.delegate.name}</span> : none}

@@ -24,6 +24,8 @@ export interface AppState {
   newDoc: (team?: string) => void;
   newTeam: () => void;
   newWorkspace: () => void;
+  /** Switches to another of your workspaces, keeping the same kind of page (settings, docs, inbox, my issues, or issues). */
+  switchWorkspace: (key: string) => void;
   teamSettings: (key: string) => void;
   /** The doc page reports its team so the sidebar and "new" defaults follow it. */
   setDocTeam: (key: string | null) => void;

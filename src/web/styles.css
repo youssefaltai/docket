@@ -2105,6 +2105,27 @@ img.ProseMirror-separator {
   }
 }
 
+/* ---------- Command menu (⌘K): a centered .modal holding a .pop-search/.pop-list, grouped. ---------- */
+.cmdk {
+  max-width: 560px;
+  overflow: hidden;
+}
+.cmdk-input {
+  height: 48px;
+  font-size: 15px;
+}
+.cmdk-list {
+  max-height: 60vh;
+}
+.cmdk-group {
+  padding: 10px 10px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
 /* ---------- Modal ---------- */
 
 .backdrop {
