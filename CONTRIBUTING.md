@@ -43,7 +43,7 @@ Docket's one rule is **minimal, simple, clean, smooth**. In practice:
 - **Small and focused.** One change per PR. Open an issue first for anything big.
 - **No new dependencies** unless there's really no other way.
 - **Keep SPEC.md in sync** when you change behaviour, the API or the data model.
-- **Migrations are additive.** People have real data in their SQLite files.
+- **Migrations never lose data; rebuilds follow SQLite's 12-step procedure.** People have real data in their SQLite files.
 - **Match the UI.** Neutral, light, Linear-like. Check it on a phone width too.
 - **`bun test` and `bun run typecheck` pass.** CI runs both, plus a Docker build, on every PR.
 

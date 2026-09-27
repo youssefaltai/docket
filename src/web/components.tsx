@@ -7,7 +7,7 @@ import {
   type ReactNode,
 } from "react";
 import { api } from "./api";
-import { getMe } from "./auth";
+import { getYou } from "./auth";
 import type { Team, UserRef } from "../shared/types";
 import { useApp } from "./context";
 import { PlusIcon, SearchIcon, SettingsIcon, MenuIcon, TrashIcon } from "./icons";
@@ -18,8 +18,8 @@ import { ago, cls, fullDate, hueStyle } from "./util";
 
 export const Kbd = ({ children }: { children: ReactNode }) => <kbd>{children}</kbd>;
 
-/** Whether the signed-in user is `user`, e.g. a comment's author (the server checks too). */
-export const isMe = (user: UserRef | null) => user?.username === getMe().user.username;
+/** Whether the signed-in user is `user` in the current workspace, e.g. a comment's author (the server checks too). */
+export const isMe = (user: UserRef | null) => user?.username === getYou().username;
 
 export function Avatar({ user }: { user: UserRef | null }) {
   if (!user)

@@ -21,7 +21,6 @@ const path = process.env.DATABASE_PATH ?? join(xdgDataHome(), "docket", "docket.
 mkdirSync(dirname(path), { recursive: true });
 export const db = new Database(path, { create: true });
 db.run("PRAGMA journal_mode = WAL");
-db.run("PRAGMA foreign_keys = ON");
 db.run("PRAGMA busy_timeout = 5000");
 
 // Append-only: each entry upgrades the schema by one PRAGMA user_version.
@@ -197,15 +196,49 @@ const MIGRATIONS = [
   DELETE FROM api_keys WHERE workspace IS NULL; -- the owner has no active workspace left
   CREATE INDEX api_keys_workspace ON api_keys(user_id, workspace);
   `,
+  // Usernames and names belong to each membership, unique within its workspace (as in Linear); an account
+  // is the login. Rebuilds both tables (SQLite's 12-step ALTER), keeping every id and row. Guests fit the role.
+  `
+  CREATE TABLE members_new (
+    workspace TEXT NOT NULL REFERENCES workspaces(key) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    username TEXT NOT NULL,
+    name TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('admin', 'member', 'guest', 'agent')),
+    created_at TEXT NOT NULL,
+    suspended_at TEXT,
+    PRIMARY KEY (workspace, user_id),
+    UNIQUE (workspace, username)
+  );
+  INSERT INTO members_new SELECT m.workspace, m.user_id, u.username, u.name, m.role, m.created_at, m.suspended_at
+    FROM workspace_members m JOIN users u ON u.id = m.user_id;
+  DROP TABLE workspace_members;
+  ALTER TABLE members_new RENAME TO workspace_members;
+  CREATE INDEX workspace_members_user ON workspace_members(user_id);
+  CREATE TABLE users_new (
+    id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('person', 'agent')),
+    email TEXT,
+    created_at TEXT NOT NULL
+  );
+  INSERT INTO users_new SELECT id, kind, email, created_at FROM users;
+  DROP TABLE users;
+  ALTER TABLE users_new RENAME TO users;
+  CREATE UNIQUE INDEX users_email ON users(lower(email)) WHERE email IS NOT NULL;
+  `,
 ];
 
+db.run("PRAGMA foreign_keys = OFF"); // a migration may rebuild a table (SQLite's 12-step ALTER); checked before each commit
 const { user_version } = db.query("PRAGMA user_version").get() as { user_version: number };
-MIGRATIONS.slice(user_version).forEach((sql, i) => {
+MIGRATIONS.slice(user_version).forEach((sql, i) =>
   db.transaction(() => {
     db.run(sql);
+    const broken = db.query("PRAGMA foreign_key_check").all();
+    if (broken.length) throw new Error(`Migration ${user_version + i + 1} broke foreign keys: ${JSON.stringify(broken.slice(0, 5))}`);
     db.run(`PRAGMA user_version = ${user_version + i + 1}`);
-  })();
-});
+  })(),
+);
+db.run("PRAGMA foreign_keys = ON");
 
 // --- Change events ---
 

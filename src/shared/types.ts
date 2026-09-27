@@ -31,7 +31,7 @@ export const PRIORITY_LABELS: Record<Priority, string> = {
 export type UserKind = "person" | "agent";
 
 export interface UserRef {
-  username: string; // lowercase a-z 0-9 . _ -, 2–32 chars, unique across people and agents
+  username: string; // lowercase a-z 0-9 . _ -, 2–32 chars, unique within its workspace (people and agents)
   name: string;
   kind: UserKind;
 }
@@ -70,8 +70,11 @@ export interface WorkspaceMember {
 
 /** GET /api/me. */
 export interface Me {
-  user: User & { id: number }; // id: stable across renames, for services that key data by person (docket-chat); ids stay internal everywhere else
-  workspaces: { key: string; name: string; role: Role }[]; // for a key, only its own workspace
+  // id: the account, which never changes, for services that key data by person (docket-chat); ids stay internal
+  // everywhere else. username and name: yours in the request's workspace (a key's own, or X-Docket-Workspace);
+  // for a session naming none, your default profile (the membership you joined most recently).
+  user: User & { id: number };
+  workspaces: { key: string; name: string; role: Role; you: UserRef }[]; // you: how you're known there; for a key, only its own workspace
   credential: "session" | "key" | "chat"; // what this request came with; "chat": a key the chat proxy minted
   chat: boolean; // the assistant is set up (CHAT_URL): show its panel
 }
@@ -107,9 +110,9 @@ export interface CodeLink {
 /** What a code is for, without using it up (POST /api/auth/peek). */
 export interface CodeInfo {
   kind: "invite" | "sign-in";
-  workspace: string | null; // invite: the workspace's name
-  username: string | null; // sign-in: whose account it opens
-  you: UserRef | null; // invite peeked while signed in: the account that would join (the page asks before redeeming)
+  workspace: string | null; // the workspace's name: an invite's, or the one a sign-in link recorded
+  username: string | null; // sign-in: whose account it opens (their username there, else their default profile's)
+  you: UserRef | null; // signed in: your default profile, whom an invite would add or another's sign-in link would replace (the page asks first)
   needsProfile: boolean; // an invite redeemed while signed out creates an account: it needs name and username
 }
 

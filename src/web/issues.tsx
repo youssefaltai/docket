@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { CLOSED_STATUSES, STATUSES, STATUS_LABELS, type IssueSummary, type Status } from "../shared/types";
 import { api, store } from "./api";
-import { getMe } from "./auth";
+import { getYou } from "./auth";
 import { AssigneePicker, Picker, PriorityPicker, StatusPicker, useMembers, userOption } from "./pickers";
 import {
   Avatar,
@@ -191,7 +191,7 @@ function Filters(props: {
   const { labels, loadDirectory } = useApp();
   const people = useMembers("person");
   const agents = useMembers("agent");
-  const me = getMe().user;
+  const me = getYou();
   const any = (label: string, icon: ReactNode) => ({ value: "", label, icon });
   const mine = props.assignee === me.username;
   const selected = people.find((u) => u.username === props.assignee) ?? null;

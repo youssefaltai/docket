@@ -130,6 +130,7 @@ test("a sign-in link for someone else ends the session it replaces, and stale ta
   await s.user("ada");
   await s.user("ben");
   const ada = s.as("ada", "cookie");
+  const adaId = String((await ada.api("GET", "/api/me")).body.user.id);
   const socket = ada.ws();
   expect(await socket.opened).toBeTrue();
   const code = (await s.cli("sign-in-link", "ben")).stdout.match(/\/login#(\S+)/)![1]!;
@@ -142,17 +143,20 @@ test("a sign-in link for someone else ends the session it replaces, and stale ta
   expect((await ada.api("GET", "/api/me")).status).toBe(401);
   expect(await socket.closed).toBe(4401);
 
-  // A tab still showing someone else is refused (and told why), so it reloads as the real account.
+  // A tab still showing someone else (it sends their account id) is refused and told why, so it reloads as the real account.
   const ben = s.as("ben", "cookie");
+  const benId = String((await ben.api("GET", "/api/me")).body.user.id);
   const asTab = (believed: string) =>
     fetch(new URL("/api/me", s.url), { headers: { Cookie: ben.cookie!, Origin: s.url, "x-docket-user": believed } });
-  const stale = await asTab("ada");
+  const stale = await asTab(adaId);
   expect(stale.status).toBe(401);
   expect((await stale.json()).switched).toBeTrue();
-  expect((await asTab("ben")).status).toBe(200);
+  expect((await asTab("ben")).status).toBe(401); // a username is never an id: an old tab reloads once
+  expect((await asTab(benId)).status).toBe(200);
 
   // Your own link while signed in just adds a session; the current one stays.
   const own = (await ben.api("POST", "/api/sign-in-links")).body.code;
+  expect((await ben.api("POST", "/api/auth/peek", { code: own })).body).toMatchObject({ username: "ben", you: null }); // replaces no one: no prompt
   expect((await ben.api("POST", "/api/auth/redeem", { code: own })).status).toBe(200);
   expect((await ben.api("GET", "/api/me")).status).toBe(200);
 });
@@ -189,9 +193,11 @@ test("/api/me carries the user's id, stable across a rename, and nothing else ex
   const me = (await s.as("ben", "bearer").api("GET", "/api/me")).body;
   expect(me.user.id).toBeNumber();
   expect((await s.as("ana", "bearer").api("GET", "/api/me")).body.user.id).not.toBe(me.user.id);
-  const renamed = await cookie.api("PATCH", "/api/me", { username: "ben-renamed" });
+  const profile = (username: string) => cookie.api("PATCH", `/api/workspaces/${s.workspace}/profile`, { username });
+  expect((await profile("ben-renamed")).status).toBe(200);
+  const renamed = await cookie.api("GET", "/api/me", undefined, { "X-Docket-Workspace": s.workspace! });
   expect(renamed.body.user).toMatchObject({ id: me.user.id, username: "ben-renamed" });
-  expect((await cookie.api("PATCH", "/api/me", { username: "ben" })).body.user.id).toBe(me.user.id);
+  expect((await profile("ben")).status).toBe(200);
   const members = (await cookie.api("GET", `/api/workspaces/${s.workspace}/members`)).body as { user: object }[];
   expect(members.every((m) => !("id" in m.user))).toBeTrue();
 });

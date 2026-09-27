@@ -93,10 +93,10 @@ export function guard<T>(route: T, { mcp = false } = {}): T {
     if (crossSite) return json({ error: "Cross-origin request refused" }, 403);
     if (!actor) return unauthorized(stale ? signedOut(req) : undefined);
     if (!mcp && actor.scope === "read" && req.method !== "GET") return json({ error: "This API key is read-only" }, 403);
-    // The web app says who it thinks is signed in. Tabs share one cookie, so after signing in as someone
-    // else in another tab, a stale tab would silently act as the new account: refuse, and it reloads.
+    // The web app says which account it thinks is signed in (its id). Tabs share one cookie, so after signing
+    // in as someone else in another tab, a stale tab would silently act as the new account: refuse, and it reloads.
     const expected = req.headers.get("x-docket-user");
-    if (expected && expected !== actor.username) return json({ error: "Signed in as someone else", switched: true }, 401);
+    if (expected && expected !== String(actor.id)) return json({ error: "Signed in as someone else", switched: true }, 401);
     // The workspace the web app is in. A key acts only in its own: naming another is as if it didn't exist.
     const workspace = req.headers.get("x-docket-workspace")?.trim().toLowerCase();
     if (workspace && actor.keyId !== null && workspace !== actor.workspace) return json({ error: `Workspace ${workspace} not found` }, 404);

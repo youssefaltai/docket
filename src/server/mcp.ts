@@ -25,7 +25,7 @@ const instructions = (a: Actor) => `Docket is an issue tracker shared by people 
 - Workspace → team → issues and docs. Your key works in one workspace: everything you list, read and change is there.
 - Teams have a 2–5 letter key (e.g. BRD), unique across all workspaces. Issues are identified as KEY-number, e.g. BRD-12.
 - Statuses: backlog, todo, in_progress, in_review, done, canceled. Priority: 0 none, 1 urgent, 2 high, 3 medium, 4 low.
-- People and agents are named by username (@alice). An issue's assignee is a person who owns it; its delegate is an agent working on it for them. "me" means you.
+- People and agents are named by username (@alice), unique within this workspace. An issue's assignee is a person who owns it; its delegate is an agent working on it for them. "me" means you.
 ${
   a.scope === "read"
     ? "- This key is read-only: you can list and read everything here, but not change anything."
@@ -186,10 +186,11 @@ function createServer(a: Actor): McpServer {
     },
     () => {
       const members = access.listMembers(a, access.requestWorkspace(a));
+      const you = access.usernameOf(a);
       const lines = members.map((m) =>
-        [at(m.user), m.user.name, m.role, m.suspendedAt && "suspended", m.user.username === a.username && "you"].filter(Boolean).join(" · "),
+        [at(m.user), m.user.name, m.role, m.suspendedAt && "suspended", m.user.username === you && "you"].filter(Boolean).join(" · "),
       );
-      return result(lines.join("\n"), { members, you: a.username });
+      return result(lines.join("\n"), { members, you });
     },
   );
 

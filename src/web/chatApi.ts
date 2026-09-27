@@ -1,6 +1,5 @@
 // The assistant's API: /api/chat/* on Docket, proxied to docket-chat (its CHAT_API.md is the contract).
-import { HttpError, enc, request, unreachable, workspaceHeader } from "./api";
-import { getMe } from "./auth";
+import { HttpError, enc, request, signedInHeader, unreachable, workspaceHeader } from "./api";
 
 export interface ChatTool {
   callId?: string;
@@ -65,7 +64,7 @@ export const chatApi = {
 
 /** POSTs and reads the server-sent events as they arrive. Errors before the stream starts throw a ChatError. */
 async function stream(path: string, body: unknown, signal: AbortSignal, on: (e: ChatEvent) => void): Promise<void> {
-  const headers: Record<string, string> = { ...workspaceHeader(), "x-docket-user": getMe().user.username };
+  const headers: Record<string, string> = { ...workspaceHeader(), ...signedInHeader() };
   if (body !== undefined) headers["content-type"] = "application/json";
   const res = await fetch(path, { method: "POST", headers, body: body === undefined ? undefined : JSON.stringify(body), signal }).catch((e) => {
     throw signal.aborted ? e : unreachable();

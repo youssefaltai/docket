@@ -73,7 +73,15 @@ function ref(row: Record<string, unknown>, p: string): UserRef | null {
   const username = row[`${p}_username`] as string | null;
   return username ? { username, name: row[`${p}_name`] as string, kind: row[`${p}_kind`] as UserKind } : null;
 }
-const userCols = (alias: string, p: string) => `${alias}.username AS ${p}_username, ${alias}.name AS ${p}_name, ${alias}.kind AS ${p}_kind`;
+/**
+ * Joins the user `id` (a column) as `alias`: their account, and their membership in `workspace` (an SQL
+ * expression, e.g. the row's team's), which holds how they're known there. Read it with `userCols`.
+ */
+const userJoin = (alias: string, id: string, workspace: string) =>
+  `LEFT JOIN users ${alias} ON ${alias}.id = ${id}
+   LEFT JOIN workspace_members ${alias}_m ON ${alias}_m.user_id = ${id} AND ${alias}_m.workspace = ${workspace}`;
+const userCols = (alias: string, p: string) =>
+  `${alias}_m.username AS ${p}_username, ${alias}_m.name AS ${p}_name, ${alias}.kind AS ${p}_kind`;
 
 // --- Comments ---
 
@@ -85,14 +93,15 @@ const COMMENTS = {
 
 type CommentOwner = keyof typeof COMMENTS;
 
-function listComments(owner: CommentOwner, ownerId: number): Comment[] {
+/** An issue's or doc's comments; authors as they're known in `workspace`, the owner's. */
+function listComments(owner: CommentOwner, ownerId: number, workspace: string): Comment[] {
   const { table, column } = COMMENTS[owner];
   return db
-    .query<Record<string, unknown>, [number]>(
+    .query<Record<string, unknown>, [string, number]>(
       `SELECT c.id, c.body, c.created_at, c.edited_at, ${userCols("u", "a")}
-       FROM ${table} c JOIN users u ON u.id = c.author_id WHERE c.${column} = ? ORDER BY c.id`,
+       FROM ${table} c ${userJoin("u", "c.author_id", "?")} WHERE c.${column} = ? ORDER BY c.id`,
     )
-    .all(ownerId)
+    .all(workspace, ownerId)
     .map((r) => ({
       id: r.id as number,
       author: ref(r, "a")!,
@@ -112,29 +121,30 @@ function insertComment(a: Actor, owner: CommentOwner, ownerId: number, body: unk
   );
 }
 
-/** The id of a comment on this owner that the actor wrote; others' comments are 403. */
-function ownComment(a: Actor, owner: CommentOwner, ownerId: number, commentId: unknown): number {
+/** The id of a comment on this owner (in `workspace`) that the actor wrote; others' comments are 403. */
+function ownComment(a: Actor, owner: CommentOwner, ownerId: number, workspace: string, commentId: unknown): number {
   const { table, column } = COMMENTS[owner];
   const id = Number(commentId);
   const row = Number.isInteger(id)
     ? db
-        .query<{ author_id: number; username: string }, [number, number]>(
-          `SELECT c.author_id, u.username FROM ${table} c JOIN users u ON u.id = c.author_id WHERE c.id = ? AND c.${column} = ?`,
+        .query<{ author_id: number; username: string | null }, [string, number, number]>(
+          `SELECT c.author_id, m.username FROM ${table} c
+           LEFT JOIN workspace_members m ON m.user_id = c.author_id AND m.workspace = ? WHERE c.id = ? AND c.${column} = ?`,
         )
-        .get(id, ownerId)
+        .get(workspace, id, ownerId)
     : null;
   if (!row) throw new AppError(`Comment ${commentId} not found`, 404);
   if (row.author_id !== a.id) throw new AppError(`Only @${row.username} can change this comment`, 403);
   return id;
 }
 
-function updateComment(a: Actor, owner: CommentOwner, ownerId: number, commentId: unknown, body: unknown, time: string) {
-  const id = ownComment(a, owner, ownerId, commentId);
+function updateComment(a: Actor, owner: CommentOwner, ownerId: number, workspace: string, commentId: unknown, body: unknown, time: string) {
+  const id = ownComment(a, owner, ownerId, workspace, commentId);
   db.query(`UPDATE ${COMMENTS[owner].table} SET body = ?, edited_at = ? WHERE id = ?`).run(requireText(body, "body"), time, id);
 }
 
-function deleteComment(a: Actor, owner: CommentOwner, ownerId: number, commentId: unknown) {
-  const id = ownComment(a, owner, ownerId, commentId);
+function deleteComment(a: Actor, owner: CommentOwner, ownerId: number, workspace: string, commentId: unknown) {
+  const id = ownComment(a, owner, ownerId, workspace, commentId);
   db.query(`DELETE FROM ${COMMENTS[owner].table} WHERE id = ?`).run(id);
 }
 
@@ -251,9 +261,9 @@ const ISSUE_SELECT = `
     )) AS blocked_by
   FROM issues i
   JOIN teams t ON t.key = i.team_key
-  JOIN users uc ON uc.id = i.creator_id
-  LEFT JOIN users ua ON ua.id = i.assignee_id
-  LEFT JOIN users ud ON ud.id = i.delegate_id
+  ${userJoin("uc", "i.creator_id", "t.workspace")}
+  ${userJoin("ua", "i.assignee_id", "t.workspace")}
+  ${userJoin("ud", "i.delegate_id", "t.workspace")}
   LEFT JOIN issues p ON p.id = i.parent_id`;
 
 // Status order, then priority 1→4 with 0 (none) last, then most recently updated. The first two keys are
@@ -390,20 +400,18 @@ function listScope(a: Actor, alias: string, filter: { workspace?: string; team?:
 const whereClause = (where: string[]) => `WHERE ${where.join(" AND ")}`;
 
 /**
- * A username filter ("me" is the actor) as a user id. It must name someone who is or was in one of the
- * workspaces searched; anyone else is 400 (a typo shouldn't look like "no issues").
+ * A username filter on `column` ("me" is the actor): whoever holds that username in each issue's workspace.
+ * It must name someone who is or was in one of the workspaces searched; anyone else is 400 (a typo
+ * shouldn't look like "no issues").
  */
-function userFilterId(a: Actor, value: string, workspaces: string[], field: string): number {
+function userFilter(a: Actor, value: string, workspaces: string[], field: string, column: string): [string, SQLQueryBindings] {
   const username = value.trim().toLowerCase();
-  if (username === "me") return a.id;
-  const row = db
-    .query<{ id: number }, SQLQueryBindings[]>(
-      `SELECT u.id FROM users u WHERE u.username = ?
-       AND EXISTS (SELECT 1 FROM workspace_members m WHERE m.user_id = u.id AND m.workspace IN (${inList(workspaces)}))`,
-    )
+  if (username === "me") return [`${column} = ?`, a.id];
+  const known = db
+    .query(`SELECT 1 FROM workspace_members WHERE username = ? AND workspace IN (${inList(workspaces)})`)
     .get(username, ...workspaces);
-  if (!row) throw new AppError(`Unknown ${field} "${value}"`);
-  return row.id;
+  if (!known) throw new AppError(`Unknown ${field} "${value}"`);
+  return [`EXISTS (SELECT 1 FROM workspace_members m WHERE m.user_id = ${column} AND m.workspace = t.workspace AND m.username = ?)`, username];
 }
 
 /** Page cursors: the last row's sort keys (status rank, priority rank, updated_at, id), opaque to clients. */
@@ -449,13 +457,11 @@ function queryIssues(a: Actor, filter: IssueFilter, after?: [number, number, str
     where.push("EXISTS (SELECT 1 FROM json_each(i.labels) WHERE value = ? COLLATE NOCASE)");
     params.push(filter.label);
   }
-  if (filter.assignee) {
-    where.push("i.assignee_id = ?");
-    params.push(userFilterId(a, filter.assignee, workspaces, "assignee"));
-  }
-  if (filter.delegate) {
-    where.push("i.delegate_id = ?");
-    params.push(userFilterId(a, filter.delegate, workspaces, "delegate"));
+  for (const field of ["assignee", "delegate"] as const) {
+    if (!filter[field]) continue;
+    const [condition, param] = userFilter(a, filter[field], workspaces, field, `i.${field}_id`);
+    where.push(condition);
+    params.push(param);
   }
   if (filter.parent) {
     let parent: number;
@@ -500,7 +506,7 @@ export function getIssue(a: Actor, identifier: string): Issue {
     creator: ref(row, "creator")!,
     children,
     blocks,
-    comments: listComments("issue", id),
+    comments: listComments("issue", id, row.workspace),
     docs,
   };
 }
@@ -698,9 +704,8 @@ export function claimIssue(a: Actor, identifier: string): Issue {
   const claimed = db.transaction(() => {
     const row = db
       .query<{ status: Status; holder: number | null; username: string | null; active: number; ref: string }, [string, number]>(
-        `SELECT i.status, i.${slot} AS holder, u.username, ${ident("i")} AS ref,
-           EXISTS (SELECT 1 FROM workspace_members m WHERE m.user_id = i.${slot} AND m.workspace = ? AND m.suspended_at IS NULL) AS active
-         FROM issues i LEFT JOIN users u ON u.id = i.${slot} WHERE i.id = ?`,
+        `SELECT i.status, i.${slot} AS holder, m.username, ${ident("i")} AS ref, (m.user_id IS NOT NULL AND m.suspended_at IS NULL) AS active
+         FROM issues i LEFT JOIN workspace_members m ON m.user_id = i.${slot} AND m.workspace = ? WHERE i.id = ?`,
       )
       .get(workspace, id)!;
     if (isClosed(row.status)) throw new AppError(`${row.ref} is ${row.status}`, 409);
@@ -718,11 +723,11 @@ export function claimIssue(a: Actor, identifier: string): Issue {
 }
 
 /** Runs a change to an issue's comments, bumping the issue in the same transaction. */
-function changeIssueComments(a: Actor, identifier: string, change: (id: number, time: string) => void): Issue {
+function changeIssueComments(a: Actor, identifier: string, change: (id: number, time: string, workspace: string) => void): Issue {
   const { id, workspace } = liveIssue(a, identifier);
   const time = now();
   db.transaction(() => {
-    change(id, time);
+    change(id, time, workspace);
     db.query(`UPDATE issues SET ${BUMPED_AT} WHERE id = ?`).run(time, time, id);
   })();
   const issue = getIssue(a, identifier);
@@ -734,10 +739,10 @@ export const addComment = (a: Actor, identifier: string, body: unknown) =>
   changeIssueComments(a, identifier, (id, time) => insertComment(a, "issue", id, body, time));
 
 export const updateIssueComment = (a: Actor, identifier: string, commentId: unknown, body: unknown) =>
-  changeIssueComments(a, identifier, (id, time) => updateComment(a, "issue", id, commentId, body, time));
+  changeIssueComments(a, identifier, (id, time, workspace) => updateComment(a, "issue", id, workspace, commentId, body, time));
 
 export const deleteIssueComment = (a: Actor, identifier: string, commentId: unknown) =>
-  changeIssueComments(a, identifier, (id) => deleteComment(a, "issue", id, commentId));
+  changeIssueComments(a, identifier, (id, _, workspace) => deleteComment(a, "issue", id, workspace, commentId));
 
 /** Labels in use in the actor's workspaces (or one), each with how many open issues carry it. */
 export function listLabels(a: Actor, filter: { workspace?: string } = {}): LabelCount[] {
@@ -767,7 +772,7 @@ type DocumentRow = Record<string, unknown> & {
 };
 
 const DOC_COLUMNS = `d.id, d.slug, d.team_key, t.workspace, d.title, d.position, d.created_at, d.updated_at, d.deleted_at, ${userCols("u", "by")}`;
-const DOC_FROM = "FROM documents d JOIN teams t ON t.key = d.team_key JOIN users u ON u.id = d.updated_by_id";
+const DOC_FROM = `FROM documents d JOIN teams t ON t.key = d.team_key ${userJoin("u", "d.updated_by_id", "t.workspace")}`;
 const DOC_SELECT = `SELECT ${DOC_COLUMNS} ${DOC_FROM}`; // lists leave out the content
 
 // Saves by the same author within this window of a version's first save update that version (autosave-friendly).
@@ -895,7 +900,7 @@ export function getDocument(a: Actor, slug: string): Document {
     .all(row.id)
     .map(toSummary);
   const { n: versionCount } = db.query<{ n: number }, [number]>("SELECT COUNT(*) AS n FROM document_versions WHERE document_id = ?").get(row.id)!;
-  return { ...toDocSummary(row), content: row.content, issues, comments: listComments("document", row.id), versionCount };
+  return { ...toDocSummary(row), content: row.content, issues, comments: listComments("document", row.id, row.workspace), versionCount };
 }
 
 export function createDocument(a: Actor, input: DocumentInput): Document {
@@ -969,9 +974,9 @@ export const deleteDocument = (a: Actor, slug: string) => trashDocument(a, slug,
 export const restoreDocument = (a: Actor, slug: string) => trashDocument(a, slug, false);
 
 /** Runs a change to a doc's comments. It leaves the doc's updated_at alone, so an open editor sees no conflict. */
-function changeDocumentComments(a: Actor, slug: string, change: (id: number) => void): Document {
+function changeDocumentComments(a: Actor, slug: string, change: (id: number, workspace: string) => void): Document {
   const row = liveDocument(a, slug);
-  change(row.id);
+  change(row.id, row.workspace);
   changed("document", row.workspace, row.slug);
   return getDocument(a, row.slug);
 }
@@ -980,12 +985,13 @@ export const addDocumentComment = (a: Actor, slug: string, body: unknown) =>
   changeDocumentComments(a, slug, (id) => insertComment(a, "document", id, body, now()));
 
 export const updateDocumentComment = (a: Actor, slug: string, commentId: unknown, body: unknown) =>
-  changeDocumentComments(a, slug, (id) => updateComment(a, "document", id, commentId, body, now()));
+  changeDocumentComments(a, slug, (id, workspace) => updateComment(a, "document", id, workspace, commentId, body, now()));
 
 export const deleteDocumentComment = (a: Actor, slug: string, commentId: unknown) =>
-  changeDocumentComments(a, slug, (id) => deleteComment(a, "document", id, commentId));
+  changeDocumentComments(a, slug, (id, workspace) => deleteComment(a, "document", id, workspace, commentId));
 
-const VERSION_FROM = "FROM document_versions v JOIN users u ON u.id = v.author_id";
+const VERSION_FROM = `FROM document_versions v JOIN documents d ON d.id = v.document_id JOIN teams t ON t.key = d.team_key
+  ${userJoin("u", "v.author_id", "t.workspace")}`;
 
 export function listDocumentVersions(a: Actor, slug: string): DocumentVersionSummary[] {
   return db

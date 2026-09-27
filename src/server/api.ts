@@ -77,7 +77,10 @@ export const apiRoutes = {
   // --- You ---
   "/api/me": {
     GET: handle((req) => access.me(actorOf(req))),
-    PATCH: handle(async (req) => access.updateMe(actorOf(req), await patch(req, "your profile", ["name", "username", "email"]))),
+    PATCH: handle(async (req) => {
+      const perWorkspace = "Your name and username are per workspace: PATCH /api/workspaces/:key/profile";
+      return access.updateMe(actorOf(req), await patch(req, "your account", ["email"], { name: perWorkspace, username: perWorkspace }));
+    }),
   },
   "/api/sessions": {
     GET: handle((req) => access.listSessions(actorOf(req))),
@@ -105,6 +108,11 @@ export const apiRoutes = {
   "/api/workspaces/:key": {
     PATCH: handle<"/api/workspaces/:key">(async (req) =>
       access.updateWorkspace(actorOf(req), req.params.key, await patch(req, "a workspace", ["name"], { key: "A workspace's key never changes" })),
+    ),
+  },
+  "/api/workspaces/:key/profile": {
+    PATCH: handle<"/api/workspaces/:key/profile">(async (req) =>
+      access.updateProfile(actorOf(req), req.params.key, await patch(req, "your profile", ["name", "username"])),
     ),
   },
   "/api/workspaces/:key/members": {

@@ -1,5 +1,6 @@
 // Identity and access: accounts (people and agents), sessions, API keys, one-time codes (setup, invites,
-// sign-in links), and workspace membership. Every request acts as an Actor built here.
+// sign-in links), and workspace membership. An account is a login; its username and name belong to each
+// membership. Every request acts as an Actor built here.
 import { createHash, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import {
   API_KEY_SCOPES,
@@ -24,7 +25,6 @@ import { AppError, changed, checkOneOf, db, exists, now, pickSlug, requireText }
 export interface Actor {
   id: number;
   renewCookie?: boolean; // a session in use: re-send its cookie so the browser's copy slides with the idle window
-  username: string;
   kind: UserKind;
   workspaces: Map<string, Role>; // active memberships (a key's: just its own workspace)
   workspace: string | null; // the request's: a key's own, else X-Docket-Workspace or a session's only one (see requestWorkspace)
@@ -60,13 +60,12 @@ export function onRevoke(fn: typeof revoked) {
   revoked = fn;
 }
 
-// --- Users ---
+// --- Accounts and profiles ---
 
-interface UserRow {
+/** An account: a login (people and agents). How it's known, its username and name, is per membership. */
+interface AccountRow {
   id: number;
   kind: UserKind;
-  username: string;
-  name: string;
   email: string | null;
   created_at: string;
 }
@@ -77,19 +76,51 @@ const toRef = (row: { username: string; name: string; kind: UserKind }): UserRef
   kind: row.kind,
 });
 
-const toUser = (row: UserRow): User => ({ ...toRef(row), email: row.email, createdAt: row.created_at });
-const userById = (id: number) => db.query<UserRow, [number]>("SELECT * FROM users WHERE id = ?").get(id)!;
+const PROFILE_SELECT = "SELECT m.username, m.name, u.kind FROM workspace_members m JOIN users u ON u.id = m.user_id";
+
+/**
+ * Who an account is in `workspace`; without one (or not a member there), its default profile: the
+ * membership it joined most recently, whatever its status.
+ */
+function profileOf(userId: number, workspace?: string | null): UserRef {
+  const there = workspace
+    ? db.query<UserRef, [number, string]>(`${PROFILE_SELECT} WHERE m.user_id = ? AND m.workspace = ?`).get(userId, workspace)
+    : null;
+  const row =
+    there ?? db.query<UserRef, [number]>(`${PROFILE_SELECT} WHERE m.user_id = ? ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1`).get(userId)!;
+  return toRef(row);
+}
+
+/** An account as a `User`: its profile in `workspace` (else its default one). */
+function toUser(userId: number, workspace?: string | null): User {
+  const account = db.query<AccountRow, [number]>("SELECT * FROM users WHERE id = ?").get(userId)!;
+  return { ...profileOf(userId, workspace), email: account.email, createdAt: account.created_at };
+}
+
+/** The request's workspace if you're an active member there, else null. */
+const activeWorkspace = (a: Actor) => (a.workspace && a.workspaces.has(a.workspace) ? a.workspace : null);
+
+/** Your username in the request's workspace, or null (MCP marks "you" by it). */
+export function usernameOf(a: Actor): string | null {
+  const workspace = activeWorkspace(a);
+  return workspace ? profileOf(a.id, workspace).username : null;
+}
 
 // "me" means the caller wherever a username is taken.
 const RESERVED = ["me"];
 
-function checkUsername(value: unknown): string {
+/** A username free in `workspace` (`self` may keep their own); unique among its people and agents. */
+function checkUsername(value: unknown, workspace: string, self = -1): string {
   const username = typeof value === "string" ? value.trim().toLowerCase() : "";
   if (!/^[a-z0-9][a-z0-9._-]{1,31}$/.test(username)) {
     throw new AppError('username must be 2–32 characters of a-z, 0-9, ".", "_" and "-", starting with a letter or digit');
   }
   if (RESERVED.includes(username)) throw new AppError(`"${username}" is reserved`);
-  if (exists("users", "username", username)) throw new AppError(`Username "${username}" is taken`, 409);
+  const taken = db.query("SELECT 1 FROM workspace_members WHERE workspace = ? AND username = ? AND user_id != ?").get(workspace, username, self);
+  if (taken) {
+    const { name } = db.query<{ name: string }, [string]>("SELECT name FROM workspaces WHERE key = ?").get(workspace)!;
+    throw new AppError(`Username "${username}" is taken in ${name}`, 409);
+  }
   return username;
 }
 
@@ -112,64 +143,70 @@ function checkEmail(value: unknown, self?: number): string | null {
   return email;
 }
 
-function userRow(username: unknown): UserRow {
-  const row =
-    typeof username === "string"
-      ? db.query<UserRow, [string]>("SELECT * FROM users WHERE username = ?").get(username.trim().toLowerCase())
-      : null;
-  if (!row) throw new AppError(`User ${username} not found`, 404);
-  return row;
-}
-
-function insertUser(kind: UserKind, input: { username?: unknown; name?: unknown; email?: unknown }): number {
-  const username = checkUsername(input.username);
-  const name = checkName(input.name);
-  const email = kind === "person" ? checkEmail(input.email) : null;
+function insertAccount(kind: UserKind, email?: unknown): number {
   return db
-    .query<{ id: number }, [UserKind, string, string, string | null, string]>(
-      "INSERT INTO users (kind, username, name, email, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id",
-    )
-    .get(kind, username, name, email, now())!.id;
+    .query<{ id: number }, [UserKind, string | null, string]>("INSERT INTO users (kind, email, created_at) VALUES (?, ?, ?) RETURNING id")
+    .get(kind, kind === "person" ? checkEmail(email) : null, now())!.id;
 }
 
 const PERSON_ROLES = ["admin", "member"] as const;
 
-const addMember = (workspace: string, userId: number, role: Role, time = now()) =>
-  db.query("INSERT INTO workspace_members (workspace, user_id, role, created_at) VALUES (?, ?, ?, ?)").run(workspace, userId, role, time);
+/** Adds an account to a workspace as `profile` (its username and name there). */
+function addMember(workspace: string, userId: number, role: Role, profile: { username?: unknown; name?: unknown }, time = now()) {
+  const username = checkUsername(profile.username, workspace);
+  const name = checkName(profile.name);
+  db.query("INSERT INTO workspace_members (workspace, user_id, username, name, role, created_at) VALUES (?, ?, ?, ?, ?, ?)").run(
+    workspace,
+    userId,
+    username,
+    name,
+    role,
+    time,
+  );
+}
 
 const setSuspended = (workspace: string, userId: number, at: string | null) =>
   db.query("UPDATE workspace_members SET suspended_at = ? WHERE workspace = ? AND user_id = ?").run(at, workspace, userId);
 
 export function me(a: Actor): Me {
+  type Row = { key: string; name: string; role: Role; username: string; member_name: string; kind: UserKind };
   const workspaces = db
-    .query<{ key: string; name: string; role: Role }, [number]>(
-      `SELECT w.key, w.name, m.role FROM workspace_members m JOIN workspaces w ON w.key = m.workspace
+    .query<Row, [number]>(
+      `SELECT w.key, w.name, m.role, m.username, m.name AS member_name, u.kind
+       FROM workspace_members m JOIN workspaces w ON w.key = m.workspace JOIN users u ON u.id = m.user_id
        WHERE m.user_id = ? AND m.suspended_at IS NULL ORDER BY w.name COLLATE NOCASE`,
     )
     .all(a.id)
-    .filter((w) => a.workspaces.has(w.key));
+    .filter((w) => a.workspaces.has(w.key))
+    .map((w) => ({ key: w.key, name: w.name, role: w.role, you: toRef({ ...w, name: w.member_name }) }));
   const credential = a.sessionId !== null ? "session" : a.chat ? "chat" : "key";
-  return { user: { ...toUser(userById(a.id)), id: a.id }, workspaces, credential, chat: !!process.env.CHAT_URL };
+  return { user: { ...toUser(a.id, activeWorkspace(a)), id: a.id }, workspaces, credential, chat: !!process.env.CHAT_URL };
 }
 
-export function updateMe(a: Actor, patch: { name?: unknown; username?: unknown; email?: unknown }): Me {
+/** Your account's email; your name and username are per workspace (`updateProfile`). */
+export function updateMe(a: Actor, patch: { email?: unknown }): Me {
   requireSession(a);
-  const row = userById(a.id);
-  const username =
-    patch.username === undefined || String(patch.username).trim().toLowerCase() === row.username
-      ? row.username
-      : checkUsername(patch.username);
-  const name = patch.name === undefined ? row.name : checkName(patch.name);
-  const email = patch.email === undefined ? row.email : checkEmail(patch.email, a.id);
-  db.query("UPDATE users SET username = ?, name = ?, email = ? WHERE id = ?").run(username, name, email, a.id);
-  for (const workspace of a.workspaces.keys()) changed("member", workspace, username);
+  if (patch.email !== undefined) db.query("UPDATE users SET email = ? WHERE id = ?").run(checkEmail(patch.email, a.id), a.id);
+  for (const workspace of a.workspaces.keys()) changed("member", workspace, profileOf(a.id, workspace).username);
   return me(a);
+}
+
+/** How you appear in one workspace: your name and username there, unique within it. */
+export function updateProfile(a: Actor, workspace: unknown, patch: { name?: unknown; username?: unknown }): WorkspaceMember {
+  requireSession(a);
+  const key = requireMember(a, workspace);
+  const current = profileOf(a.id, key);
+  const username = patch.username === undefined ? current.username : checkUsername(patch.username, key, a.id);
+  const name = patch.name === undefined ? current.name : checkName(patch.name);
+  db.query("UPDATE workspace_members SET username = ?, name = ? WHERE workspace = ? AND user_id = ?").run(username, name, key, a.id);
+  changed("member", key, username);
+  return toMember(memberRow(key, username));
 }
 
 // --- Actors ---
 
 /** An actor with the user's active memberships: all of them for a session, only `workspace`'s for a key. */
-function actorFor(user: UserRow, credential: { scope: ApiKeyScope; sessionId?: number; keyId?: number }, workspace?: string): Actor {
+function actorFor(user: AccountRow, credential: { scope: ApiKeyScope; sessionId?: number; keyId?: number }, workspace?: string): Actor {
   const memberships = db
     .query<{ workspace: string; role: Role }, [number, string | null]>(
       "SELECT workspace, role FROM workspace_members WHERE user_id = ?1 AND suspended_at IS NULL AND (?2 IS NULL OR workspace = ?2)",
@@ -177,7 +214,6 @@ function actorFor(user: UserRow, credential: { scope: ApiKeyScope; sessionId?: n
     .all(user.id, workspace ?? null);
   return {
     id: user.id,
-    username: user.username,
     kind: user.kind,
     workspaces: new Map(memberships.map((m) => [m.workspace, m.role])),
     workspace: workspace ?? (memberships.length === 1 ? memberships[0]!.workspace : null),
@@ -190,7 +226,7 @@ function actorFor(user: UserRow, credential: { scope: ApiKeyScope; sessionId?: n
 /** The actor behind a session cookie, or null if it's unknown or idle for 30 days. */
 export function sessionActor(token: string): Actor | null {
   const row = db
-    .query<UserRow & { session_id: number; last_seen_at: string }, [string]>(
+    .query<AccountRow & { session_id: number; last_seen_at: string }, [string]>(
       `SELECT u.*, s.id AS session_id, s.last_seen_at FROM sessions s JOIN users u ON u.id = s.user_id
        WHERE s.token_hash = ?`,
     )
@@ -214,7 +250,7 @@ export function sessionActor(token: string): Actor | null {
  * active member of the key's workspace. A key acts only in its own workspace.
  */
 export function keyActor(token: string): Actor | null {
-  type Row = UserRow & { key_id: number; scope: ApiKeyScope; last_used_at: string | null; session_id: number | null; key_workspace: string };
+  type Row = AccountRow & { key_id: number; scope: ApiKeyScope; last_used_at: string | null; session_id: number | null; key_workspace: string };
   const row = db
     .query<Row, [string, string]>(
       `SELECT u.*, k.id AS key_id, k.scope, k.last_used_at, k.session_id, k.workspace AS key_workspace
@@ -274,18 +310,19 @@ function requireAdminSession(a: Actor, workspace: unknown): string {
 }
 
 /**
- * The user id for a username (or "me") who is an active member of `workspace` of the given kind:
+ * The user id for a username in `workspace` (or "me") who is an active member there of the given kind:
  * assignees are people, delegates are agents.
  */
 export function activeMemberId(a: Actor, workspace: string, value: string, kind: UserKind, field: string): number {
   const given = value.trim().toLowerCase();
-  const username = given === "me" ? a.username : given;
+  const me = given === "me";
   const row = db
-    .query<{ id: number; kind: UserKind }, [string, string]>(
-      `SELECT u.id, u.kind FROM users u JOIN workspace_members m ON m.user_id = u.id
-       WHERE u.username = ? AND m.workspace = ? AND m.suspended_at IS NULL`,
+    .query<{ id: number; username: string; kind: UserKind }, [string, string | number]>(
+      `SELECT m.user_id AS id, m.username, u.kind FROM workspace_members m JOIN users u ON u.id = m.user_id
+       WHERE m.workspace = ? AND m.${me ? "user_id" : "username"} = ? AND m.suspended_at IS NULL`,
     )
-    .get(username, workspace);
+    .get(workspace, me ? a.id : given);
+  const username = row?.username ?? given;
   if (!row) throw new AppError(`${field}: ${username} isn't an active member of this workspace`);
   if (row.kind !== kind) {
     throw new AppError(kind === "person" ? `${field}: ${username} is an agent; set it as the delegate` : `${field}: ${username} isn't an agent`);
@@ -305,12 +342,10 @@ export function setup(input: SetupInput, client: Client): { user: User; workspac
   const given = normalizeCode(typeof input.code === "string" ? input.code : "");
   if (!timingSafeEqual(Buffer.from(hash(given)), Buffer.from(hash(setupCode)))) throw new AppError("Wrong setup code", 403);
   return db.transaction(() => {
-    const userId = insertUser("person", input);
-    const key = insertWorkspace(input.workspace ?? {}, userId);
+    const userId = insertAccount("person", input.email);
+    const key = insertWorkspace(input.workspace ?? {}, userId, input);
     const token = startSession(userId, client);
-    const user = toUser(userById(userId));
-    const workspace = workspaceFor(userId, key);
-    return { user, workspace, token };
+    return { user: toUser(userId, key), workspace: workspaceFor(userId, key), token };
   }).immediate();
 }
 
@@ -552,19 +587,19 @@ export function peekCode(code: unknown, signedIn: SignedIn): CodeInfo {
   const workspace = row.workspace
     ? db.query<{ name: string }, [string]>("SELECT name FROM workspaces WHERE key = ?").get(row.workspace)?.name ?? null
     : null;
-  const username = row.user_id ? db.query<{ username: string }, [number]>("SELECT username FROM users WHERE id = ?").get(row.user_id)!.username : null;
+  const username = row.user_id ? profileOf(row.user_id, row.workspace).username : null;
   const invite = row.purpose === "invite";
-  // Who's signed in: an invite would add that account, a sign-in link for someone else would replace it,
-  // so the page asks first either way.
-  const you = signedIn ? toRef(userById(signedIn.userId)) : null;
+  // Who's signed in (their default profile): an invite would add that account, a sign-in link for someone
+  // else would replace it, so the page asks first either way. A link to yourself replaces no one.
+  const you = signedIn && (invite || signedIn.userId !== row.user_id) ? profileOf(signedIn.userId) : null;
   return { kind: row.purpose, workspace, username, you, needsProfile: invite && signedIn === null };
 }
 
 /**
  * Uses a code and signs in. A sign-in link opens the account it was made for; if this browser was signed
  * in as someone else, that session ends, so no tab keeps acting as them. An invite is a code the admin
- * hands over, never tied to an email: redeemed while signed in, it adds you to the workspace; signed
- * out, it creates a new account from `profile`.
+ * hands over, never tied to an email: redeemed while signed in, it adds you to the workspace as `profile`
+ * (by default, your default profile); signed out, it creates a new account and membership from `profile`.
  */
 export function redeemCode(
   code: unknown,
@@ -580,33 +615,50 @@ export function redeemCode(
       revoked(signedIn);
     }
     if (row.purpose === "invite") {
-      userId = signedIn?.userId ?? insertUser("person", profile);
+      userId = signedIn?.userId ?? insertAccount("person", profile.email);
       const member = db
         .query<{ suspended_at: string | null }, [string, number]>(
           "SELECT suspended_at FROM workspace_members WHERE workspace = ? AND user_id = ?",
         )
         .get(row.workspace!, userId);
       if (member?.suspended_at) throw new AppError("You were suspended from this workspace; ask an admin to reinstate you", 403);
-      if (!member) addMember(row.workspace!, userId, row.role!);
+      const usual: Partial<UserRef> = signedIn ? profileOf(userId) : {};
+      if (!member) addMember(row.workspace!, userId, row.role!, { username: profile.username ?? usual.username, name: profile.name ?? usual.name });
     }
     db.query("UPDATE codes SET used_at = ? WHERE id = ?").run(now(), row.id);
-    const user = userById(userId!);
-    if (row.workspace) changed("member", row.workspace, user.username);
-    return { user: toUser(user), token: startSession(user.id, client) };
+    const user = toUser(userId!, row.workspace);
+    if (row.purpose === "invite") changed("member", row.workspace!, user.username);
+    return { user, token: startSession(userId!, client) };
   }).immediate();
 }
 
-/** A sign-in link for yourself, to sign in on another device. */
+/** A sign-in link for yourself, to sign in on another device; it records the workspace you're in. */
 export function selfSignInLink(a: Actor) {
   requireSession(a);
-  return issueCode({ purpose: "sign-in", userId: a.id, by: a.id });
+  return issueCode({ purpose: "sign-in", userId: a.id, workspace: activeWorkspace(a) ?? undefined, by: a.id });
 }
 
-/** For `bun run sign-in-link <username>` on the server: shell access is the proof, so there's no HTTP route. */
-export function recoverySignInLink(username: string) {
-  const user = userRow(username);
-  if (user.kind !== "person") throw new AppError("Agents sign in with their token, not a link");
-  return issueCode({ purpose: "sign-in", userId: user.id });
+/**
+ * For `bun run sign-in-link <username> [workspace]` on the server: shell access is the proof, so there's no
+ * HTTP route. It finds the person holding that username (in `workspace`, else in any); 409 listing where
+ * if several people do.
+ */
+export function recoverySignInLink(username: string, workspace?: string) {
+  const held = db
+    .query<{ user_id: number; workspace: string; name: string; kind: UserKind }, [string, string | null]>(
+      `SELECT m.user_id, m.workspace, m.name, u.kind FROM workspace_members m JOIN users u ON u.id = m.user_id
+       WHERE m.username = ?1 AND (?2 IS NULL OR m.workspace = ?2) ORDER BY m.workspace`,
+    )
+    .all(username.trim().toLowerCase(), workspace?.trim().toLowerCase() || null);
+  const people = held.filter((m) => m.kind === "person");
+  if (people.length === 0) {
+    if (held.length) throw new AppError("Agents sign in with their token, not a link");
+    throw new AppError(`User ${username} not found${workspace ? ` in ${workspace}` : ""}`, 404);
+  }
+  if (new Set(people.map((m) => m.user_id)).size > 1) {
+    throw new AppError(`Several people are ${username}:\n${people.map((m) => `${m.workspace} · ${m.name}`).join("\n")}`, 409);
+  }
+  return issueCode({ purpose: "sign-in", userId: people[0]!.user_id, workspace: people.length === 1 ? people[0]!.workspace : undefined });
 }
 
 /** An invite: a one-time code the admin hands to someone, who joins with it (new account or existing). */
@@ -651,19 +703,21 @@ export function listWorkspaces(a: Actor): Workspace[] {
     .map(toWorkspace);
 }
 
-function insertWorkspace(input: WorkspaceInput, adminId: number): string {
+/** A new workspace with its first admin, known there as `profile`. */
+function insertWorkspace(input: WorkspaceInput, adminId: number, profile: { username?: unknown; name?: unknown }): string {
   const name = requireText(input.name, "workspace name");
   const key = pickSlug(input.key, name, (k) => exists("workspaces", "key", k), { label: "workspace key", fallback: "workspace" });
   const time = now();
   db.query("INSERT INTO workspaces (key, name, created_at, updated_at) VALUES (?, ?, ?, ?)").run(key, name, time, time);
-  addMember(key, adminId, "admin", time);
+  addMember(key, adminId, "admin", profile, time);
   return key;
 }
 
+/** A new workspace, where you start as your default profile. */
 export function createWorkspace(a: Actor, input: WorkspaceInput): Workspace {
   // Only people have sessions; a key couldn't reach the new workspace anyway.
   if (a.sessionId === null) throw new AppError("Sign in to the web app to create a workspace; API keys work in one workspace", 403);
-  const key = db.transaction(() => insertWorkspace(input, a.id))();
+  const key = db.transaction(() => insertWorkspace(input, a.id, profileOf(a.id)))();
   changed("workspace", key, key);
   return workspaceFor(a.id, key);
 }
@@ -677,14 +731,19 @@ export function updateWorkspace(a: Actor, workspace: unknown, patch: WorkspacePa
   return workspaceFor(a.id, key);
 }
 
-interface MemberRow extends UserRow {
+interface MemberRow {
+  id: number;
+  kind: UserKind;
+  username: string;
+  name: string;
+  email: string | null;
   role: Role;
   joined_at: string;
   suspended_at: string | null;
 }
 
 const MEMBER_SELECT = `
-  SELECT u.*, m.role, m.created_at AS joined_at, m.suspended_at
+  SELECT m.user_id AS id, u.kind, m.username, m.name, u.email, m.role, m.created_at AS joined_at, m.suspended_at
   FROM workspace_members m JOIN users u ON u.id = m.user_id`;
 
 const toMember = (row: MemberRow): WorkspaceMember => ({
@@ -699,7 +758,7 @@ function memberRow(workspace: string, username: unknown): MemberRow {
   const row =
     typeof username === "string"
       ? db
-          .query<MemberRow, [string, string]>(`${MEMBER_SELECT} WHERE m.workspace = ? AND u.username = ?`)
+          .query<MemberRow, [string, string]>(`${MEMBER_SELECT} WHERE m.workspace = ? AND m.username = ?`)
           .get(workspace, username.trim().toLowerCase())
       : null;
   if (!row) throw new AppError(`${username} isn't a member of this workspace`, 404);
@@ -709,7 +768,7 @@ function memberRow(workspace: string, username: unknown): MemberRow {
 export function listMembers(a: Actor, workspace: unknown): WorkspaceMember[] {
   const key = requireMember(a, workspace);
   return db
-    .query<MemberRow, [string]>(`${MEMBER_SELECT} WHERE m.workspace = ? ORDER BY u.kind DESC, u.name COLLATE NOCASE`)
+    .query<MemberRow, [string]>(`${MEMBER_SELECT} WHERE m.workspace = ? ORDER BY u.kind DESC, m.name COLLATE NOCASE`)
     .all(key)
     .map(toMember);
 }
@@ -760,14 +819,17 @@ export function updateMember(a: Actor, workspace: unknown, username: unknown, pa
 
 // --- Agents ---
 
-/** Adds an agent to a workspace: its own account (kind "agent") and a token, shown once. */
+/**
+ * Adds an agent to a workspace: its own account (kind "agent") with this one membership, and a token, shown
+ * once. Its username need only be free here: two workspaces can each have their own @claude.
+ */
 export function createAgent(a: Actor, workspace: unknown, input: { name?: unknown; username?: unknown }) {
   const key = requireAdminSession(a, workspace);
   const { agent, token } = db.transaction(() => {
-    const id = insertUser("agent", input);
-    addMember(key, id, "agent");
+    const id = insertAccount("agent");
+    addMember(key, id, "agent", input);
     const { token } = insertApiKey(id, key, "agent token", "write");
-    return { agent: toRef(userById(id)), token };
+    return { agent: profileOf(id, key), token };
   })();
   changed("member", key, agent.username);
   return { agent, token };

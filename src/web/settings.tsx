@@ -1,7 +1,7 @@
 // Settings: your account (profile, devices, API keys) and, for admins, the workspace (members, invites, agents).
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import type { ApiKeyScope, CodeLink, Role, Session, Workspace, WorkspaceMember } from "../shared/types";
-import { auth, getMe } from "./auth";
+import { auth, getMe, getYou } from "./auth";
 import { Picker } from "./pickers";
 import {
   ask,
@@ -172,7 +172,8 @@ function AccountSettings() {
   const { workspace } = useApp();
   return (
     <>
-      <Profile />
+      {workspace && <Profile key={workspace.key} workspace={workspace} />}
+      <Email />
       <SignInLink />
       <Sessions />
       {workspace && <ApiKeys key={workspace.key} workspace={workspace} />}
@@ -180,42 +181,43 @@ function AccountSettings() {
   );
 }
 
-function Profile() {
-  const [saved, setSaved] = useState(() => getMe().user);
+const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/** How you're known in the current workspace: each has its own name and username. */
+function Profile({ workspace }: { workspace: Workspace }) {
+  const [saved, setSaved] = useState(getYou);
   const [name, setName] = useState(saved.name);
   const [username, setUsername] = useState(saved.username);
-  const [email, setEmail] = useState(saved.email ?? "");
   const [error, setError] = useState("");
   const { busy, run } = useRun();
   const patch = {
     name: name.trim() !== saved.name ? name.trim() : undefined,
     username: username.trim() !== saved.username ? username.trim() : undefined,
-    email: email.trim() !== (saved.email ?? "") ? email.trim() : undefined,
   };
-  const dirty = Object.values(patch).some((v) => v !== undefined);
+  const dirty = patch.name !== undefined || patch.username !== undefined;
   const submit = (e: FormEvent) => {
     e.preventDefault();
     if (!dirty || !name.trim() || !username.trim()) return;
     setError("");
     run(
       async () => {
-        setSaved((await auth.updateMe(patch)).user);
+        setSaved((await auth.updateProfile(workspace.key, patch)).user);
         toast("Profile saved");
       },
-      (e) => setError(e instanceof Error ? e.message : String(e)),
+      (e) => setError(errorText(e)),
     );
   };
   return (
-    <Section title="Profile">
+    <Section title={`Profile in ${workspace.name}`}>
+      <p className="settings-hint" dir="auto">
+        How people in {workspace.name} see you. Each workspace has its own.
+      </p>
       <form className="settings-form" onSubmit={submit}>
         <Field label="Name">
           <input className="input" dir="auto" value={name} onChange={(e) => setName(e.target.value)} />
         </Field>
         <Field label="Username" hint="Used to assign issues and to mention you. Lowercase letters, digits, “.”, “_” and “-”.">
           <input className="input" autoCapitalize="off" spellCheck={false} value={username} onChange={(e) => setUsername(e.target.value.toLowerCase())} />
-        </Field>
-        <Field label="Email">
-          <input className="input" type="email" autoCapitalize="off" value={email} onChange={(e) => setEmail(e.target.value)} />
         </Field>
         {error && (
           <p className="settings-error" role="alert" dir="auto">
@@ -224,6 +226,46 @@ function Profile() {
         )}
         <div>
           <button className="btn btn-primary" disabled={!dirty || busy || !name.trim() || !username.trim()}>
+            Save
+          </button>
+        </div>
+      </form>
+    </Section>
+  );
+}
+
+/** Your account's email: contact info, the same in every workspace. */
+function Email() {
+  const [saved, setSaved] = useState(() => getMe().user.email ?? "");
+  const [email, setEmail] = useState(saved);
+  const [error, setError] = useState("");
+  const { busy, run } = useRun();
+  const dirty = email.trim() !== saved;
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    if (!dirty) return;
+    setError("");
+    run(
+      async () => {
+        setSaved((await auth.updateMe({ email: email.trim() })).user.email ?? "");
+        toast("Email saved");
+      },
+      (e) => setError(errorText(e)),
+    );
+  };
+  return (
+    <Section title="Email">
+      <form className="settings-form" onSubmit={submit}>
+        <Field label="Email" hint="Contact info, the same in all your workspaces.">
+          <input className="input" type="email" autoCapitalize="off" value={email} onChange={(e) => setEmail(e.target.value)} />
+        </Field>
+        {error && (
+          <p className="settings-error" role="alert" dir="auto">
+            {error}
+          </p>
+        )}
+        <div>
+          <button className="btn btn-primary" disabled={!dirty || busy}>
             Save
           </button>
         </div>
