@@ -41,6 +41,9 @@ test("only admins manage the workspace", async () => {
   expect((await patch("ana", { role: "admin" }, ana)).status).toBe(403);
   expect((await ana.api("PATCH", `/api/workspaces/${ws}`, { name: "Mine" })).status).toBe(403);
   expect((await ana.api("POST", `/api/workspaces/${ws}/agents/bot/token`)).status).toBe(403);
+  // Teams are the exception: any person in the workspace makes and edits them, as in Linear.
+  expect((await ana.api("POST", "/api/teams", { key: "ANA", workspace: ws, name: "Ana's" })).status).toBe(201);
+  expect((await ana.api("PATCH", "/api/teams/ANA", { name: "Ana's team" })).status).toBe(200);
   // Agents can't manage anything either, even with their own key.
   expect((await s.as("bot").api("POST", `/api/workspaces/${ws}/invites`, { role: "admin" })).status).toBe(403);
 });

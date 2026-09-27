@@ -228,7 +228,7 @@ function createServer(a: Actor): McpServer {
     "create_team",
     {
       description:
-        "Create a team in a workspace. The key is 2–5 letters (uppercased), permanent, unique across all workspaces, and prefixes every issue identifier: key BRD gives BRD-1, BRD-2… Check list_teams first; only create a team when asked to.",
+        "Create a team in a workspace (people only). The key is 2–5 letters (uppercased), permanent, unique across all workspaces, and prefixes every issue identifier: key BRD gives BRD-1, BRD-2… Check list_teams first; only create a team when asked to.",
       inputSchema: {
         key: z.string().describe('2–5 letters, e.g. "BRD"'),
         workspace: workspaceKey.optional().describe("Required if you're in more than one workspace"),
@@ -246,7 +246,7 @@ function createServer(a: Actor): McpServer {
     "update_team",
     {
       description:
-        "Update a team's name or description; only the fields you pass change. Its key and workspace never change. Only do this when asked to.",
+        "Update a team's name or description (people only); only the fields you pass change. Its key and workspace never change. Only do this when asked to.",
       inputSchema: {
         key: teamKey,
         name: z.string().optional(),

@@ -29,7 +29,7 @@ import {
   type UserKind,
   type UserRef,
 } from "../shared/types.ts";
-import { type Actor, activeMemberId, requireMember } from "./access.ts";
+import { type Actor, activeMemberId, requireMember, requirePerson } from "./access.ts";
 import {
   AppError,
   BUMPED_AT,
@@ -185,7 +185,10 @@ export function listTeams(a: Actor, filter: { workspace?: string } = {}): Team[]
     .map(toTeam);
 }
 
+const NO_AGENT_TEAMS = "Agents can't create or change teams; ask a person";
+
 export function createTeam(a: Actor, input: TeamInput): Team {
+  requirePerson(a, NO_AGENT_TEAMS);
   const key = typeof input.key === "string" ? input.key.trim().toUpperCase() : "";
   if (!/^[A-Z]{2,5}$/.test(key)) throw new AppError("Team key must be 2–5 letters, e.g. BRD");
   const workspace = requireMember(a, requireText(input.workspace, "workspace"));
@@ -207,6 +210,7 @@ export function createTeam(a: Actor, input: TeamInput): Team {
 
 /** Renames or redescribes a team. Teams never change workspace: their issues, people and links belong to it. */
 export function updateTeam(a: Actor, key: string, patch: TeamPatch & { workspace?: unknown }): Team {
+  requirePerson(a, NO_AGENT_TEAMS);
   const row = teamRow(a, key);
   if (patch.workspace !== undefined && patch.workspace !== row.workspace) throw new AppError("Teams can't move between workspaces");
   const name = patch.name === undefined ? row.name : requireText(patch.name, "name");

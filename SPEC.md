@@ -32,7 +32,7 @@ Linear's model: sign-in is always required, accounts are global, each workspace 
 
 **Accounts** (`users`): people (`kind: "person"`) and agents (`kind: "agent"`). The username is the identity; a person's email is optional contact info, unique across accounts (case-insensitively; 409 on a clash), not yet verified (there's no mail) and never used to find an account. Everyone has a unique `username` (lowercase `a-z 0-9 . _ -`, 2–32 characters, starting with a letter or digit; `me` is reserved) and a display `name`. The API names people and agents by username; responses carry `UserRef = { username, name, kind }`. No passwords.
 
-**Workspaces** (`workspace_members`): each membership has a role, `admin`, `member` or `agent` (agents work in teams but manage nothing), and may be suspended. You see only workspaces where you're an active member; anything in another workspace answers 404, as if it didn't exist. Any person can create a workspace and becomes its admin. Admins rename the workspace, create invite links, change roles, suspend and reinstate members, and add, re-token and remove agents. No one can sign in as someone else: there's no admin sign-in link or impersonation. The last active admin can't be suspended or demoted (409 "Add another admin first").
+**Workspaces** (`workspace_members`): each membership has a role, `admin`, `member` or `agent` (agents work in teams but manage nothing: no teams, members, invites or agents), and may be suspended. You see only workspaces where you're an active member; anything in another workspace answers 404, as if it didn't exist. Any person can create a workspace and becomes its admin. Any person in the workspace, member or admin, creates teams and edits a team's name and description, as in Linear by default; agents can't (403). Admins rename the workspace, create invite links, change roles, suspend and reinstate members, and add, re-token and remove agents. No one can sign in as someone else: there's no admin sign-in link or impersonation. The last active admin can't be suspended or demoted (409 "Add another admin first").
 
 **Suspend** (`PATCH …/members/:username { suspended: true }`) ends access to that workspace at once (membership is checked on every request; their sockets reconnect without it). If it was their last active membership, their credentials are invalidated as in Linear: sessions, API keys and unused codes are deleted, so reinstating (`suspended: false`) gives a clean account that signs in again (the server's CLI). While they're still active in another workspace their credentials stay, so one workspace's admin can't sign them out of the others. Suspending or demoting an admin also deletes the unused invites they made there. They stay listed, greyed, so history keeps their name. Removing an agent is suspending it; a new token reinstates it.
 
@@ -147,8 +147,8 @@ Tools return short markdown text (one line per issue: `BRD-3 · todo · high · 
 | update_workspace | key, name | admins |
 | list_members | workspace? | `@username · name · role`, marking you; assignees are people, delegates agents |
 | list_teams | workspace? | with workspace and open-issue counts |
-| create_team | key, name, workspace?, description? | workspace required when you're in more than one |
-| update_team | key, name?, description? | |
+| create_team | key, name, workspace?, description? | people only; workspace required when you're in more than one |
+| update_team | key, name?, description? | people only |
 | list_labels | workspace? | `label · N open`, so agents reuse existing labels |
 | list_issues | workspace?, team?, status?[], label?, assignee?, delegate?, parent?, query?, limit? (page size, default 50), after? | excludes done/canceled unless `status` given; a page ends with `after: "<cursor>"` when there's more |
 | get_issue | id | full issue with description, creator, sub-issues, blockers, docs, comments |
