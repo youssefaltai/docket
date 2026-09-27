@@ -77,22 +77,23 @@ export const store = {
 };
 
 /**
- * Who this tab believes is signed in, sent with every request. Tabs share one cookie, so if another tab
- * signs in as someone else, the server refuses this tab's requests and it reloads as the new account
- * rather than acting as them under the old name.
+ * Which account (its id) this tab believes is signed in, sent with every request. Tabs share one cookie, so
+ * if another tab signs in as someone else, the server refuses this tab's requests and it reloads as the new
+ * account rather than acting as them under the old name.
  */
 let signedInAs: string | null = null;
-export const setSignedInAs = (username: string) => (signedInAs = username);
+export const setSignedInAs = (id: number) => (signedInAs = String(id));
+export const signedInHeader = (): Record<string, string> => (signedInAs ? { "x-docket-user": signedInAs } : {});
 
 /** The workspace this tab is in, sent as X-Docket-Workspace (the chat panel and new API keys act there). */
 let currentWorkspace: string | null = null;
 export const setCurrentWorkspace = (key: string | null) => (currentWorkspace = key);
+export const getCurrentWorkspace = () => currentWorkspace;
 export const workspaceHeader = (): Record<string, string> => (currentWorkspace ? { "x-docket-workspace": currentWorkspace } : {});
 
 export async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const headers: Record<string, string> = workspaceHeader();
+  const headers: Record<string, string> = { ...workspaceHeader(), ...signedInHeader() };
   if (body !== undefined) headers["content-type"] = "application/json";
-  if (signedInAs) headers["x-docket-user"] = signedInAs;
   const res = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) }).catch(() => {
     throw unreachable();
   });

@@ -55,16 +55,23 @@ export interface TestServer {
   /** Arbitrary credentials, for tests of forged, stale or revoked ones. */
   with: (creds: Creds, via?: Via) => Caller;
   /**
-   * A user made earlier by s.user or s.agent, here or on a server this one shares with. People default to their cookie, agents to their key.
-   * Keys act in one workspace: `workspace` picks that one's key (default: the workspace they joined first).
+   * A user made earlier by s.user or s.agent (by its label), here or on a server this one shares with. People default to their cookie,
+   * agents to their key. Keys act in one workspace: `workspace` picks that one's key (default: the workspace they joined first).
    */
-  as: (username: string, via?: Via, workspace?: string) => Caller;
-  /** Invites a person into a workspace (default: setup's, invited by `by`, default admin) and signs them in. For an existing user it adds the workspace, and a key for it. */
-  user: (username: string, opts?: { role?: "admin" | "member"; workspace?: string; name?: string; by?: string }) => Promise<Caller>;
-  /** Signs a person in again through an admin's sign-in link, with a fresh session and API keys (e.g. after a suspension). */
-  signIn: (username: string) => Promise<Caller>;
-  /** Creates an agent in a workspace (default: setup's). */
-  agent: (username: string, opts?: { workspace?: string; name?: string }) => Promise<Caller>;
+  as: (label: string, via?: Via, workspace?: string) => Caller;
+  /**
+   * Invites a person into a workspace (default: setup's, invited by `by`, default admin) as `handle` and signs them in. `as` labels
+   * the test user (default: the handle), so the same handle can be a different person elsewhere. For an existing test user it adds
+   * the workspace, and a key for it: they join as their usual profile unless `username` or `name` says otherwise.
+   */
+  user: (
+    handle: string,
+    opts?: { role?: "admin" | "member"; workspace?: string; name?: string; username?: string; by?: string; as?: string },
+  ) => Promise<Caller>;
+  /** Signs a person in again through the server's sign-in-link CLI (`handle [workspace]`), with a fresh session and API keys; labels them `handle`. */
+  signIn: (handle: string, workspace?: string) => Promise<Caller>;
+  /** Creates an agent in a workspace (default: setup's) as `handle`; `as` labels it (default: the handle). */
+  agent: (handle: string, opts?: { workspace?: string; name?: string; as?: string }) => Promise<Caller>;
   /** Runs `bun run <script> ...args` with this server's environment and database. */
   cli: (script: string, ...args: string[]) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
   stop: () => Promise<void>;
@@ -198,34 +205,34 @@ export async function startServer(
     anon,
     with: (creds, via = "bearer") => caller(null, creds, via),
     as,
-    async user(username, { role = "member", workspace: key = workspace!, name = username, by = "admin" } = {}) {
+    async user(handle, { role = "member", workspace: key = workspace!, name, username, by = "admin", as: label = handle } = {}) {
       const invite = await as(by).api("POST", `/api/workspaces/${key}/invites`, { role });
-      if (invite.status >= 300) throw new Error(`invite ${username}: ${invite.status} ${JSON.stringify(invite.body)}`);
-      // An existing user accepts while signed in; a new one creates an account.
-      const known = users.get(username);
+      if (invite.status >= 300) throw new Error(`invite ${label}: ${invite.status} ${JSON.stringify(invite.body)}`);
+      // An existing user accepts while signed in (as their usual profile unless told otherwise); a new one creates an account.
+      const known = users.get(label);
       const redeemed = known
-        ? await caller(username, { cookie: known.cookie }, "cookie").api("POST", "/api/auth/redeem", { code: invite.body.code })
-        : await anon.api("POST", "/api/auth/redeem", { code: invite.body.code, name, username });
-      if (redeemed.status >= 300) throw new Error(`redeem ${username}: ${redeemed.status} ${JSON.stringify(redeemed.body)}`);
+        ? await caller(label, { cookie: known.cookie }, "cookie").api("POST", "/api/auth/redeem", { code: invite.body.code, name, username })
+        : await anon.api("POST", "/api/auth/redeem", { code: invite.body.code, name: name ?? handle, username: username ?? handle });
+      if (redeemed.status >= 300) throw new Error(`redeem ${label}: ${redeemed.status} ${JSON.stringify(redeemed.body)}`);
       const fresh = redeemed.headers.getSetCookie().some((c) => c.startsWith("docket_session="));
-      return signedIn(username, fresh ? sessionCookie(redeemed.headers) : known!.cookie!, [key]);
+      return signedIn(label, fresh ? sessionCookie(redeemed.headers) : known!.cookie!, [key]);
     },
     // Signs someone in afresh the only way that doesn't need their own session: the server's recovery CLI.
-    async signIn(username) {
-      const out = await server.cli("sign-in-link", username);
+    async signIn(handle, key) {
+      const out = await server.cli("sign-in-link", handle, ...(key ? [key] : []));
       const code = out.stdout.match(/\/login#(\S+)/)?.[1];
-      if (out.exitCode !== 0 || !code) throw new Error(`sign-in-link ${username}: ${out.exitCode} ${out.stderr}`);
+      if (out.exitCode !== 0 || !code) throw new Error(`sign-in-link ${handle}: ${out.exitCode} ${out.stderr}`);
       const redeemed = await anon.api("POST", "/api/auth/redeem", { code });
-      if (redeemed.status !== 200) throw new Error(`redeem ${username}: ${redeemed.status} ${JSON.stringify(redeemed.body)}`);
+      if (redeemed.status !== 200) throw new Error(`redeem ${handle}: ${redeemed.status} ${JSON.stringify(redeemed.body)}`);
       const cookie = sessionCookie(redeemed.headers);
-      const me = await caller(username, { cookie }, "cookie").api("GET", "/api/me");
-      return signedIn(username, cookie, me.body.workspaces.map((w: { key: string }) => w.key), true);
+      const me = await caller(handle, { cookie }, "cookie").api("GET", "/api/me");
+      return signedIn(handle, cookie, me.body.workspaces.map((w: { key: string }) => w.key), true);
     },
-    async agent(username, { workspace: key = workspace!, name = username } = {}) {
-      const res = await admin.api("POST", `/api/workspaces/${key}/agents`, { name, username });
-      if (res.status !== 201) throw new Error(`agent ${username}: ${res.status} ${JSON.stringify(res.body)}`);
-      users.set(username, { keys: new Map([[key, res.body.token as string]]) });
-      return as(username);
+    async agent(handle, { workspace: key = workspace!, name = handle, as: label = handle } = {}) {
+      const res = await admin.api("POST", `/api/workspaces/${key}/agents`, { name, username: handle });
+      if (res.status !== 201) throw new Error(`agent ${label}: ${res.status} ${JSON.stringify(res.body)}`);
+      users.set(label, { keys: new Map([[key, res.body.token as string]]) });
+      return as(label);
     },
     async cli(script, ...args) {
       const p = Bun.spawn(["bun", "run", script, ...args], { cwd: root, env, stdout: "pipe", stderr: "pipe" });

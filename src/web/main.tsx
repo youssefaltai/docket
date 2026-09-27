@@ -3,7 +3,7 @@ import { StrictMode, useCallback, useEffect, useRef, useState, useSyncExternalSt
 import { createRoot } from "react-dom/client";
 import type { IssueInput, Team, Workspace, WorkspaceMember } from "../shared/types";
 import { api, connectionStore, setCurrentWorkspace, setOnAccessLost, setOnUnauthorized, store, subscribe } from "./api";
-import { auth, getMe, loadMe } from "./auth";
+import { auth, getMe, getYou, loadMe } from "./auth";
 import { ChatDock, ChatNavItem } from "./chat";
 import { DocPage, DocsView } from "./docs";
 import { IssuePage } from "./issue";
@@ -340,7 +340,7 @@ function Sidebar({ route, active, onSwitch }: { route: Route; active: string | n
 /** The sidebar footer: who you are, with settings and sign-out. */
 function AccountMenu() {
   const { workspace } = useApp();
-  const { user } = getMe();
+  const user = getYou();
   const options = [
     { value: "/settings/account", label: "Settings" },
     ...(workspace?.role === "admin" ? [{ value: "/settings/workspace", label: "Workspace settings" }] : []),

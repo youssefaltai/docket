@@ -350,7 +350,7 @@ describe("with CHAT_URL", () => {
     const inAcme = (await echo("acme")).body.headers.authorization;
     expect(inAcme).not.toBe(inSide.authorization);
     expect((await s.with({ token: inAcme.replace("Bearer ", "") }).api("GET", "/api/me")).body.workspaces).toEqual([
-      { key: "acme", name: "Acme", role: "admin" },
+      { key: "acme", name: "Acme", role: "admin", you: { username: "admin", name: "Admin", kind: "person" } },
     ]);
 
     const none = await s.api("POST", "/api/chat/echo", {});

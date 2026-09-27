@@ -82,13 +82,21 @@ describe("signed in", () => {
     const newbie = s.with({ cookie: sessionCookie(joined.headers) }, "cookie");
     expect((await newbie.api("GET", "/api/me")).body.workspaces).toEqual([expect.objectContaining({ key: s.workspace, role: "member" })]);
 
-    // Signed in, an invite to another workspace joins you; any profile sent along is ignored.
+    // Signed in, an invite to another workspace joins you: as you're known elsewhere, unless you pick another profile there.
     await s.api("POST", "/api/workspaces", { name: "Other", key: "other" });
+    await s.api("POST", "/api/workspaces", { name: "Third", key: "third" });
     const other = (await s.api("POST", "/api/workspaces/other/invites", { role: "member" })).body.code;
-    expect((await newbie.api("POST", "/api/auth/peek", { code: other })).body).toMatchObject({ needsProfile: false });
-    const accepted = await newbie.api("POST", "/api/auth/redeem", { code: other, name: "X", username: "someone-else" });
-    expect(accepted.body.user.username).toBe("newbie");
-    expect((await newbie.api("GET", "/api/me")).body.workspaces.map((w: any) => w.key).sort()).toEqual(["acme", "other"]);
+    expect((await newbie.api("POST", "/api/auth/peek", { code: other })).body).toMatchObject({
+      needsProfile: false,
+      you: { username: "newbie", name: "New" },
+    });
+    expect((await newbie.api("POST", "/api/auth/redeem", { code: other })).body.user).toMatchObject({ username: "newbie", name: "New" });
+    const third = (await s.api("POST", "/api/workspaces/third/invites", { role: "member" })).body.code;
+    const accepted = await newbie.api("POST", "/api/auth/redeem", { code: third, name: "X", username: "someone-else" });
+    expect(accepted.body.user).toMatchObject({ username: "someone-else", name: "X" });
+    const me = (await newbie.api("GET", "/api/me")).body;
+    expect(me.workspaces.map((w: any) => [w.key, w.you.username])).toEqual([["acme", "newbie"], ["other", "newbie"], ["third", "someone-else"]]);
+    expect(me.user.username).toBe("someone-else"); // no workspace named: the default profile, the latest joined
   });
 
   test("the session cookie is opaque, HttpOnly and Lax", async () => {

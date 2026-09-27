@@ -1,7 +1,7 @@
 // Migration 4 (keys belong to one workspace) on a database written under schema 3: data survives, and every
 // existing key lands in the right workspace.
 import { Database } from "bun:sqlite";
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -244,8 +244,154 @@ test("the session and the data survive", async () => {
   expect(keys.map((k: any) => [k.name, k.workspace])).toEqual([["laptop", "zeta"]]);
 });
 
-test("the schema is at version 4", () => {
+test("the schema is at version 4 or later", () => {
   const db = new Database(path, { readonly: true });
-  expect((db.query("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(4);
+  expect((db.query("PRAGMA user_version").get() as { user_version: number }).user_version).toBeGreaterThanOrEqual(4);
   db.close();
+});
+
+// Migration 5 (usernames and names move to memberships) on a database written under schema 4: every row and
+// id survives, and each membership carries its user's former username and name.
+describe("migration 5", () => {
+  // Migrations 1–4 exactly as they shipped (src/server/db.ts): 1–3 above, then 4. Frozen: never edit this fixture.
+  const SCHEMA_V4 = [
+    ...SCHEMA_V3,
+    `
+  ALTER TABLE api_keys ADD COLUMN workspace TEXT REFERENCES workspaces(key) ON DELETE CASCADE;
+  DELETE FROM api_keys WHERE session_id IS NOT NULL; -- chat keys: short-lived, minted again per workspace
+  UPDATE api_keys SET workspace = (SELECT m.workspace FROM workspace_members m
+    WHERE m.user_id = api_keys.user_id AND m.suspended_at IS NULL ORDER BY m.created_at, m.workspace LIMIT 1);
+  DELETE FROM api_keys WHERE workspace IS NULL; -- the owner has no active workspace left
+  CREATE INDEX api_keys_workspace ON api_keys(user_id, workspace);
+  `,
+  ];
+  const SIGN_IN = "ABCDE-FGHJK";
+  const t = (minutes: number) => new Date(Date.UTC(2026, 0, 1, 0, minutes)).toISOString();
+
+  /** A schema-4 database: sam in two workspaces, an agent, a suspended person, and their issues, comments, docs, keys, session and code. */
+  function writeV4(file: string) {
+    const db = new Database(file, { create: true });
+    for (const sql of SCHEMA_V4) db.run(sql);
+    db.run("PRAGMA user_version = 4");
+    const later = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    db.run(`INSERT INTO users (id, kind, username, name, email, created_at) VALUES
+      (1, 'person', 'sam', 'Sam Lee', 'sam@example.com', '${t(0)}'),
+      (2, 'agent', 'bot', 'Bot', NULL, '${t(1)}'),
+      (3, 'person', 'kim', 'Kim', NULL, '${t(2)}')`);
+    db.run(`INSERT INTO workspaces (key, name, created_at, updated_at) VALUES
+      ('acme', 'Acme', '${t(0)}', '${t(0)}'), ('side', 'Side', '${t(3)}', '${t(3)}')`);
+    db.run(`INSERT INTO workspace_members (workspace, user_id, role, created_at, suspended_at) VALUES
+      ('acme', 1, 'admin', '${t(0)}', NULL), ('side', 1, 'admin', '${t(3)}', NULL),
+      ('side', 2, 'agent', '${t(4)}', NULL), ('acme', 3, 'member', '${t(5)}', '${t(6)}')`);
+    db.run(`INSERT INTO sessions (id, user_id, token_hash, created_at, last_seen_at, user_agent, ip)
+      VALUES (7, 1, '${hash(SESSION)}', '${t(0)}', '${new Date().toISOString()}', 'test', '127.0.0.1')`);
+    db.run(`INSERT INTO api_keys (id, user_id, name, scope, token_hash, created_at, workspace) VALUES
+      (11, 1, 'laptop', 'write', '${hash(ADMIN_KEY)}', '${t(1)}', 'acme'),
+      (12, 2, 'agent token', 'write', '${hash(AGENT_KEY)}', '${t(4)}', 'side')`);
+    db.run(`INSERT INTO codes (id, code_hash, purpose, user_id, created_by, created_at, expires_at) VALUES
+      (21, '${hash(SIGN_IN.replace("-", ""))}', 'sign-in', 1, 1, '${t(7)}', '${later}')`);
+    db.run(`INSERT INTO teams (key, workspace, name, created_at, updated_at, next_number) VALUES
+      ('ACM', 'acme', 'Acme team', '${t(0)}', '${t(0)}', 2), ('SID', 'side', 'Side team', '${t(3)}', '${t(3)}', 2)`);
+    db.run(`INSERT INTO issues (id, team_key, number, title, status, assignee_id, delegate_id, creator_id, created_at, updated_at) VALUES
+      (31, 'ACM', 1, 'Acme issue', 'todo', 3, NULL, 1, '${t(5)}', '${t(5)}'),
+      (32, 'SID', 1, 'Side issue', 'in_progress', 1, 2, 2, '${t(6)}', '${t(6)}')`);
+    db.run(`INSERT INTO comments (id, issue_id, author_id, body, created_at) VALUES
+      (41, 31, 3, 'from kim', '${t(6)}'), (42, 32, 2, 'from bot', '${t(7)}')`);
+    db.run(`INSERT INTO documents (id, slug, team_key, title, content, position, created_at, updated_at, updated_by_id) VALUES
+      (51, 'plan', 'SID', 'Plan', 'v2', 1, '${t(3)}', '${t(8)}', 2)`);
+    db.run(`INSERT INTO document_versions (id, document_id, title, content, author_id, created_at) VALUES
+      (61, 51, 'Plan', 'v1', 1, '${t(3)}'), (62, 51, 'Plan', 'v2', 2, '${t(8)}')`);
+    db.run(`INSERT INTO document_comments (id, document_id, author_id, body, created_at) VALUES (71, 51, 1, 'nice', '${t(9)}')`);
+    db.close();
+  }
+
+  const rows = (file: string, sql: string) => {
+    const db = new Database(file, { readonly: true });
+    try {
+      return db.query(sql).all();
+    } finally {
+      db.close();
+    }
+  };
+  // Everything that points at an account, as it was before the migration.
+  const KEPT = [
+    "SELECT id, kind, email, created_at FROM users ORDER BY id",
+    "SELECT id, user_id, token_hash FROM sessions ORDER BY id",
+    "SELECT id, user_id, token_hash, workspace FROM api_keys ORDER BY id",
+    "SELECT id, user_id, created_by, code_hash FROM codes ORDER BY id",
+    "SELECT id, assignee_id, delegate_id, creator_id FROM issues ORDER BY id",
+    "SELECT id, author_id FROM comments ORDER BY id",
+    "SELECT id, updated_by_id FROM documents ORDER BY id",
+    "SELECT id, author_id FROM document_versions ORDER BY id",
+    "SELECT id, author_id FROM document_comments ORDER BY id",
+    "SELECT workspace, user_id, role, created_at, suspended_at FROM workspace_members ORDER BY workspace, user_id",
+  ];
+
+  let v4: string;
+  let before: unknown[][];
+  let server: TestServer;
+  beforeAll(async () => {
+    v4 = join(dir, "v4.db");
+    writeV4(v4);
+    before = KEPT.map((sql) => rows(v4, sql));
+    server = await startServer({ setup: false, env: { DATABASE_PATH: v4 } });
+  });
+  afterAll(() => server.stop());
+
+  test("every id, email, session, key, code and author survives; handles and names land on every membership", () => {
+    expect(KEPT.map((sql) => rows(v4, sql))).toEqual(before);
+    expect(rows(v4, "SELECT workspace, user_id, username, name FROM workspace_members ORDER BY workspace, user_id")).toEqual([
+      { workspace: "acme", user_id: 1, username: "sam", name: "Sam Lee" },
+      { workspace: "acme", user_id: 3, username: "kim", name: "Kim" },
+      { workspace: "side", user_id: 1, username: "sam", name: "Sam Lee" },
+      { workspace: "side", user_id: 2, username: "bot", name: "Bot" },
+    ]);
+    expect(rows(v4, "PRAGMA foreign_key_check")).toEqual([]);
+    expect(rows(v4, "PRAGMA user_version")).toEqual([{ user_version: 5 }]);
+  });
+
+  test("the old key and cookie still sign in, as the same people", async () => {
+    const key = (await server.with({ token: ADMIN_KEY }).api("GET", "/api/me")).body;
+    expect([key.user.id, key.user.username, key.user.name, key.user.email]).toEqual([1, "sam", "Sam Lee", "sam@example.com"]);
+    const cookie = (await server.with({ cookie: `docket_session=${SESSION}` }, "cookie").api("GET", "/api/me")).body;
+    expect(cookie.workspaces.map((w: any) => [w.key, w.you.username])).toEqual([["acme", "sam"], ["side", "sam"]]);
+    expect((await server.with({ token: AGENT_KEY }).api("GET", "/api/me")).body.user).toMatchObject({ id: 2, username: "bot", kind: "agent" });
+  });
+
+  test("issues, comments, docs and versions show who did what", async () => {
+    const bot = server.with({ token: AGENT_KEY });
+    const issue = (await bot.api("GET", "/api/issues/SID-1")).body;
+    expect([issue.creator.username, issue.assignee.username, issue.delegate.username, issue.comments[0].author.name]).toEqual(["bot", "sam", "bot", "Bot"]);
+    const kim = (await server.with({ token: ADMIN_KEY }).api("GET", "/api/issues/ACM-1")).body;
+    expect([kim.assignee.name, kim.comments[0].author.username]).toEqual(["Kim", "kim"]); // suspended, still named
+    const doc = (await bot.api("GET", "/api/documents/plan")).body;
+    expect([doc.updatedBy.username, doc.comments[0].author.username]).toEqual(["bot", "sam"]);
+    const versions = (await bot.api("GET", "/api/documents/plan/versions")).body;
+    expect(versions.map((v: any) => v.author.username)).toEqual(["bot", "sam"]);
+  });
+
+  test("the sign-in link made before still opens the account", async () => {
+    const res = await server.anon.api("POST", "/api/auth/redeem", { code: SIGN_IN });
+    expect([res.status, res.body.user.username]).toEqual([200, "sam"]);
+  });
+
+  test("a migration that breaks a foreign key throws, and the database stays as it was", async () => {
+    const file = join(dir, "dangling.db");
+    writeV4(file);
+    const db = new Database(file);
+    db.run("PRAGMA foreign_keys = OFF");
+    db.run(`INSERT INTO comments (issue_id, author_id, body, created_at) VALUES (31, 99, 'nobody wrote this', '${t(10)}')`);
+    db.close();
+    const run = Bun.spawn(["bun", "-e", 'await import("./src/server/db.ts")'], {
+      cwd: join(import.meta.dir, ".."),
+      env: { PATH: process.env.PATH, HOME: dir, DATABASE_PATH: file },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stderr, exitCode] = await Promise.all([new Response(run.stderr).text(), run.exited]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("Migration 5 broke foreign keys");
+    expect(rows(file, "PRAGMA user_version")).toEqual([{ user_version: 4 }]);
+    expect(rows(file, "SELECT username FROM users ORDER BY id")).toEqual([{ username: "sam" }, { username: "bot" }, { username: "kim" }]);
+  });
 });

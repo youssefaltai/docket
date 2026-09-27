@@ -12,7 +12,7 @@ import type {
   UserRef,
   WorkspaceMember,
 } from "../shared/types";
-import { enc, request, setSignedInAs } from "./api";
+import { enc, getCurrentWorkspace, request, setSignedInAs } from "./api";
 
 let me: Me | null = null;
 
@@ -23,10 +23,16 @@ export function getMe(): Me {
 }
 const setMe = (m: Me) => {
   me = m;
-  setSignedInAs(m.user.username);
+  setSignedInAs(m.user.id);
   return m;
 };
 export const loadMe = () => request<Me>("GET", "/api/me").then(setMe);
+
+/** How you're known in the current workspace (usernames and names are per workspace). */
+export function getYou(): UserRef {
+  const m = getMe();
+  return m.workspaces.find((w) => w.key === getCurrentWorkspace())?.you ?? m.user;
+}
 
 const ws = (key: string) => `/api/workspaces/${enc(key)}`;
 
@@ -38,9 +44,11 @@ export const auth = {
     request<{ user: User }>("POST", "/api/auth/redeem", { code, ...profile }),
   logout: () => request<{ ok: true }>("POST", "/api/logout", {}),
 
-  /** Saves your profile, and what getMe() returns with it. */
-  updateMe: (patch: { name?: string; username?: string; email?: string }) =>
-    request<Me>("PATCH", "/api/me", patch).then(setMe),
+  /** Saves your email, and what getMe() returns with it. */
+  updateMe: (patch: { email?: string }) => request<Me>("PATCH", "/api/me", patch).then(setMe),
+  /** Saves how you're known in one workspace, then what getMe() returns with it. */
+  updateProfile: (workspace: string, patch: { name?: string; username?: string }) =>
+    request<WorkspaceMember>("PATCH", `${ws(workspace)}/profile`, patch).then((member) => loadMe().then(() => member)),
   sessions: () => request<Session[]>("GET", "/api/sessions"),
   revokeSession: (id: number) => request<unknown>("DELETE", `/api/sessions/${id}`),
   revokeOtherSessions: () => request<unknown>("DELETE", "/api/sessions"),

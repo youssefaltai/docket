@@ -62,11 +62,11 @@ function AuthForm({
   );
 }
 
-/** Profile fields for a new account; the username follows the name until edited. */
-function useProfile() {
-  const [name, setName] = useState("");
-  const [username, setUsername] = useState("");
-  const [edited, setEdited] = useState(false);
+/** Profile fields (how you're known in a workspace); a new one's username follows the name until edited. */
+function useProfile(initial?: UserRef) {
+  const [name, setName] = useState(initial?.name ?? "");
+  const [username, setUsername] = useState(initial?.username ?? "");
+  const [edited, setEdited] = useState(!!initial);
   const fields = (
     <>
       <Field label="Your name">
@@ -175,8 +175,8 @@ export function Login() {
     setError("");
     auth.peek(value).then(
       (found) => {
-        // A sign-in link for someone else replaces who's signed in here, so ask first.
-        const switching = found.kind === "sign-in" && found.you && found.you.username !== found.username;
+        // A sign-in link for someone else replaces who's signed in here, so ask first (`you` is set only then).
+        const switching = found.kind === "sign-in" && found.you !== null;
         if (found.kind === "invite" || switching) {
           setCode(value);
           setInfo(found);
@@ -228,7 +228,7 @@ function Switch({ code, info, you, onError }: { code: string; info: CodeInfo; yo
   const [busy, setBusy] = useState(false);
   return (
     <AuthForm
-      title={`Sign in as @${info.username}?`}
+      title={`Sign in as @${info.username}${info.workspace ? ` (${info.workspace})` : ""}?`}
       intro={`This signs ${you.name} (@${you.username}) out here, in every tab of this browser.`}
       error=""
       action={busy ? "Signing in…" : `Sign out ${you.name} and sign in`}
@@ -246,55 +246,61 @@ function Switch({ code, info, you, onError }: { code: string; info: CodeInfo; yo
   );
 }
 
-/** Accepting an invite while signed in: it adds this account to the workspace, so ask first. */
+/**
+ * Accepting an invite while signed in: it adds this account to the workspace, so ask first, with how you'll
+ * be known there (your usual profile, which you can change for this workspace).
+ */
 function Accept({ code, info, you, onError }: { code: string; info: CodeInfo; you: UserRef; onError: (err: unknown) => void }) {
-  const [busy, setBusy] = useState(false);
+  const join = useJoin(code, onError, you);
   return (
     <AuthForm
       title={`Join ${info.workspace ?? "this workspace"}?`}
-      intro={`You'll join as ${you.name} (@${you.username}). To join as someone else, sign out first.`}
-      error=""
-      action={busy ? "Joining…" : "Join"}
-      ready={!busy}
-      onSubmit={() => {
-        setBusy(true);
-        auth.redeem(code).then(enter, onError);
-      }}
+      intro="How people there will see you. To join as someone else, sign out first."
+      error={join.error}
+      action={join.busy ? "Joining…" : "Join"}
+      ready={join.ready}
+      onSubmit={join.submit}
       after={
         <button type="button" className="btn btn-ghost" onClick={enter}>
           Cancel
         </button>
       }
-    />
+    >
+      {join.fields}
+    </AuthForm>
   );
 }
 
 /** Accepting an invite as someone new: pick a name and username, then you're in. */
 function Join({ code, info, onError }: { code: string; info: CodeInfo; onError: (err: unknown) => void }) {
-  const profile = useProfile();
+  const join = useJoin(code, onError);
+  return (
+    <AuthForm
+      title={`Join ${info.workspace ?? "Docket"}`}
+      intro="Create your account: choose how you appear to others. Already have one? Sign in first, then open the invite again."
+      error={join.error}
+      action="Join"
+      ready={join.ready}
+      onSubmit={join.submit}
+    >
+      {join.fields}
+    </AuthForm>
+  );
+}
+
+/** Redeems an invite with a profile. A taken or invalid username keeps the form; anything else (expired, used) starts over. */
+function useJoin(code: string, onError: (err: unknown) => void, initial?: UserRef) {
+  const profile = useProfile(initial);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const ready = !!(profile.name && profile.username) && !busy;
   const submit = () => {
     setBusy(true);
     auth.redeem(code, { name: profile.name, username: profile.username }).then(enter, (err) => {
-      // A taken or invalid username keeps the form; anything else (expired, used) starts over.
       if (err instanceof HttpError && (err.status === 400 || err.status === 409)) {
         setError(err.message);
         setBusy(false);
       } else onError(err);
     });
   };
-  return (
-    <AuthForm
-      title={`Join ${info.workspace ?? "Docket"}`}
-      intro="Create your account: choose how you appear to others. Already have one? Sign in first, then open the invite again."
-      error={error}
-      action="Join"
-      ready={ready}
-      onSubmit={submit}
-    >
-      {profile.fields}
-    </AuthForm>
-  );
+  return { fields: profile.fields, busy, error, ready: !!(profile.name && profile.username) && !busy, submit };
 }

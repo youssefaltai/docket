@@ -117,7 +117,7 @@ Docket copies Linear's model: everyone signs in, each workspace has its own memb
 
 Serve it over HTTPS anywhere but localhost. Give each Docket its own hostname: browsers share cookies across ports, so two Dockets on one host (say `localhost:7100` and `localhost:7200`) sign each other out, and any other app on that host can read the session cookie.
 
-**Locked out?** On the server, `docker compose exec docket bun run sign-in-link <username>` prints a one-time sign-in link. Set `DOCKET_URL` so it points at your public address.
+**Locked out?** On the server, `docker compose exec docket bun run sign-in-link <username> [workspace]` prints a one-time sign-in link (usernames are per workspace: name the workspace if several people hold it). Set `DOCKET_URL` so it points at your public address.
 
 </details>
 
