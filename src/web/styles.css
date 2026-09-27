@@ -335,6 +335,7 @@ kbd {
   height: 100dvh;
 }
 .main {
+  position: relative; /* anchors the bulk action bar */
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -960,6 +961,102 @@ fieldset.plain {
   height: 22px;
   margin: 0;
   border: 1px solid var(--border);
+}
+
+/* ---------- Multi-select ---------- */
+
+/* In the row's left gutter, shown on hover, focus or while anything is selected (always on touch, below). */
+.select-box {
+  position: absolute;
+  top: 50%;
+  left: calc((var(--pad) - 16px) / 2);
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  translate: 0 -50%;
+  opacity: 0;
+  transition: opacity var(--t);
+}
+.card .select-box {
+  position: relative;
+  top: auto;
+  left: auto;
+  width: 22px;
+  height: 22px;
+  translate: none;
+}
+.row:hover .select-box,
+.card:hover .select-box,
+.select-box:focus-visible,
+.selecting .select-box,
+.select-box.on {
+  opacity: 1;
+}
+.row.selected {
+  background: var(--bg-hover);
+}
+.card.selected {
+  border-color: var(--text);
+}
+
+.bulkbar {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  max-width: calc(100% - 16px);
+  padding: 4px;
+  translate: -50% 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  box-shadow: var(--shadow-pop);
+  overflow-x: auto;
+  animation: toast-in 160ms var(--ease);
+}
+.bulkbar-count,
+.bulkbar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: var(--radius);
+  flex-shrink: 0;
+  white-space: nowrap;
+  transition: background-color var(--t), color var(--t);
+}
+.bulkbar-count {
+  margin-right: 4px;
+  border: 1px dashed var(--border-strong);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.bulkbar-count > svg {
+  width: 12px;
+  height: 12px;
+  color: var(--muted);
+}
+.bulkbar-btn > svg {
+  width: 14px;
+  height: 14px;
+}
+.bulkbar-count:hover,
+.bulkbar-btn:hover,
+.bulkbar-btn[aria-expanded="true"] {
+  background: var(--bg-active);
+}
+.bulkbar-danger:hover {
+  color: var(--danger);
+}
+/* Keep toasts clear of the bar. */
+.app:has(.bulkbar) .toasts {
+  bottom: 72px;
 }
 
 /* ---------- Issue page ---------- */
@@ -2671,6 +2768,12 @@ textarea.input {
   .row .labels {
     display: none;
   }
+  .bulkbar-text {
+    display: none;
+  }
+  .bulkbar-btn {
+    padding: 0 8px;
+  }
   .row-id {
     min-width: 0;
   }
@@ -2756,6 +2859,20 @@ textarea.input {
   }
   .row {
     height: 52px;
+  }
+  .row .select-box {
+    position: static;
+    width: 28px;
+    height: 44px;
+    margin: 0 -6px 0 -4px;
+    translate: none;
+  }
+  .select-box {
+    opacity: 1;
+  }
+  .bulkbar-count,
+  .bulkbar-btn {
+    height: 44px;
   }
   .tab {
     display: inline-flex;

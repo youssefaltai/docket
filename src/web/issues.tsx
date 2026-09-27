@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { CLOSED_STATUSES, STATUSES, STATUS_LABELS, type DueFilter, type IssueSummary, type Status } from "../shared/types";
 import { api, store } from "./api";
 import { getYou } from "./auth";
+import { SelectBox, shiftClick, useBulk, type Selection } from "./bulk";
 import { AssigneePicker, Picker, PriorityPicker, StatusPicker, useMembers, userOption } from "./pickers";
 import {
   Avatar,
@@ -108,6 +109,7 @@ export function IssuesView({ teamKey }: { teamKey: string | null }) {
   );
 
   useListShortcuts(setIssues, invalidate, reload);
+  const { selection, bar } = useBulk(issues, { setIssues, invalidate, reload }, [teamKey, q, label, assignee, delegate, due]);
 
   const patch: Patch = (id, p) => {
     invalidate(); // drop any in-flight fetch that predates this change
@@ -177,9 +179,9 @@ export function IssuesView({ teamKey }: { teamKey: string | null }) {
       </EmptyState>
     );
   } else if (view === "board") {
-    body = <Board issues={issues} onPatch={patch} />;
+    body = <Board issues={issues} onPatch={patch} selection={selection} />;
   } else {
-    body = <IssueList issues={issues} onPatch={patch} />;
+    body = <IssueList issues={issues} onPatch={patch} selection={selection} />;
   }
 
   return (
@@ -218,6 +220,7 @@ export function IssuesView({ teamKey }: { teamKey: string | null }) {
         </div>
       </ListHeader>
       <div className={cls("content", view === "board" && !!issues?.length && "content-board")}>{body}</div>
+      {bar}
     </>
   );
 }
@@ -316,7 +319,7 @@ const DUE_OPTIONS: [DueFilter | "", string][] = [
 
 // ---------- List ----------
 
-export function IssueList({ issues, onPatch }: { issues: IssueSummary[]; onPatch: Patch }) {
+export function IssueList({ issues, onPatch, selection }: { issues: IssueSummary[]; onPatch: Patch; selection: Selection }) {
   const [collapsed, setCollapsed] = useState(() => new Set(CLOSED_STATUSES));
   const sorted = useMemo(() => sortIssues(issues), [issues]);
   const toggle = (s: Status) =>
@@ -327,7 +330,7 @@ export function IssueList({ issues, onPatch }: { issues: IssueSummary[]; onPatch
     });
 
   return (
-    <div className="list">
+    <div className={cls("list", selection.any && "selecting")}>
       {STATUSES.map((status) => {
         const items = sorted.filter((i) => i.status === status);
         if (!items.length) return null;
@@ -342,7 +345,7 @@ export function IssueList({ issues, onPatch }: { issues: IssueSummary[]; onPatch
               </button>
               <NewInStatus status={status} />
             </div>
-            {open && items.map((i) => <IssueRow key={i.id} issue={i} onPatch={onPatch} />)}
+            {open && items.map((i) => <IssueRow key={i.id} issue={i} onPatch={onPatch} selection={selection} />)}
           </section>
         );
       })}
@@ -385,12 +388,13 @@ function StatusIconLabel({ status }: { status: Status }) {
   );
 }
 
-function IssueRow({ issue, onPatch }: { issue: IssueSummary; onPatch: Patch }) {
+function IssueRow({ issue, onPatch, selection }: { issue: IssueSummary; onPatch: Patch; selection: Selection }) {
   const set = (p: IssueChange) => onPatch(issue.id, p);
   return (
     // data-issue-id on the row itself (not just the title link) so it still resolves once a picker's trigger
     // (a sibling) has focus, e.g. right after S/P/A closes and refocuses its own button.
-    <div className="row" data-issue-id={issue.id}>
+    <div className={cls("row", selection.has(issue.id) && "selected")} data-issue-id={issue.id} onClickCapture={shiftClick(issue.id, selection)}>
+      <SelectBox id={issue.id} selection={selection} />
       <PriorityPicker value={issue.priority} onChange={(priority) => set({ priority })} className="row-btn" cmd="priority" />
       <span className="row-id">{issue.id}</span>
       <StatusPicker value={issue.status} onChange={(status) => set({ status })} className="row-btn" cmd="status" />
@@ -430,7 +434,7 @@ function Labels({ labels, max }: { labels: string[]; max: number }) {
 
 const BOARD_STATUSES = STATUSES.filter((s) => s !== "canceled");
 
-export function Board({ issues, onPatch }: { issues: IssueSummary[]; onPatch: Patch }) {
+export function Board({ issues, onPatch, selection }: { issues: IssueSummary[]; onPatch: Patch; selection: Selection }) {
   const [dragging, setDragging] = useState<string | null>(null);
   const [over, setOver] = useState<Status | null>(null);
   const sorted = useMemo(() => sortIssues(issues), [issues]);
@@ -443,7 +447,7 @@ export function Board({ issues, onPatch }: { issues: IssueSummary[]; onPatch: Pa
   };
 
   return (
-    <div className="board">
+    <div className={cls("board", selection.any && "selecting")}>
       {BOARD_STATUSES.map((status) => {
         const items = sorted.filter((i) => i.status === status);
         return (
@@ -476,6 +480,7 @@ export function Board({ issues, onPatch }: { issues: IssueSummary[]; onPatch: Pa
                   key={i.id}
                   issue={i}
                   onPatch={onPatch}
+                  selection={selection}
                   dragging={dragging === i.id}
                   onDragStart={() => setDragging(i.id)}
                   onDragEnd={() => {
@@ -495,12 +500,14 @@ export function Board({ issues, onPatch }: { issues: IssueSummary[]; onPatch: Pa
 function Card({
   issue,
   onPatch,
+  selection,
   dragging,
   onDragStart,
   onDragEnd,
 }: {
   issue: IssueSummary;
   onPatch: Patch;
+  selection: Selection;
   dragging: boolean;
   onDragStart: () => void;
   onDragEnd: () => void;
@@ -508,8 +515,9 @@ function Card({
   const set = (p: IssueChange) => onPatch(issue.id, p);
   return (
     <div
-      className={cls("card", dragging && "card-dragging")}
+      className={cls("card", dragging && "card-dragging", selection.has(issue.id) && "selected")}
       data-issue-id={issue.id}
+      onClickCapture={shiftClick(issue.id, selection)}
       draggable
       onDragStart={(e) => {
         e.dataTransfer.setData("text/plain", issue.id);
@@ -522,6 +530,7 @@ function Card({
         <StatusPicker value={issue.status} onChange={(status) => set({ status })} className="row-btn" cmd="status" />
         <span className="row-id">{issue.id}</span>
         <span className="grow" />
+        <SelectBox id={issue.id} selection={selection} />
         <AssigneePicker value={issue.assignee} onChange={(assignee) => set({ assignee })} className="row-btn" align="end" cmd="assignee" />
       </div>
       <Link to={`/issue/${issue.id}`} className="card-title" data-nav dir="auto" draggable={false}>

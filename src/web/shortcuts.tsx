@@ -18,7 +18,7 @@ export const SHORTCUT_GROUPS: { title: string; rows: [string, string][] }[] = [
       ["G then M", "Go to My Issues"],
       ["G then D", "Go to All docs"],
       ["G then S", "Go to Settings"],
-      ["Esc", "Close the mobile nav, else leave the page, else blur"],
+      ["Esc", "Clear the selection, else close the mobile nav, else leave the page, else blur"],
     ],
   },
   {
@@ -31,6 +31,17 @@ export const SHORTCUT_GROUPS: { title: string; rows: [string, string][] }[] = [
       ["L", "Set labels"],
       ["I", "Claim (assign to me)"],
       [`${MOD}⌫`, "Delete to trash"],
+    ],
+  },
+  {
+    title: "Selecting issues (lists and boards)",
+    rows: [
+      ["X", "Select or deselect the focused row"],
+      ["Shift-J / Shift-K / Shift-↓ / Shift-↑", "Extend the selection down or up"],
+      ["Shift-click", "Select every row from the last one picked"],
+      ["S / P / A / D / L", "With a selection: set it on every selected issue"],
+      [`${MOD}⌫`, "With a selection: move them all to trash (asks first)"],
+      ["Esc", "Clear the selection"],
     ],
   },
   {

@@ -345,6 +345,27 @@ export type IssuePatch = Partial<Omit<IssueInput, "team">> & {
   baseUpdatedAt?: string; // the updatedAt you read; if the issue changed since, the patch is refused (409)
 };
 
+/**
+ * POST /api/issues/bulk: one change for up to 100 issues, applied to each in turn exactly as its own PATCH
+ * or DELETE would be. `addLabels`/`removeLabels` edit each issue's own labels (after `labels`, if given).
+ */
+export type BulkIssuePatch =
+  | (Pick<IssuePatch, "status" | "priority" | "assignee" | "delegate" | "labels"> & { addLabels?: string[]; removeLabels?: string[] })
+  | { delete: true };
+
+export interface BulkIssueInput {
+  ids: string[];
+  patch: BulkIssuePatch;
+}
+
+/** One per id, in order: the issue as its own route would return it, or why that one failed (the rest still apply). */
+export interface BulkIssueResult {
+  id: string;
+  issue?: Issue;
+  error?: string;
+  status?: number; // the HTTP status its own route would have answered with
+}
+
 export interface IssueFilter {
   team?: string;
   status?: Status[];

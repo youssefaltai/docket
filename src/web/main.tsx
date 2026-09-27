@@ -46,6 +46,7 @@ import {
   setIssueIndex,
   toast,
   useApp,
+  moveFocus,
   useKeydown,
   usePath,
   type AppState,
@@ -500,17 +501,6 @@ function focusSearch() {
   if (el) return el.focus();
   navigate(nav.lastList);
   setTimeout(() => document.getElementById("search")?.focus(), 50);
-}
-
-/** j/k and arrows move focus between issue rows or cards. */
-function moveFocus(delta: number): boolean {
-  const items = [...document.querySelectorAll<HTMLElement>("[data-nav]")];
-  if (!items.length) return false;
-  const i = items.indexOf(document.activeElement as HTMLElement);
-  const next = i < 0 ? items[delta > 0 ? 0 : items.length - 1] : items[Math.max(0, Math.min(items.length - 1, i + delta))];
-  next?.focus();
-  next?.scrollIntoView({ block: "nearest" });
-  return true;
 }
 
 // Pasting a sign-in link into a tab already on /login only changes the hash: reload to use it.

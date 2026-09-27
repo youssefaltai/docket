@@ -136,6 +136,7 @@ Plus the Access routes above. Everything here acts in the request's workspace (s
 | GET | /api/issues | `?team&status=a,b&label&assignee&delegate&creator&parent&q&subscribed=true&due&sort` (`subscribed`: only issues you follow; `due`: `overdue`, `soon`, `today`, `any` or `none`, see Data; `sort`: `default` or `due`), plus `first` (1–500) and `after` to page | `IssueSummary[]`; with `first`/`after`, `IssuePage` `{ issues, pageInfo: { hasNextPage, endCursor } }` |
 | POST | /api/issues | `IssueInput` | 201 `Issue` |
 | GET / PATCH / DELETE | /api/issues/:id | `IssuePatch` (title, description, status, priority, labels, assignee, delegate, parent, blockedBy, relatedTo, duplicateOf, dueOn, baseUpdatedAt) | `Issue`, with its `activity` (history, oldest first) like every route returning one (DELETE moves it to the trash) |
+| POST | /api/issues/bulk | `{ ids, patch }`: 1–100 identifiers (more is 400 `Select at most 100 issues`); `patch` is `{ status?, priority?, assignee?, delegate?, labels?, addLabels?, removeLabels? }` (`addLabels`/`removeLabels` edit each issue's own labels, after `labels` if given) or `{ delete: true }` alone; any other field is 400 | `{ results: [{ id, issue? , error?, status? }] }`, one per id in order: each issue is changed exactly as its own PATCH or DELETE would (history, notifications, webhooks, change events), and one that fails (404 elsewhere or unknown, 409 in the trash, 400 an unknown assignee) carries its error and that route's status while the rest still apply. Not atomic, as in Linear |
 | POST | /api/issues/:id/restore | | `Issue` |
 | GET | /api/teams/:key/trash | | `Trash` `{ issues, documents }`, newest first |
 | POST | /api/issues/:id/claim | | `Issue` |
@@ -229,6 +230,7 @@ Light theme only, neutral and modern, in the spirit of Linear, Vercel, Resend. G
 - **List view** (default): issues grouped by status with sticky headers and counts; Done and Canceled collapsed by default. Row: priority, identifier (mono, muted), status icon, title, due date, labels, assignee and delegate, relative updated time.
 - **Due date chip** (rows, cards): a calendar icon and "3d overdue", "Today", "in 3d", or the date ("Oct 12") when it's more than a week out or the issue is done or canceled; the tooltip has the date and the days left or overdue. Red when an open issue is due today or overdue, orange within 7 days, gray otherwise; computed against the browser's date (see Data). No chip without a due date.
 - **Board view**: columns by status (no Canceled), cards (the due date chip beside priority), drag between columns or use the card's status picker (touch, keyboard) to change status.
+- **Multi-select** (list, board, My Issues): a checkbox in each row's left gutter (on a card, beside the assignee) shows on hover or focus, on every row once anything is selected, and always on touch; `X` toggles the focused row, `Shift-J`/`Shift-K`/`Shift-↓`/`Shift-↑` extend the selection a row at a time, Shift-click selects every row from the last one picked, `Esc` clears. The selection survives switching List/Board and clears when the team, search or a filter changes. While it's non-empty, a bar floats at the bottom of the page: the count (click to clear; "3 selected", just "3" on a phone, where the buttons are icons), then Status, Priority, Assignee, Delegate, Labels and Delete, applied to every selected issue at once (`POST /api/issues/bulk`). A picker checks a value only when every selected issue has it; Labels toggles one label on all of them (removed if all have it, else added where missing). Changes show at once and the selection stays, so several can be applied in a row; if some issues fail, a toast names the first and the list reloads. Delete asks once ("Move 5 issues to trash?"), unlike a single delete, then shows one toast whose Undo restores them all; the selection clears.
 - **Toolbar**: search (`/` to focus), a "Mine" chip, label, assignee, delegate and due date filters (Overdue, Due soon, Due today, Has due date, No due date; applied by the server), List/Board toggle. No sort control: `sort=due` is API-only for now. People in pickers list you first, marked "(you)".
 - **Inbox** (`/<ws>/inbox`): your notifications in this workspace, one row per issue or doc (newest first): an unread dot, the latest actor's avatar, identifier (mono) and title or doc icon and title (`dir="auto"`), the latest event ("Ana assigned you", "Ana delegated to you", "Ana mentioned you: excerpt", "Ana commented: excerpt", "Claude moved to In Review" with the status icon), "+N" for the rest, and the time. Opening a row (click or `Enter`) marks it read. The header has "Mark all read" and "Delete read". Empty: "You're all caught up". It and the sidebar count reload on `inbox` events (so other tabs follow), and the rows on any other live change.
 - **Subscribe bell** in the issue and doc headers (not in the trash): filled when you follow it (`aria-pressed`); `Shift+S` toggles it on those pages.
@@ -260,7 +262,7 @@ Global (never while typing in a field, in a popover, or during IME composition):
 | `G` then `M` | Go to My Issues |
 | `G` then `D` | Go to All docs |
 | `G` then `S` | Go to Settings |
-| `Esc` | Close the mobile nav if open, else leave an issue/doc page for the last list, else blur |
+| `Esc` | Clear the issue selection if any, else close the mobile nav if open, else leave an issue/doc page for the last list, else blur |
 
 A `G` chord arms a ~900ms window for its second key; an unbound second key, or none within the window, does nothing (no navigation, no error).
 
@@ -275,6 +277,19 @@ On a focused row (after `J`/`K`) or an issue page, acting on the row's or page's
 | `L` | Set labels |
 | `I` | Claim it (assign to me) |
 | `⌘⌫` / `Ctrl⌫` | Delete it to trash, with Undo |
+
+Selecting issues on a list, board or My Issues (same guards; see Multi-select under UI):
+
+| Key | Action |
+|---|---|
+| `X` | Select or deselect the focused row |
+| `Shift-J` / `Shift-K` / `Shift-↓` / `Shift-↑` | Extend the selection down or up |
+| Shift-click | Select every row from the last one picked |
+| `S` / `P` / `A` / `D` / `L` | With a selection: open that picker in the bulk bar, for every selected issue (without one, the focused row's, as above) |
+| `⌘⌫` / `Ctrl⌫` | With a selection: move them all to trash, after one confirm (without one, the focused row, as above) |
+| `Esc` | Clear the selection |
+
+`I` (claim) always acts on the focused row.
 
 In a popover picker (status, priority, assignee, delegate, labels, parent, blocked by, related, duplicate of, team, workspace switcher, account menu):
 
