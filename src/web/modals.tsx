@@ -2,6 +2,7 @@
 import { useRef, useState, type ReactNode } from "react";
 import { PRIORITY_LABELS, STATUS_LABELS, type IssueInput, type UserRef, type Workspace } from "../shared/types";
 import { api } from "./api";
+import { useMentionMenu } from "./editor";
 import { AssigneePicker, LabelsPicker, ParentPicker, PriorityPicker, TeamPicker, StatusPicker } from "./pickers";
 import {
   Avatar,
@@ -69,6 +70,7 @@ export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueIn
   const { team, title, description, status, priority, labels, assignee, parent } = draft;
   const desc = useRef<HTMLTextAreaElement>(null);
   useAutosize(desc, description);
+  const mention = useMentionMenu(desc, description, set("description"));
 
   const { busy, run } = useRun();
   const submit = () => {
@@ -120,7 +122,10 @@ export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueIn
           aria-label="Description"
           value={description}
           onChange={(e) => set("description")(e.target.value)}
+          {...mention.props}
+          onKeyDown={mention.onKeyDown}
         />
+        {mention.menu}
       </div>
       <div className="modal-chips">
         <StatusPicker value={status} onChange={set("status")} className="chip">

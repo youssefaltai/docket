@@ -2,6 +2,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import type { Document, DocumentPatch, DocumentSummary, DocumentVersion, DocumentVersionSummary } from "../shared/types";
 import { HttpError, api } from "./api";
+import { useMentionMenu } from "./editor";
 import { TeamPicker } from "./pickers";
 import {
   Avatar,
@@ -684,6 +685,7 @@ function DocEditor({
     onStatus("saving");
     s.timer = setTimeout(save, 1000);
   };
+  const mention = useMentionMenu(ref, draft, change);
 
   const reload = () => {
     s.draft = s.base = s.echo = doc.content;
@@ -764,7 +766,9 @@ function DocEditor({
         placeholder="Write in Markdown… Mention issues like BRD-2, link docs with [Title](/doc/slug)."
         value={draft}
         onChange={(e) => change(e.target.value)}
+        {...mention.props}
         onKeyDown={(e) => {
+          if (mention.onKeyDown(e)) return;
           if (e.key === "s" && (e.metaKey || e.ctrlKey)) {
             e.preventDefault();
             save();
@@ -774,6 +778,7 @@ function DocEditor({
           }
         }}
       />
+      {mention.menu}
     </>
   );
 }

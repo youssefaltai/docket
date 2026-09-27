@@ -2,8 +2,10 @@
 // workspace (requestWorkspace): team keys, identifiers and slugs resolve there, and anything elsewhere is
 // 404, as if it didn't exist.
 import type { SQLQueryBindings } from "bun:sqlite";
+import { marked, type Token } from "marked";
 import {
   CLOSED_STATUSES,
+  MENTION_PATTERN,
   PRIORITIES,
   STATUSES,
   type Activity,
@@ -31,6 +33,7 @@ import {
   type Trash,
   type UserKind,
   type UserRef,
+  mentionOf,
 } from "../shared/types.ts";
 import { type Actor, activeMemberId, requestWorkspace, requirePerson } from "./access.ts";
 import {
@@ -75,12 +78,62 @@ const userJoin = (alias: string, id: string, workspace: string) =>
 const userCols = (alias: string, p: string) =>
   `${alias}_m.username AS ${p}_username, ${alias}_m.name AS ${p}_name, ${alias}.kind AS ${p}_kind`;
 
+// --- Mentions ---
+
+/** The @username candidates in markdown, as the renderer sees them: in prose, never in code or link text. */
+function mentionCandidates(text: string): string[] {
+  if (!text.includes("@")) return [];
+  const found: string[] = [];
+  const pattern = new RegExp(MENTION_PATTERN, "giu");
+  const inLinks = new Set<Token>(); // walkTokens visits a parent before its children
+  marked.walkTokens(marked.lexer(text), (t) => {
+    const children = "tokens" in t ? (t.tokens as Token[] | undefined) : undefined;
+    if (t.type === "link" || inLinks.has(t)) for (const child of children ?? []) inLinks.add(child);
+    else if (t.type === "text" && !children) for (const m of t.raw.matchAll(pattern)) found.push(m[1]!);
+  });
+  return found;
+}
+
+/**
+ * Rebuilds who a text mentions: active members of its workspace named as @username (see MENTION_PATTERN). Call it
+ * in the transaction that saves the text. `source` names the text ('issue:<id>' for a description, 'comment:<id>',
+ * 'document:<id>', 'document_comment:<id>'); `owner` is the issue or doc it's in or on. Mentions the text still has
+ * stay as they were; new ones are recorded by the actor at `time` (never the actor themselves) and returned, for
+ * whoever notifies. `typing`: a doc autosaves mid-word, so a mention at the very end of the text doesn't count yet.
+ */
+function saveMentions(
+  a: Actor,
+  workspace: string,
+  source: string,
+  owner: { issueId?: number; documentId?: number },
+  text: string,
+  time: string,
+  { typing = false } = {},
+): number[] {
+  const candidates = mentionCandidates(typing ? text.replace(/@[a-z0-9._-]*$/i, "") : text);
+  const members = new Map(
+    (candidates.length
+      ? db
+          .query<{ username: string; user_id: number }, [string]>("SELECT username, user_id FROM workspace_members WHERE workspace = ? AND suspended_at IS NULL")
+          .all(workspace)
+      : []
+    ).map((m) => [m.username, m.user_id]),
+  );
+  const ids = new Set(candidates.map((c) => members.get(mentionOf(c, (u) => members.has(u)) ?? "")).filter((id) => id !== undefined));
+  const had = db.query<{ user_id: number }, [string]>("SELECT user_id FROM mentions WHERE source = ?").all(source).map((r) => r.user_id);
+  for (const id of had) if (!ids.has(id)) db.query("DELETE FROM mentions WHERE source = ? AND user_id = ?").run(source, id);
+  const fresh = [...ids].filter((id) => !had.includes(id) && id !== a.id);
+  const insert = db.query("INSERT INTO mentions (source, user_id, issue_id, document_id, author_id, created_at) VALUES (?, ?, ?, ?, ?, ?)");
+  for (const id of fresh) insert.run(source, id, owner.issueId ?? null, owner.documentId ?? null, a.id, time);
+  return fresh;
+}
+
 // --- Comments ---
 
-// Issue and doc comments live in parallel tables; each helper serves both.
+// Issue and doc comments live in parallel tables; each helper serves both. `source`: how mentions name a comment.
 const COMMENTS = {
-  issue: { table: "comments", column: "issue_id" },
-  document: { table: "document_comments", column: "document_id" },
+  issue: { table: "comments", column: "issue_id", source: "comment" },
+  document: { table: "document_comments", column: "document_id", source: "document_comment" },
 } as const;
 
 type CommentOwner = keyof typeof COMMENTS;
@@ -103,14 +156,16 @@ function listComments(owner: CommentOwner, ownerId: number, workspace: string): 
     }));
 }
 
-function insertComment(a: Actor, owner: CommentOwner, ownerId: number, body: unknown, time: string) {
+/** Rebuilds a comment's mentions (see saveMentions). */
+const commentMentions = (a: Actor, owner: CommentOwner, ownerId: number, workspace: string, id: number, body: string, time: string) =>
+  saveMentions(a, workspace, `${COMMENTS[owner].source}:${id}`, owner === "issue" ? { issueId: ownerId } : { documentId: ownerId }, body, time);
+
+function insertComment(a: Actor, owner: CommentOwner, ownerId: number, workspace: string, body: unknown, time: string): number {
   const { table, column } = COMMENTS[owner];
-  db.query(`INSERT INTO ${table} (${column}, author_id, body, created_at) VALUES (?, ?, ?, ?)`).run(
-    ownerId,
-    a.id,
-    requireText(body, "body"),
-    time,
-  );
+  const text = requireText(body, "body");
+  const id = Number(db.query(`INSERT INTO ${table} (${column}, author_id, body, created_at) VALUES (?, ?, ?, ?)`).run(ownerId, a.id, text, time).lastInsertRowid);
+  commentMentions(a, owner, ownerId, workspace, id, text, time);
+  return id;
 }
 
 /** The id of a comment on this owner (in `workspace`) that the actor wrote; others' comments are 403. */
@@ -132,12 +187,15 @@ function ownComment(a: Actor, owner: CommentOwner, ownerId: number, workspace: s
 
 function updateComment(a: Actor, owner: CommentOwner, ownerId: number, workspace: string, commentId: unknown, body: unknown, time: string) {
   const id = ownComment(a, owner, ownerId, workspace, commentId);
-  db.query(`UPDATE ${COMMENTS[owner].table} SET body = ?, edited_at = ? WHERE id = ?`).run(requireText(body, "body"), time, id);
+  const text = requireText(body, "body");
+  db.query(`UPDATE ${COMMENTS[owner].table} SET body = ?, edited_at = ? WHERE id = ?`).run(text, time, id);
+  commentMentions(a, owner, ownerId, workspace, id, text, time);
 }
 
 function deleteComment(a: Actor, owner: CommentOwner, ownerId: number, workspace: string, commentId: unknown) {
   const id = ownComment(a, owner, ownerId, workspace, commentId);
   db.query(`DELETE FROM ${COMMENTS[owner].table} WHERE id = ?`).run(id);
+  db.query("DELETE FROM mentions WHERE source = ?").run(`${COMMENTS[owner].source}:${id}`);
 }
 
 // --- Teams ---
@@ -626,6 +684,7 @@ export function createIssue(a: Actor, input: IssueInput): Issue {
       .all(team.workspace, `%${identifier}%`)
       .filter((doc) => mention.test(doc.content));
     for (const doc of docs) saveRefs(doc.id, doc.content, team.workspace);
+    saveMentions(a, team.workspace, `issue:${id}`, { issueId: id }, cols.description as string, time);
     const people = (["assignee", "delegate"] as const).filter((f) => cols[`${f}_id`] !== null);
     logActivity(a, id, [{ kind: "created" }, ...people.map((kind) => ({ kind, from: null, to: cols[`${kind}_id`] }))], time);
     return { identifier, docs, refs };
@@ -676,6 +735,7 @@ export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Is
     db.query(`UPDATE issues SET ${assignments.join(", ")} WHERE id = ?`).run(...Object.values(cols), time, time, id);
     if (blockers) setBlockers(id, blockers);
     const refs = bumpIssues(related, time);
+    if (cols.description !== undefined) saveMentions(a, workspace, `issue:${id}`, { issueId: id }, cols.description as string, time);
     logActivity(a, id, changes(before, read.get(id)!), time);
     return refs;
   }).immediate();
@@ -810,7 +870,7 @@ function changeIssueComments(a: Actor, identifier: string, change: (id: number, 
 }
 
 export const addComment = (a: Actor, identifier: string, body: unknown) =>
-  changeIssueComments(a, identifier, (id, time) => insertComment(a, "issue", id, body, time));
+  changeIssueComments(a, identifier, (id, time, workspace) => insertComment(a, "issue", id, workspace, body, time));
 
 export const updateIssueComment = (a: Actor, identifier: string, commentId: unknown, body: unknown) =>
   changeIssueComments(a, identifier, (id, time, workspace) => updateComment(a, "issue", id, workspace, commentId, body, time));
@@ -997,6 +1057,7 @@ export function createDocument(a: Actor, input: DocumentInput): Document {
       .get(team.workspace, team.id, slug, title, content, position ?? nextPosition(team.id), time, time, a.id)!;
     saveVersion(id, title, content, a.id, time);
     saveRefs(id, content, team.workspace);
+    saveMentions(a, team.workspace, `document:${id}`, { documentId: id }, content, time, { typing: true });
     return slug;
   })();
   changed("document", team.workspace, slug);
@@ -1031,7 +1092,10 @@ export function updateDocument(a: Actor, slug: string, patch: DocumentPatch): Do
     const next: Record<string, SQLQueryBindings> = { ...cols, updated_at: time, updated_by_id: a.id };
     db.query(`UPDATE documents SET ${Object.keys(next).map((n) => `${n} = ?`).join(", ")} WHERE id = ?`).run(...Object.values(next), row.id);
     if (cols.title !== undefined || cols.content !== undefined) saveVersion(row.id, title, content, a.id, time, patch.checkpoint === true);
-    if (cols.content !== undefined) saveRefs(row.id, content, row.workspace);
+    if (cols.content !== undefined) {
+      saveRefs(row.id, content, row.workspace);
+      saveMentions(a, row.workspace, `document:${row.id}`, { documentId: row.id }, content, time, { typing: true });
+    }
   })();
   changed("document", row.workspace, row.slug);
   return getDocument(a, row.slug);
@@ -1050,22 +1114,23 @@ function trashDocument(a: Actor, slug: string, trash: boolean): Document {
 export const deleteDocument = (a: Actor, slug: string) => trashDocument(a, slug, true);
 export const restoreDocument = (a: Actor, slug: string) => trashDocument(a, slug, false);
 
-/** Runs a change to a doc's comments. It leaves the doc's updated_at alone, so an open editor sees no conflict. */
-function changeDocumentComments(a: Actor, slug: string, change: (id: number, workspace: string) => void): Document {
+/** Runs a change to a doc's comments in one transaction. It leaves the doc's updated_at alone, so an open editor sees no conflict. */
+function changeDocumentComments(a: Actor, slug: string, change: (id: number, time: string, workspace: string) => void): Document {
   const row = liveDocument(a, slug);
-  change(row.id, row.workspace);
+  const time = now();
+  db.transaction(() => change(row.id, time, row.workspace))();
   changed("document", row.workspace, row.slug);
   return getDocument(a, row.slug);
 }
 
 export const addDocumentComment = (a: Actor, slug: string, body: unknown) =>
-  changeDocumentComments(a, slug, (id) => insertComment(a, "document", id, body, now()));
+  changeDocumentComments(a, slug, (id, time, workspace) => insertComment(a, "document", id, workspace, body, time));
 
 export const updateDocumentComment = (a: Actor, slug: string, commentId: unknown, body: unknown) =>
-  changeDocumentComments(a, slug, (id, workspace) => updateComment(a, "document", id, workspace, commentId, body, now()));
+  changeDocumentComments(a, slug, (id, time, workspace) => updateComment(a, "document", id, workspace, commentId, body, time));
 
 export const deleteDocumentComment = (a: Actor, slug: string, commentId: unknown) =>
-  changeDocumentComments(a, slug, (id, workspace) => deleteComment(a, "document", id, workspace, commentId));
+  changeDocumentComments(a, slug, (id, _, workspace) => deleteComment(a, "document", id, workspace, commentId));
 
 const VERSION_FROM = `FROM document_versions v JOIN documents d ON d.id = v.document_id ${userJoin("u", "v.author_id", "d.workspace")}`;
 
