@@ -1,7 +1,7 @@
 // Rendering Markdown (issue descriptions, comments, docs): sanitized, with issue-ref and mention chips and client routing.
 import { useMemo } from "react";
 import { Marked } from "marked";
-import { MENTION_PATTERN, mentionOf, type IssueSummary, type UserRef } from "../shared/types";
+import { ATTACHMENT_URL, MENTION_PATTERN, mentionOf, type IssueSummary, type UserRef } from "../shared/types";
 import { useApp } from "./context";
 import { statusSvg } from "./icons";
 import { isPlainClick, navigate, wsPath } from "./routing";
@@ -112,23 +112,27 @@ const marked = new Marked({
       if (!url) return text;
       const t = title ? ` title="${escapeHtml(title)}"` : "";
       const internal = isInternal(url);
-      const target = internal ? "" : ` target="_blank" rel="noopener noreferrer"`;
+      // Attachments are files, not app pages: a new tab (an image) or a download.
+      const target = internal && !url.startsWith("/api/") ? "" : ` target="_blank" rel="noopener noreferrer"`;
       // Stored content says [Title](/doc/slug): the doc in the content's workspace, the one shown.
       return `<a href="${escapeHtml(internal ? wsPath(url) : url)}"${t}${target}>${text}</a>`;
     },
+    // Only attachments (same origin, private to the workspace) load as images. Any other image is a link: a remote
+    // image in text an agent wrote could carry data out, or track readers, on page load, with no click.
     image({ href, title, text }) {
       if (!allowImages) return escapeHtml(text);
       const url = safeUrl(href);
       if (!url) return escapeHtml(text);
       const t = title ? ` title="${escapeHtml(title)}"` : "";
+      if (!ATTACHMENT_URL.test(url)) return `<a href="${escapeHtml(url)}"${t} target="_blank" rel="noopener noreferrer">${escapeHtml(text || url)}</a>`;
       return `<img src="${escapeHtml(url)}" alt="${escapeHtml(text)}"${t} loading="lazy">`;
     },
   },
 });
 
 /**
- * `images={false}` shows an image's alt text instead of loading it: for text a model wrote, where a
- * prompt injected into what it read could make it write an image URL that carries data out on render.
+ * `images={false}` shows an image's alt text instead of loading it, even an attachment's: for text a model wrote,
+ * where a prompt injected into what it read could make it write an image URL that carries data out on render.
  */
 export function Markdown({ text, className, images = true }: { text: string; className?: string; images?: boolean }) {
   const { teams, workspace, members } = useApp();
@@ -150,9 +154,9 @@ export function Markdown({ text, className, images = true }: { text: string; cla
       dir="auto"
       dangerouslySetInnerHTML={{ __html: html }}
       onClick={(e) => {
-        // Links to /doc/…, /issue/… etc. route client-side.
+        // Links to /doc/…, /issue/… etc. route client-side; attachments (/api/…) open in their new tab.
         const href = (e.target as Element).closest("a")?.getAttribute("href");
-        if (!href?.startsWith("/") || href.startsWith("//") || !isPlainClick(e)) return;
+        if (!href?.startsWith("/") || href.startsWith("//") || href.startsWith("/api/") || !isPlainClick(e)) return;
         e.preventDefault();
         navigate(href);
       }}

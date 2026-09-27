@@ -6,7 +6,9 @@ import { z } from "zod";
 import {
   CLOSED_STATUSES,
   DUE_FILTERS,
+  INLINE_IMAGE_TYPES,
   ISSUE_SORTS,
+  attachmentMarkdown,
   OPEN_STATUSES,
   PRIORITIES,
   PRIORITY_LABELS,
@@ -24,6 +26,7 @@ import {
 } from "../shared/types.ts";
 import * as access from "./access.ts";
 import type { Actor } from "./access.ts";
+import { getAttachment, saveAttachment } from "./attachments.ts";
 import { actorOf } from "./auth.ts";
 import { AppError } from "./db.ts";
 import { originOf } from "./http.ts";
@@ -820,8 +823,61 @@ function createServer(a: Actor, origin: string): McpServer {
     }),
   );
 
+  register(
+    "attach_file",
+    {
+      description:
+        "Upload a file (a log, a report, a screenshot) to link from a comment, description or doc; returns the markdown to paste: ![name](url) for images, [name](url) otherwise. Prefer this over pasting long logs into comments. Pass exactly one of text (UTF-8) or base64. At most about 700 KB per call over MCP; files are private to this workspace's members.",
+      inputSchema: {
+        name: z.string().describe('File name, e.g. "build.log" or "screenshot.png"'),
+        text: z.string().optional().describe("The file's content as UTF-8 text"),
+        base64: z.string().optional().describe("The file's bytes, base64-encoded (for images and other binary files)"),
+      },
+    },
+    writes(({ name, text, base64 }) => {
+      if ((text === undefined) === (base64 === undefined)) throw new AppError("Pass exactly one of text or base64");
+      let bytes: Uint8Array;
+      if (text !== undefined) bytes = new TextEncoder().encode(text);
+      else {
+        const clean = base64!.replace(/\s+/g, "");
+        if (!/^[A-Za-z0-9+/]*={0,2}$/.test(clean) || clean.length % 4 === 1) throw new AppError("base64 isn't valid base64");
+        bytes = Buffer.from(clean, "base64");
+      }
+      const attachment = saveAttachment(a, name, bytes);
+      return result(attachmentMarkdown(attachment), { attachment, markdown: attachmentMarkdown(attachment) });
+    }),
+  );
+
+  register(
+    "get_attachment",
+    {
+      description:
+        "Read an attached file by its URL as found in markdown (/api/attachments/…): text files come back as text, PNG/JPEG/GIF/WebP images as images you can see (up to 5 MB), anything else as its name, type and size.",
+      inputSchema: { url: z.string().describe('The attachment\'s URL or path, e.g. "/api/attachments/AbC…/shot.png"') },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ url }): Promise<CallToolResult> => {
+      const { attachment, path } = getAttachment(a, url);
+      const meta = `${attachment.name} · ${attachment.contentType} · ${attachment.size} bytes · by ${at(attachment.uploader)} · ${attachment.createdAt}`;
+      const structuredContent = { attachment };
+      if (attachment.contentType.startsWith("text/")) {
+        const text = await Bun.file(path).text();
+        const cut = text.length > TEXT_LIMIT ? `\n\n(cut: showing the first ${TEXT_LIMIT} of ${text.length} characters)` : "";
+        return { content: [{ type: "text", text: `${meta}\n\n${text.slice(0, TEXT_LIMIT)}${cut}` }], structuredContent };
+      }
+      if (INLINE_IMAGE_TYPES.includes(attachment.contentType) && attachment.size <= IMAGE_LIMIT) {
+        const data = Buffer.from(await Bun.file(path).arrayBuffer()).toString("base64");
+        return { content: [{ type: "text", text: meta }, { type: "image", data, mimeType: attachment.contentType }], structuredContent };
+      }
+      return result(meta, structuredContent);
+    },
+  );
+
   return server;
 }
+
+const TEXT_LIMIT = 100_000; // characters of a text file get_attachment returns
+const IMAGE_LIMIT = 5 * 1024 * 1024; // bytes of an image it returns as image content
 
 /** Stateless Streamable HTTP: a fresh server and transport per request, JSON responses. */
 export async function handleMcp(req: Request): Promise<Response> {

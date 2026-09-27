@@ -8,7 +8,17 @@ import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type
 import { createPortal } from "react-dom";
 import { MENTION_PATTERN, mentionOf, type IssueSummary, type UserRef } from "../shared/types";
 import { useApp } from "./context";
-import { MENTION_TRIGGER, MentionOption, editorKey, useCaretMenu, useMentionable, type EditorProps, type Typed } from "./editor";
+import {
+  MENTION_TRIGGER,
+  MentionOption,
+  editorKey,
+  upload,
+  useCaretMenu,
+  useDropHighlight,
+  useMentionable,
+  type EditorProps,
+  type Typed,
+} from "./editor";
 import { useIssueIndex } from "./issueIndex";
 import { wsPath } from "./routing";
 import { admits, allowedHref, extensions, toMarkdown } from "./tiptapKit";
@@ -102,6 +112,51 @@ function typedAt(state: EditorState, trigger: RegExp): (Typed & { end: number })
   return m ? { start: $from.pos - m[1]!.length - 1, query: m[1]!.toLowerCase(), end: $from.pos } : null;
 }
 
+// ---------- Uploads: a placeholder where each file goes (a decoration, never stored) until it's linked there ----------
+
+type Pending = { add?: { id: object; pos: number; name: string }; done?: object };
+const uploadsKey = new PluginKey<DecorationSet>("uploads");
+
+const Uploads = Extension.create({
+  name: "uploads",
+  addProseMirrorPlugins: () => [
+    new Plugin({
+      key: uploadsKey,
+      state: {
+        init: () => DecorationSet.empty,
+        apply: (tr, set) => {
+          set = set.map(tr.mapping, tr.doc);
+          const { add, done } = (tr.getMeta(uploadsKey) ?? {}) as Pending;
+          if (add) {
+            const el = document.createElement("span");
+            el.className = "upload-pending";
+            el.textContent = `Uploading ${add.name}…`;
+            set = set.add(tr.doc, [Decoration.widget(add.pos, el, { id: add.id })]);
+          }
+          return done ? set.remove(set.find(undefined, undefined, (spec) => spec.id === done)) : set;
+        },
+      },
+      props: { decorations: (state) => uploadsKey.getState(state) },
+    }),
+  ],
+});
+
+/** Uploads files, each shown as a placeholder at `at` (else the caret), then linked where the placeholder is. */
+function insertFiles(editor: Editor, files: File[], at: number | null) {
+  for (const file of files) {
+    const id = {};
+    editor.view.dispatch(editor.state.tr.setMeta(uploadsKey, { add: { id, pos: at ?? editor.state.selection.from, name: file.name } }));
+    upload(file).then((markdown) => {
+      if (editor.isDestroyed) return;
+      const pos = uploadsKey.getState(editor.state)!.find(undefined, undefined, (spec) => spec.id === id)[0]?.from;
+      editor.view.dispatch(editor.state.tr.setMeta(uploadsKey, { done: id }));
+      if (pos === undefined || !markdown) return;
+      if (editor.state.doc.resolve(pos).parent.type.spec.code) return editor.view.dispatch(editor.state.tr.insertText(markdown, pos));
+      editor.commands.insertContentAt(pos, editor.markdown!.parse(markdown).content?.[0]?.content ?? []);
+    });
+  }
+}
+
 // ---------- The editor ----------
 
 /** `is-empty` on the editor while it holds nothing, so CSS shows its data-placeholder. */
@@ -132,12 +187,13 @@ export function Rich(props: EditorProps & { onReject: () => void }) {
   const given = useRef({ value: props.value, markdown: "" }); // the last value given, and how the editor writes it
   const source = useChipSource();
   const keys = useRef<(event: KeyboardEvent) => boolean>(() => false);
+  const drop = useDropHighlight();
 
   useLayoutEffect(() => {
     if (!admits(props.value)) return props.onReject();
     const editor = new Editor({
       element: host.current,
-      extensions: extensions([Chips.configure({ source }), Placeholder]),
+      extensions: extensions([Chips.configure({ source }), Placeholder, Uploads], (files, at) => insertFiles(editor, files, at)),
       content: props.value,
       contentType: "markdown",
       injectCSS: false, // styles.css has them (the CSP allows no inline styles)
@@ -246,9 +302,11 @@ export function Rich(props: EditorProps & { onReject: () => void }) {
     return editorKey(event, latest.current);
   };
 
+  if (props.attach) props.attach.current = (files) => editor && insertFiles(editor, files, null);
+
   return (
     <>
-      <div ref={host} className="rich-host" />
+      <div ref={host} className={cls("rich-host", drop.over && "dropping")} {...drop.props} />
       {editor && (focused || linking) && <Toolbar editor={editor} linking={linking} setLinking={setLinking} />}
       {mention.menu}
       {slash.menu}

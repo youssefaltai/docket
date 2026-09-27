@@ -1,6 +1,6 @@
 // The rich editor's markdown round-trip (src/web/tiptapKit.ts). Unlike the other tests it imports src/: it checks how
 // a library reads and writes markdown, on a real corpus (fixtures/editor: DKT issue descriptions, the workspace
-// isolation design doc, a GFM sampler). It runs on happy-dom, whose globals exist only while this file runs.
+// isolation design doc, a GFM sampler, attachments). It runs on happy-dom, whose globals exist only while this file runs.
 import { afterAll, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -31,7 +31,7 @@ const mount = (markdown: string) =>
 const REJECTED: string[] = [];
 
 test("the guard admits the corpus except the known lossy cases", () => {
-  expect(corpus.length).toBe(37);
+  expect(corpus.length).toBe(38);
   expect(corpus.filter((f) => !admits(f.markdown)).map((f) => f.name).sort()).toEqual(REJECTED.sort());
 });
 
@@ -138,6 +138,56 @@ test("paste: markdown text becomes rich text; HTML images and remote media are d
   expect(toMarkdown(editor)).toBe("beforeafter");
   expect(editor.view.dom.querySelector("img[src], video, iframe")).toBeNull();
   expect(JSON.stringify(editor.getJSON())).not.toContain("evil.example");
+  editor.destroy();
+});
+
+const SHOT = "/api/attachments/AttachmentFixture00001/shot.png";
+
+test("attachment images load and save exactly; nothing else becomes an image", () => {
+  exact(`A shot: ![shot.png](${SHOT})`);
+  exact(`![my\\_shot.png](${SHOT} "The fix")`);
+  exact(`- [ ] check ![shot.png](${SHOT})`);
+  const editor = mount(`![shot.png](${SHOT}) ![remote](https://evil.example/x.png?leak=1) ![odd](/api/attachments/../../x.png)`);
+  expect([...editor.view.dom.querySelectorAll("img:not(.ProseMirror-separator)")].map((img) => img.getAttribute("src"))).toEqual([SHOT]);
+  expect(editor.view.dom.querySelector("a[href^='https://evil.example']")?.textContent).toBe("remote"); // a link, not an image
+  // Even content set as JSON can't load a remote image.
+  editor.commands.setContent({ type: "doc", content: [{ type: "paragraph", content: [{ type: "image", attrs: { src: "https://evil.example/x.png" } }] }] });
+  expect([...editor.view.dom.querySelectorAll("img:not(.ProseMirror-separator)")].map((img) => img.getAttribute("src"))).toEqual([""]);
+  editor.destroy();
+  // A remote image would read as a link in the editor: the guard keeps such text in the source, unchanged.
+  expect(admits(`![shot.png](${SHOT}) ![remote](https://example.com/x.png)`)).toBe(false);
+  expect(admits("![](/api/attachments/AttachmentFixture00001)")).toBe(false);
+});
+
+test("paste: an attachment image as markdown shows; a remote one as markdown or HTML never loads", () => {
+  const editor = mount("");
+  paste(editor, { "text/plain": `![shot.png](${SHOT}) and ![x](https://evil.example/x.png)` });
+  expect([...editor.view.dom.querySelectorAll("img:not(.ProseMirror-separator)")].map((img) => img.getAttribute("src"))).toEqual([SHOT]);
+  editor.commands.setContent("");
+  paste(editor, { "text/html": `<p>a<img src="${SHOT}">b<img src="https://evil.example/y.png"></p>` });
+  expect(editor.view.dom.querySelector("img")).toBeNull();
+  expect(JSON.stringify(editor.getJSON())).not.toContain("evil.example");
+  editor.destroy();
+});
+
+test("pasted and dropped files go to the uploader; a paste with text is text", () => {
+  const got: [string[], number | null][] = [];
+  const editor = new Editor({
+    element: document.createElement("div"),
+    extensions: extensions([], (files, at) => got.push([files.map((f) => f.name), at])),
+    content: "hello",
+    contentType: "markdown",
+  });
+  const withFile = (text?: string) => {
+    const data = new DataTransfer();
+    data.items.add(new dom.File(["png"], "shot.png", { type: "image/png" }) as never); // happy-dom's own File
+    if (text) data.setData("text/plain", text);
+    return data;
+  };
+  editor.view.dom.dispatchEvent(new ClipboardEvent("paste", { clipboardData: withFile(), bubbles: true, cancelable: true }));
+  editor.view.dom.dispatchEvent(new ClipboardEvent("paste", { clipboardData: withFile("A1\tB1"), bubbles: true, cancelable: true }));
+  expect(got).toEqual([[["shot.png"], null]]);
+  expect(toMarkdown(editor)).toContain("A1");
   editor.destroy();
 });
 

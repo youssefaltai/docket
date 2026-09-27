@@ -51,3 +51,9 @@ function hue(s: string): number {
 }
 
 export const hueStyle = (s: string) => ({ "--h": hue(s) }) as CSSProperties;
+
+/**
+ * The files a paste carries: a screenshot or a copied image comes as files without text. Copying from a spreadsheet
+ * or a word processor also puts a picture of the selection in the files, but with its text, which is what's meant.
+ */
+export const pastedFiles = (data: DataTransfer | null): File[] => (data?.files.length && !data.getData("text/plain") ? [...data.files] : []);

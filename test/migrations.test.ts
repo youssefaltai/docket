@@ -3,9 +3,9 @@
 import { Database } from "bun:sqlite";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { startServer, type Caller, type TestServer } from "./server.ts";
 
 // Migrations 1–3 exactly as they shipped (src/server/db.ts). Frozen: never edit this fixture.
@@ -2725,5 +2725,327 @@ describe("migration 14", () => {
     const onComment = await bot.api("PUT", "/api/issues/ACM-1/comments/201/reactions/%F0%9F%91%8D"); // encoded "👍"
     expect(onComment.body.comments[0].reactions).toEqual([{ emoji: "👍", users: [{ username: "bot", name: "Bot", kind: "agent" }] }]);
     expect(rows(v13, "PRAGMA foreign_key_check")).toEqual([]);
+  });
+});
+
+describe("migration 15", () => {
+  // Migrations 1-14 exactly as they shipped (src/server/db.ts): migration 14's fixture above (1-13), then
+  // migration 14. Frozen: never edit this fixture.
+  const SCHEMA_V14 = [
+    ...SCHEMA_V3,
+    `
+  ALTER TABLE api_keys ADD COLUMN workspace TEXT REFERENCES workspaces(key) ON DELETE CASCADE;
+  DELETE FROM api_keys WHERE session_id IS NOT NULL; -- chat keys: short-lived, minted again per workspace
+  UPDATE api_keys SET workspace = (SELECT m.workspace FROM workspace_members m
+    WHERE m.user_id = api_keys.user_id AND m.suspended_at IS NULL ORDER BY m.created_at, m.workspace LIMIT 1);
+  DELETE FROM api_keys WHERE workspace IS NULL; -- the owner has no active workspace left
+  CREATE INDEX api_keys_workspace ON api_keys(user_id, workspace);
+  `,
+    `
+  CREATE TABLE members_new (
+    workspace TEXT NOT NULL REFERENCES workspaces(key) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    username TEXT NOT NULL,
+    name TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('admin', 'member', 'guest', 'agent')),
+    created_at TEXT NOT NULL,
+    suspended_at TEXT,
+    PRIMARY KEY (workspace, user_id),
+    UNIQUE (workspace, username)
+  );
+  INSERT INTO members_new SELECT m.workspace, m.user_id, u.username, u.name, m.role, m.created_at, m.suspended_at
+    FROM workspace_members m JOIN users u ON u.id = m.user_id;
+  DROP TABLE workspace_members;
+  ALTER TABLE members_new RENAME TO workspace_members;
+  CREATE INDEX workspace_members_user ON workspace_members(user_id);
+  CREATE TABLE users_new (
+    id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('person', 'agent')),
+    email TEXT,
+    created_at TEXT NOT NULL
+  );
+  INSERT INTO users_new SELECT id, kind, email, created_at FROM users;
+  DROP TABLE users;
+  ALTER TABLE users_new RENAME TO users;
+  CREATE UNIQUE INDEX users_email ON users(lower(email)) WHERE email IS NOT NULL;
+  `,
+    `
+  CREATE TABLE teams_new (
+    id INTEGER PRIMARY KEY,
+    workspace TEXT NOT NULL REFERENCES workspaces(key),
+    key TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    next_number INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (workspace, key)
+  );
+  INSERT INTO teams_new (workspace, key, name, description, next_number, created_at, updated_at)
+    SELECT workspace, key, name, description, next_number, created_at, updated_at FROM teams ORDER BY created_at, key;
+  CREATE TABLE issues_new (
+    id INTEGER PRIMARY KEY,
+    team_id INTEGER NOT NULL REFERENCES teams(id),
+    number INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL,
+    priority INTEGER NOT NULL DEFAULT 0,
+    labels TEXT NOT NULL DEFAULT '[]',
+    assignee_id INTEGER REFERENCES users(id),
+    delegate_id INTEGER REFERENCES users(id),
+    creator_id INTEGER NOT NULL REFERENCES users(id),
+    parent_id INTEGER REFERENCES issues(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT,
+    deleted_at TEXT,
+    UNIQUE (team_id, number)
+  );
+  INSERT INTO issues_new SELECT i.id, t.id, i.number, i.title, i.description, i.status, i.priority, i.labels, i.assignee_id,
+    i.delegate_id, i.creator_id, i.parent_id, i.created_at, i.updated_at, i.completed_at, i.deleted_at
+    FROM issues i LEFT JOIN teams_new t ON t.key = i.team_key;
+  CREATE TABLE documents_new (
+    id INTEGER PRIMARY KEY,
+    workspace TEXT NOT NULL REFERENCES workspaces(key),
+    team_id INTEGER NOT NULL REFERENCES teams(id),
+    slug TEXT NOT NULL,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    position REAL NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    updated_by_id INTEGER NOT NULL REFERENCES users(id),
+    deleted_at TEXT,
+    UNIQUE (workspace, slug)
+  );
+  INSERT INTO documents_new SELECT d.id, t.workspace, t.id, d.slug, d.title, d.content, d.position, d.created_at,
+    d.updated_at, d.updated_by_id, d.deleted_at FROM documents d LEFT JOIN teams_new t ON t.key = d.team_key;
+  DROP TABLE documents;
+  DROP TABLE issues;
+  DROP TABLE teams;
+  ALTER TABLE teams_new RENAME TO teams;
+  ALTER TABLE issues_new RENAME TO issues;
+  ALTER TABLE documents_new RENAME TO documents;
+  CREATE INDEX issues_parent ON issues(parent_id);
+  CREATE INDEX issues_deleted ON issues(deleted_at) WHERE deleted_at IS NOT NULL;
+  CREATE INDEX documents_team ON documents(team_id, position);
+  CREATE INDEX documents_deleted ON documents(deleted_at) WHERE deleted_at IS NOT NULL;
+  `,
+    `
+  CREATE TABLE issue_activity (
+    id INTEGER PRIMARY KEY,
+    issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+    actor_id INTEGER NOT NULL REFERENCES users(id),
+    on_behalf_of_id INTEGER REFERENCES users(id),
+    kind TEXT NOT NULL,
+    from_value TEXT,
+    to_value TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX issue_activity_issue ON issue_activity(issue_id, id);
+  INSERT INTO issue_activity (issue_id, actor_id, kind, created_at) SELECT id, creator_id, 'created', created_at FROM issues ORDER BY id;
+  `,
+    `
+  CREATE TABLE mentions (
+    source TEXT NOT NULL, -- 'issue:<id>' (description), 'comment:<id>', 'document:<id>' (content), 'document_comment:<id>'
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    issue_id INTEGER REFERENCES issues(id) ON DELETE CASCADE,       -- the issue it's in or on
+    document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE, -- the doc it's in or on
+    author_id INTEGER NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (source, user_id)
+  );
+  CREATE INDEX mentions_user ON mentions(user_id);
+  `,
+    `
+    CREATE TABLE subscriptions (
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      issue_id INTEGER REFERENCES issues(id) ON DELETE CASCADE,
+      document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE,
+      created_at TEXT NOT NULL,
+      CHECK ((issue_id IS NULL) != (document_id IS NULL))
+    );
+    CREATE UNIQUE INDEX subscriptions_issue ON subscriptions(issue_id, user_id) WHERE issue_id IS NOT NULL;
+    CREATE UNIQUE INDEX subscriptions_document ON subscriptions(document_id, user_id) WHERE document_id IS NOT NULL;
+    CREATE INDEX subscriptions_user ON subscriptions(user_id);
+    CREATE TABLE notifications (
+      id INTEGER PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id), -- the recipient
+      workspace TEXT NOT NULL REFERENCES workspaces(key) ON DELETE CASCADE,
+      kind TEXT NOT NULL, -- assigned | delegated | mentioned | commented | status
+      actor_id INTEGER NOT NULL REFERENCES users(id),
+      issue_id INTEGER REFERENCES issues(id) ON DELETE CASCADE,
+      document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE,
+      comment_id INTEGER, -- in comments (issue) or document_comments (doc); no FK: two tables
+      status TEXT, -- kind status: the new status
+      created_at TEXT NOT NULL,
+      read_at TEXT
+    );
+    CREATE INDEX notifications_user ON notifications(user_id, workspace, id);
+    INSERT OR IGNORE INTO subscriptions (user_id, issue_id, created_at) SELECT creator_id, id, created_at FROM issues;
+    INSERT OR IGNORE INTO subscriptions (user_id, issue_id, created_at) SELECT assignee_id, id, updated_at FROM issues WHERE assignee_id IS NOT NULL;
+    INSERT OR IGNORE INTO subscriptions (user_id, issue_id, created_at) SELECT delegate_id, id, updated_at FROM issues WHERE delegate_id IS NOT NULL;
+    INSERT OR IGNORE INTO subscriptions (user_id, issue_id, created_at) SELECT author_id, issue_id, MIN(created_at) FROM comments GROUP BY author_id, issue_id;
+    -- A doc's creator is the author of its first version.
+    INSERT OR IGNORE INTO subscriptions (user_id, document_id, created_at) SELECT v.author_id, v.document_id, v.created_at FROM document_versions v
+      WHERE v.id = (SELECT MIN(id) FROM document_versions WHERE document_id = v.document_id);
+    INSERT OR IGNORE INTO subscriptions (user_id, document_id, created_at) SELECT author_id, document_id, MIN(created_at) FROM document_comments GROUP BY author_id, document_id;
+    `,
+    `
+    INSERT OR IGNORE INTO subscriptions (user_id, issue_id, created_at)
+      SELECT user_id, issue_id, MIN(created_at) FROM mentions WHERE issue_id IS NOT NULL GROUP BY user_id, issue_id;
+    INSERT OR IGNORE INTO subscriptions (user_id, document_id, created_at)
+      SELECT user_id, document_id, MIN(created_at) FROM mentions WHERE document_id IS NOT NULL GROUP BY user_id, document_id;
+    `,
+    `
+  CREATE TABLE webhooks (
+    id INTEGER PRIMARY KEY,
+    workspace TEXT NOT NULL REFERENCES workspaces(key) ON DELETE CASCADE,
+    url TEXT NOT NULL,
+    label TEXT NOT NULL DEFAULT '',
+    resource_types TEXT NOT NULL,         -- JSON array of Issue | Comment | Document | Notification
+    secret TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    failures INTEGER NOT NULL DEFAULT 0,  -- deliveries in a row that failed for good; 10 disables the webhook
+    created_by INTEGER NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX webhooks_workspace ON webhooks(workspace);
+  CREATE TABLE webhook_deliveries (
+    id INTEGER PRIMARY KEY,
+    webhook_id INTEGER NOT NULL REFERENCES webhooks(id) ON DELETE CASCADE,
+    uuid TEXT NOT NULL,                   -- Docket-Delivery, the same on every attempt
+    type TEXT NOT NULL,
+    action TEXT NOT NULL,
+    entity TEXT NOT NULL,                 -- identifier, slug, comment id or notification id
+    payload TEXT NOT NULL,                -- JSON without webhookTimestamp (set per attempt)
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'delivered', 'failed')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT,
+    response_status INTEGER,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    last_attempt_at TEXT
+  );
+  CREATE INDEX webhook_deliveries_due ON webhook_deliveries(next_attempt_at) WHERE status = 'pending';
+  CREATE INDEX webhook_deliveries_webhook ON webhook_deliveries(webhook_id, id);
+  `,
+    `
+  CREATE TABLE issue_relations (
+    from_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+    to_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN ('related', 'duplicate')),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (from_id, to_id, kind)
+  );
+  CREATE INDEX issue_relations_to ON issue_relations(to_id, kind);
+  `,
+    `
+  ALTER TABLE issues ADD COLUMN due_on TEXT;
+  CREATE INDEX issues_due ON issues(due_on) WHERE due_on IS NOT NULL;
+  `,
+    `
+  ALTER TABLE comments ADD COLUMN parent_id INTEGER REFERENCES comments(id) ON DELETE CASCADE;
+  ALTER TABLE comments ADD COLUMN resolved_at TEXT;
+  ALTER TABLE comments ADD COLUMN resolved_by_id INTEGER REFERENCES users(id);
+  ALTER TABLE document_comments ADD COLUMN parent_id INTEGER REFERENCES document_comments(id) ON DELETE CASCADE;
+  ALTER TABLE document_comments ADD COLUMN resolved_at TEXT;
+  ALTER TABLE document_comments ADD COLUMN resolved_by_id INTEGER REFERENCES users(id);
+  CREATE INDEX comments_parent ON comments(parent_id) WHERE parent_id IS NOT NULL;
+  CREATE INDEX document_comments_parent ON document_comments(parent_id) WHERE parent_id IS NOT NULL;
+  `,
+    `
+  CREATE TABLE reactions (
+    target TEXT NOT NULL,   -- 'issue:<id>' (the description), 'comment:<id>', 'document_comment:<id>'
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    emoji TEXT NOT NULL,
+    issue_id INTEGER REFERENCES issues(id) ON DELETE CASCADE,       -- the issue it's on (purge cascades)
+    document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE, -- the doc it's on
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (target, user_id, emoji)
+  );
+  `,
+  ];
+  const t = (minutes: number) => new Date(Date.UTC(2026, 0, 1, 0, minutes)).toISOString();
+  const rows = (file: string, sql: string) => {
+    const db = new Database(file, { readonly: true });
+    try {
+      return db.query(sql).all();
+    } finally {
+      db.close();
+    }
+  };
+  // Everything migration 15 leaves alone: a new table only.
+  const UNCHANGED = [
+    "users",
+    "workspaces",
+    "workspace_members",
+    "sessions",
+    "api_keys",
+    "codes",
+    "teams",
+    "issues",
+    "issue_blocks",
+    "issue_relations",
+    "comments",
+    "documents",
+    "document_versions",
+    "document_refs",
+    "document_comments",
+    "issue_activity",
+    "mentions",
+    "subscriptions",
+    "notifications",
+    "webhooks",
+    "webhook_deliveries",
+    "reactions",
+  ].map((table) => `SELECT * FROM ${table} ORDER BY rowid`);
+
+  let v14: string;
+  let before: unknown[][];
+  let server: TestServer;
+  beforeAll(async () => {
+    v14 = join(dir, "v14", "docket.db"); // its own folder: attachments/ goes next to it
+    mkdirSync(dirname(v14));
+    const db = new Database(v14, { create: true });
+    for (const sql of SCHEMA_V14) db.run(sql);
+    db.run("PRAGMA user_version = 14");
+    db.run(`INSERT INTO users (id, kind, email, created_at) VALUES (1, 'person', 'sam@example.com', '${t(0)}'), (2, 'agent', NULL, '${t(0)}')`);
+    db.run(`INSERT INTO workspaces (key, name, created_at, updated_at) VALUES ('acme', 'Acme', '${t(0)}', '${t(0)}')`);
+    db.run(`INSERT INTO workspace_members (workspace, user_id, username, name, role, created_at) VALUES
+      ('acme', 1, 'sam', 'Sam', 'admin', '${t(0)}'), ('acme', 2, 'bot', 'Bot', 'agent', '${t(0)}')`);
+    db.run(`INSERT INTO api_keys (id, user_id, name, scope, token_hash, created_at, workspace) VALUES (12, 2, 'bot', 'write', '${hash(AGENT_KEY)}', '${t(0)}', 'acme')`);
+    db.run(`INSERT INTO teams (id, workspace, key, name, created_at, updated_at, next_number) VALUES (5, 'acme', 'ACM', 'Acme', '${t(0)}', '${t(0)}', 2)`);
+    db.run(`INSERT INTO issues (id, team_id, number, title, description, status, creator_id, created_at, updated_at) VALUES
+      (101, 5, 1, 'Screenshot please', 'Remote: ![x](https://example.com/x.png)', 'todo', 1, '${t(1)}', '${t(1)}')`);
+    db.run(`INSERT INTO issue_activity (issue_id, actor_id, kind, created_at) VALUES (101, 1, 'created', '${t(1)}')`);
+    db.run(`INSERT INTO comments (id, issue_id, author_id, body, created_at) VALUES (201, 101, 1, 'Nice work', '${t(2)}')`);
+    db.run(`INSERT INTO reactions (target, user_id, emoji, issue_id, created_at) VALUES ('comment:201', 2, '👍', 101, '${t(3)}')`);
+    db.close();
+    before = UNCHANGED.map((sql) => rows(v14, sql));
+    server = await startServer({ setup: false, env: { DATABASE_PATH: v14 } });
+  });
+  afterAll(() => server.stop());
+
+  test("the data is untouched; attachments is created, empty, with its folder next to the database", () => {
+    expect(UNCHANGED.map((sql) => rows(v14, sql))).toEqual(before);
+    expect(rows(v14, "SELECT COUNT(*) AS n FROM attachments")).toEqual([{ n: 0 }]);
+    expect(rows(v14, "PRAGMA foreign_key_check")).toEqual([]);
+    expect((rows(v14, "PRAGMA user_version")[0] as { user_version: number }).user_version).toBeGreaterThanOrEqual(15);
+    expect(existsSync(join(dirname(v14), "attachments"))).toBeTrue();
+  });
+
+  test("uploads work on the migrated database, and old texts are unchanged", async () => {
+    const bot = server.with({ token: AGENT_KEY });
+    const md = await bot.tool("attach_file", { name: "trace.log", text: "boom" });
+    expect(md).toMatch(/^\[trace\.log\]\(\/api\/attachments\/[A-Za-z0-9_-]{22}\/trace\.log\)$/);
+    expect(await bot.tool("get_attachment", { url: md.slice(md.indexOf("(") + 1, -1) })).toEndWith("boom");
+    expect(rows(v14, "SELECT workspace, name, content_type, size, uploader_id FROM attachments")).toEqual([
+      { workspace: "acme", name: "trace.log", content_type: "text/plain; charset=utf-8", size: 4, uploader_id: 2 },
+    ]);
+    expect((await bot.api("GET", "/api/issues/ACM-1")).body.description).toBe("Remote: ![x](https://example.com/x.png)");
+    expect(rows(v14, "PRAGMA foreign_key_check")).toEqual([]);
   });
 });

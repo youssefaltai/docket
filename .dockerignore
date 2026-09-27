@@ -3,5 +3,6 @@ data
 .git
 *.db
 *.db-*
+attachments
 .DS_Store
 .env

@@ -21,8 +21,12 @@ export interface Caller {
   cookie?: string;
   /** JSON request, with optional extra headers (e.g. X-Docket-Workspace); resolves to `{ status, body, headers }`. */
   api: (method: string, path: string, body?: unknown, headers?: Record<string, string>) => Promise<Reply>;
+  /** A request with this caller's credentials and our Origin, but no JSON: the body and headers as given (uploads). The reply's body is JSON or bytes. */
+  raw: (method: string, path: string, opts?: { body?: BodyInit; headers?: Record<string, string> }) => Promise<Reply>;
   /** Calls an MCP tool and returns its text output; throws on a tool error. */
   tool: (name: string, args?: Record<string, unknown>) => Promise<string>;
+  /** Calls an MCP tool and returns its whole result (content of any type, structuredContent, isError). */
+  toolResult: (name: string, args?: Record<string, unknown>) => Promise<{ content: any[]; structuredContent?: any; isError?: boolean }>;
   /** The MCP tool names this caller sees in tools/list, sorted. */
   tools: () => Promise<string[]>;
   /** The MCP server's instructions for this caller. */
@@ -136,6 +140,14 @@ export async function startServer(
           body: body === undefined ? undefined : JSON.stringify(body),
         });
         return { status: res.status, body: await parse(res), headers: res.headers };
+      },
+      async raw(method, path, { body, headers = {} } = {}) {
+        const res = await fetch(new URL(path, url), { method, headers: { Origin: new URL(url).origin, ...auth, ...headers }, body });
+        const json = res.headers.get("content-type")?.includes("json");
+        return { status: res.status, body: json ? await res.json() : new Uint8Array(await res.arrayBuffer()), headers: res.headers };
+      },
+      async toolResult(name, args = {}) {
+        return (await (await client()).callTool({ name, arguments: args })) as never;
       },
       async tool(name, args = {}) {
         const result = (await (await client()).callTool({ name, arguments: args })) as {

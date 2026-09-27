@@ -1,18 +1,20 @@
 // The HTTP layer every response goes through: security headers, a request body cap, and a rate limit
 // per credential. The web app is bundled here at startup (in production) so its files get the headers too.
 import { basename, join } from "node:path";
+import { MAX_UPLOAD_BYTES } from "../shared/types.ts";
 
-/** Largest request body taken, in bytes (413 with a message). Bun cuts off anything past the hard cap. */
+/** Largest request body taken, in bytes (413 with a message); uploads take up to MAX_UPLOAD_BYTES. Bun cuts off anything past the hard cap. */
 export const MAX_BODY = 1024 * 1024;
-export const HARD_MAX_BODY = 8 * MAX_BODY; // bodies without a Content-Length stop here
+export const HARD_MAX_BODY = MAX_UPLOAD_BYTES + MAX_BODY; // bodies without a Content-Length stop here
 
-// Everything the app loads is its own, except Google Fonts and images linked from markdown.
+// Everything the app loads is its own, except Google Fonts. Images too: markdown shows only attachments (same origin)
+// as images, never a remote one, which could carry data out or track readers on page load.
 const CSP = [
   "default-src 'self'",
   "script-src 'self'",
   "style-src 'self' https://fonts.googleapis.com",
   "font-src 'self' https://fonts.gstatic.com",
-  "img-src 'self' data: https:",
+  "img-src 'self' data:",
   "connect-src 'self'",
   "object-src 'none'",
   "base-uri 'none'",
@@ -30,8 +32,9 @@ export function originOf(req: Request): string {
 const https = (req: Request) => new URL(req.url).protocol === "https:" || req.headers.get("x-forwarded-proto") === "https";
 
 /**
- * Adds the security headers to a response. API answers are per user and per workspace: no-store, and
- * Vary on the workspace header, so a cache (the service worker's offline fallback) never mixes workspaces.
+ * Adds the security headers to a response. API answers are per user and per workspace: no-store (unless the
+ * handler says otherwise: an attachment is private and immutable), and Vary on the workspace header, so a cache
+ * (the service worker's offline fallback) never mixes workspaces.
  */
 export function secure(req: Request, res: Response, { api = false } = {}): Response {
   const h = res.headers;
@@ -41,7 +44,7 @@ export function secure(req: Request, res: Response, { api = false } = {}): Respo
   h.set("Referrer-Policy", "no-referrer");
   if (https(req)) h.set("Strict-Transport-Security", "max-age=31536000");
   if (api) {
-    h.set("Cache-Control", "no-store");
+    if (!h.has("Cache-Control")) h.set("Cache-Control", "no-store");
     h.append("Vary", "X-Docket-Workspace");
   }
   return res;
@@ -70,14 +73,14 @@ const credentialOf = (req: Request, ip: string) =>
 
 type Handler = (req: Request, server: Bun.Server<any>) => Response | undefined | Promise<Response | undefined>;
 
-/** Wraps a route (a handler or a method map) with the body cap, the rate limit and the headers. */
-export function http<T>(route: T, { api = true } = {}): T {
+/** Wraps a route (a handler or a method map) with the body cap (`maxBody`), the rate limit and the headers. */
+export function http<T>(route: T, { api = true, maxBody = MAX_BODY } = {}): T {
   const wrap =
     (fn: Handler): Handler =>
     async (req, server) => {
       const json = (error: string, status: number, headers: Record<string, string> = {}) =>
         secure(req, Response.json({ error }, { status, headers }), { api });
-      if (Number(req.headers.get("content-length") ?? 0) > MAX_BODY) return json("Request body too large (at most 1 MB)", 413);
+      if (Number(req.headers.get("content-length") ?? 0) > maxBody) return json(`Request body too large (at most ${maxBody / MAX_BODY} MB)`, 413);
       const wait = take(credentialOf(req, server.requestIP(req)?.address ?? ""));
       if (wait) return json("Too many requests, slow down", 429, { "Retry-After": String(wait) });
       const res = await fn(req, server);

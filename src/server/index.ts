@@ -2,7 +2,9 @@ import "./config.ts";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { formatCode, needsSetup, onRevoke, purgeExpiredKeys, setupCode } from "./access.ts";
+import { MAX_UPLOAD_BYTES } from "../shared/types.ts";
 import { apiRoutes } from "./api.ts";
+import { attachmentRoutes } from "./attachments.ts";
 import { actorOf, authRoutes, guard } from "./auth.ts";
 import { proxyChat } from "./chat.ts";
 import { onChange } from "./db.ts";
@@ -51,6 +53,9 @@ const server = Bun.serve({
     "/icons/*": (req: Request) => secure(req, new Response("Not found", { status: 404 })), // not the app shell of a workspace "icons"
     ...(Object.fromEntries(Object.entries(authRoutes).map(([path, route]) => [path, http(route)])) as typeof authRoutes),
     ...(Object.fromEntries(Object.entries(apiRoutes).map(([path, route]) => [path, http(guard(route))])) as typeof apiRoutes),
+    ...(Object.fromEntries(
+      Object.entries(attachmentRoutes).map(([path, route]) => [path, http(guard(route), { maxBody: MAX_UPLOAD_BYTES })]),
+    ) as typeof attachmentRoutes),
     "/mcp": http(guard(handleMcp, { mcp: true })),
     "/api/chat": http(guard(proxyChat)),
     "/api/chat/*": http(guard(proxyChat)),

@@ -75,6 +75,8 @@ self.addEventListener("fetch", (event) => {
 
   if (url.pathname === "/mcp" || url.pathname === "/ws") return;
   if (url.origin !== self.location.origin) return;
+  // Attachments: the browser's cache keeps them (private, immutable). Never cached here, or opened in a tab stored as the app shell.
+  if (url.pathname.startsWith("/api/attachments/")) return;
 
   if (request.mode === "navigate") {
     event.respondWith(networkFirst(request, "/"));

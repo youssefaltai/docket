@@ -2,8 +2,8 @@
 import { Database } from "bun:sqlite";
 import { marked, type Token } from "marked";
 import { mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { xdgDataHome } from "./paths.ts";
+import { dirname } from "node:path";
+import { databasePath } from "./paths.ts";
 import { MENTION_PATTERN, mentionOf, type ServerEvent } from "../shared/types.ts";
 
 /** An error with an HTTP status; REST returns it as `{ error }`, MCP as a tool error. */
@@ -18,7 +18,7 @@ export class AppError extends Error {
 
 // --- Connection and schema ---
 
-const path = process.env.DATABASE_PATH ?? join(xdgDataHome(), "docket", "docket.db");
+const path = databasePath();
 mkdirSync(dirname(path), { recursive: true });
 export const db = new Database(path, { create: true });
 db.run("PRAGMA journal_mode = WAL");
@@ -446,6 +446,18 @@ const MIGRATIONS: (string | (() => void))[] = [
     document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE, -- the doc it's on
     created_at TEXT NOT NULL,
     PRIMARY KEY (target, user_id, emoji)
+  );
+  `,
+  // Attachments: uploaded files, private to a workspace. The bytes live in attachments/<id> next to the database.
+  `
+  CREATE TABLE attachments (
+    id TEXT PRIMARY KEY,           -- 16 random bytes, base64url; also the file's name on disk
+    workspace TEXT NOT NULL REFERENCES workspaces(key) ON DELETE CASCADE,
+    name TEXT NOT NULL,            -- the uploaded file's name, sanitized
+    content_type TEXT NOT NULL,    -- sniffed by Docket, never the client's claim
+    size INTEGER NOT NULL,
+    uploader_id INTEGER NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL
   );
   `,
 ];

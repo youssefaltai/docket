@@ -30,7 +30,7 @@ scripts/seed.ts       demo data, created over REST
 
 ## Tests
 
-Tests start a real server in a subprocess against a temp database, set it up with an admin, then talk to it over REST, MCP and `/ws` (`test/server.ts`). They never import `src/`, so refactors don't break them. Only behaviour changes do. The exception is `test/editor.test.ts`: it checks the rich editor's markdown round-trip (`src/web/tiptapKit.ts`) on a real corpus (`test/fixtures/editor`), under happy-dom.
+Tests start a real server in a subprocess against a temp database, set it up with an admin, then talk to it over REST, MCP and `/ws` (`test/server.ts`). They never import `src/`, so refactors don't break them. Only behaviour changes do. The exceptions run under happy-dom: `test/editor.test.ts` checks the rich editor's markdown round-trip (`src/web/tiptapKit.ts`) on a real corpus (`test/fixtures/editor`), and `test/markdown.test.ts` what the read view renders (`src/web/markdown.tsx`: which images load).
 
 - A behaviour change or a bug fix comes with a test.
 - Tests sign in only through the harness: `s.api` (the admin), `s.user(name)`, `s.agent(name)`, `s.as(name)` and `s.anon`. A change to how auth works then touches `test/server.ts` alone.
