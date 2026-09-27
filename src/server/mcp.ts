@@ -22,7 +22,7 @@ import { AppError } from "./db.ts";
 import * as tracker from "./tracker.ts";
 
 const instructions = (a: Actor) => `Docket is an issue tracker shared by people and agents, modeled on Linear.
-- Workspace → team → issues and docs. You see only the workspaces you're a member of; list_teams shows each team's workspace, and \`workspace\` keeps list_issues or list_documents inside one.
+- Workspace → team → issues and docs. Your key works in one workspace: everything you list, read and change is there.
 - Teams have a 2–5 letter key (e.g. BRD), unique across all workspaces. Issues are identified as KEY-number, e.g. BRD-12.
 - Statuses: backlog, todo, in_progress, in_review, done, canceled. Priority: 0 none, 1 urgent, 2 high, 3 medium, 4 low.
 - People and agents are named by username (@alice). An issue's assignee is a person who owns it; its delegate is an agent working on it for them. "me" means you.
@@ -35,7 +35,6 @@ ${
 
 const identifier = z.string().describe('Issue identifier: team key + number, e.g. "BRD-12" (case-insensitive)');
 const teamKey = z.string().describe('Team key, e.g. "BRD" (see list_teams)');
-const workspaceKey = z.string().describe('Workspace key, e.g. "acme" (see list_workspaces)');
 const status = z.enum(STATUSES).describe("backlog | todo | in_progress | in_review | done | canceled");
 const priority = z.literal(PRIORITIES).describe("0 none, 1 urgent, 2 high, 3 medium, 4 low");
 const labels = z.array(z.string()).describe('Label names, e.g. ["bug", "ui"]');
@@ -162,52 +161,17 @@ function createServer(a: Actor): McpServer {
     };
   // Who sees a tool, besides the scope check in register.
   const people = (a: Actor) => a.kind === "person";
-  const admins = (a: Actor) => [...a.workspaces.values()].includes("admin");
-  /** The workspace to use when a tool's is optional: the given one, or your only one. */
-  const oneWorkspace = (workspace: string | undefined) => {
-    if (workspace) return workspace;
-    const mine = [...a.workspaces.keys()];
-    if (mine.length === 1) return mine[0]!;
-    throw new AppError(`Pass workspace: one of ${mine.join(", ") || "(none)"}`);
-  };
-
-  register(
-    "list_workspaces",
-    {
-      description: "List the workspaces you're a member of, one line each: key · name · your role · team count.",
-      annotations: { readOnlyHint: true },
-    },
-    () => {
-      const workspaces = access.listWorkspaces(a);
-      const lines = workspaces.map((w) => `${w.key} · ${w.name} · ${w.role} · ${w.teamCount} team${w.teamCount === 1 ? "" : "s"}`);
-      return result(lines.join("\n") || "You aren't in any workspace.", { workspaces });
-    },
-  );
-
-  register(
-    "create_workspace",
-    {
-      description: "Create a workspace (people only); you become its admin. Only create one when asked to.",
-      inputSchema: {
-        key: z.string().optional().describe('URL-safe id (a-z, 0-9, dashes), e.g. "acme"; default derived from the name'),
-        name: z.string(),
-      },
-    },
-    writes((input) => {
-      const workspace = access.createWorkspace(a, input);
-      return result(`Created workspace ${workspace.key} · ${workspace.name}`, { workspace });
-    }),
-    people,
-  );
+  // A key acts in one workspace (MCP takes only keys), so that's where every tool works.
+  const admins = (a: Actor) => a.workspaces.get(a.workspace ?? "") === "admin";
 
   register(
     "update_workspace",
     {
-      description: "Rename a workspace (admins only). Its key never changes. Only do this when asked to.",
-      inputSchema: { key: workspaceKey, name: z.string() },
+      description: "Rename your workspace (admins only). Its key never changes. Only do this when asked to.",
+      inputSchema: { name: z.string() },
     },
-    writes(({ key, name }) => {
-      const workspace = access.updateWorkspace(a, key, { name });
+    writes(({ name }) => {
+      const workspace = access.updateWorkspace(a, access.requestWorkspace(a), { name });
       return result(`Updated workspace ${workspace.key} · ${workspace.name}`, { workspace });
     }),
     admins,
@@ -218,11 +182,10 @@ function createServer(a: Actor): McpServer {
     {
       description:
         "List a workspace's people and agents, one line each: @username · name · role · status, marking you. Assignees are people; delegates are agents.",
-      inputSchema: { workspace: workspaceKey.optional().describe("Required if you're in more than one workspace") },
       annotations: { readOnlyHint: true },
     },
-    ({ workspace }) => {
-      const members = access.listMembers(a, oneWorkspace(workspace));
+    () => {
+      const members = access.listMembers(a, access.requestWorkspace(a));
       const lines = members.map((m) =>
         [at(m.user), m.user.name, m.role, m.suspendedAt && "suspended", m.user.username === a.username && "you"].filter(Boolean).join(" · "),
       );
@@ -234,15 +197,14 @@ function createServer(a: Actor): McpServer {
     "list_teams",
     {
       description:
-        "List teams with their workspace and open-issue counts, one line each: key · name · workspace · open count. A team's key (e.g. BRD) prefixes its issue identifiers (BRD-12).",
-      inputSchema: { workspace: workspaceKey.optional().describe("Only teams in this workspace") },
+        "List the workspace's teams with open-issue counts, one line each: key · name · open count. A team's key (e.g. BRD) prefixes its issue identifiers (BRD-12).",
       annotations: { readOnlyHint: true },
     },
-    ({ workspace }) => {
-      const teams = tracker.listTeams(a, { workspace });
+    () => {
+      const teams = tracker.listTeams(a);
       const lines = teams.map((t) => {
         const open = OPEN_STATUSES.reduce((sum, s) => sum + t.counts[s], 0);
-        return `${t.key} · ${t.name} · workspace ${t.workspace} · ${open} open`;
+        return `${t.key} · ${t.name} · ${open} open`;
       });
       return result(lines.join("\n") || "No teams yet.", { teams });
     },
@@ -255,13 +217,12 @@ function createServer(a: Actor): McpServer {
         "Create a team in a workspace (people only). The key is 2–5 letters (uppercased), permanent, unique across all workspaces, and prefixes every issue identifier: key BRD gives BRD-1, BRD-2… Check list_teams first; only create a team when asked to.",
       inputSchema: {
         key: z.string().describe('2–5 letters, e.g. "BRD"'),
-        workspace: workspaceKey.optional().describe("Required if you're in more than one workspace"),
         name: z.string(),
         description: z.string().optional(),
       },
     },
-    writes(({ workspace, ...input }) => {
-      const team = tracker.createTeam(a, { ...input, workspace: oneWorkspace(workspace) });
+    writes((input) => {
+      const team = tracker.createTeam(a, input);
       return result(`Created team ${team.key} · ${team.name} in workspace ${team.workspace}`, { team });
     }),
     people,
@@ -290,11 +251,10 @@ function createServer(a: Actor): McpServer {
     {
       description:
         "List the labels in use, one line each: label · open issue count. Check it before labeling an issue and reuse an existing label rather than inventing a near-duplicate.",
-      inputSchema: { workspace: workspaceKey.optional().describe("Only labels on this workspace's issues") },
       annotations: { readOnlyHint: true },
     },
-    ({ workspace }) => {
-      const labels = tracker.listLabels(a, { workspace });
+    () => {
+      const labels = tracker.listLabels(a);
       return result(labels.map((l) => `${l.label} · ${l.open} open`).join("\n") || "No labels yet.", { labels });
     },
   );
@@ -305,7 +265,6 @@ function createServer(a: Actor): McpServer {
       description:
         "List issues, one line each: identifier · status · priority · title · @assignee · →@delegate · #labels. Sorted by status, then priority (urgent first, none last), then most recently updated. Only open issues (backlog, todo, in_progress, in_review) unless you pass `status`; there is no 'open' status, so for open issues leave `status` out. Pages of `limit` (default 50): when there are more, the output ends with a cursor to pass as `after` for the next page. Unknown team, assignee, delegate or parent is an error, not an empty list. Use get_issue for the description, comments, sub-issues and blockers.",
       inputSchema: {
-        workspace: workspaceKey.optional().describe("Only issues in this workspace's teams"),
         team: teamKey.optional(),
         status: z
           .array(status)
@@ -429,14 +388,13 @@ function createServer(a: Actor): McpServer {
       description:
         "List documents (specs, plans, notes), one line each: slug · title · team · updated time and author. Ordered by team, then position. Use get_document with the slug to read one.",
       inputSchema: {
-        workspace: workspaceKey.optional().describe("Only docs in this workspace's teams"),
         team: teamKey.optional(),
         query: z.string().optional().describe("Text to find in title or content"),
       },
       annotations: { readOnlyHint: true },
     },
-    ({ workspace, team, query }) => {
-      const documents = tracker.listDocuments(a, { workspace, team, q: query });
+    ({ team, query }) => {
+      const documents = tracker.listDocuments(a, { team, q: query });
       return result(documents.map(docLine).join("\n") || "No matching documents.", { documents });
     },
   );

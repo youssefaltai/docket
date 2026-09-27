@@ -46,7 +46,8 @@ export const auth = {
   revokeOtherSessions: () => request<unknown>("DELETE", "/api/sessions"),
   signInLink: () => request<CodeLink>("POST", "/api/sign-in-links"),
   apiKeys: () => request<ApiKey[]>("GET", "/api/api-keys"),
-  createApiKey: (name: string, scope: ApiKeyScope) => request<{ apiKey: ApiKey; token: string }>("POST", "/api/api-keys", { name, scope }),
+  createApiKey: (name: string, scope: ApiKeyScope, workspace: string) =>
+    request<{ apiKey: ApiKey; token: string }>("POST", "/api/api-keys", { name, scope, workspace }),
   revokeApiKey: (id: number) => request<unknown>("DELETE", `/api/api-keys/${id}`),
 
   updateMember: (workspace: string, username: string, patch: { role?: Exclude<Role, "agent">; suspended?: boolean }) =>

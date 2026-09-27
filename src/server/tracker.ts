@@ -29,7 +29,7 @@ import {
   type UserKind,
   type UserRef,
 } from "../shared/types.ts";
-import { type Actor, activeMemberId, requireMember, requirePerson } from "./access.ts";
+import { type Actor, activeMemberId, requestWorkspace, requireMember, requirePerson } from "./access.ts";
 import {
   AppError,
   BUMPED_AT,
@@ -191,7 +191,7 @@ export function createTeam(a: Actor, input: TeamInput): Team {
   requirePerson(a, NO_AGENT_TEAMS);
   const key = typeof input.key === "string" ? input.key.trim().toUpperCase() : "";
   if (!/^[A-Z]{2,5}$/.test(key)) throw new AppError("Team key must be 2–5 letters, e.g. BRD");
-  const workspace = requireMember(a, requireText(input.workspace, "workspace"));
+  const workspace = input.workspace === undefined ? requestWorkspace(a) : requireMember(a, requireText(input.workspace, "workspace"));
   const name = requireText(input.name, "name");
   const description = optionalText(input.description, "description");
   if (exists("teams", "key", key)) throw new AppError(`Team key ${key} is taken`, 409);

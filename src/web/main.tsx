@@ -2,7 +2,7 @@
 import { StrictMode, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import type { IssueInput, Team, Workspace, WorkspaceMember } from "../shared/types";
-import { api, connectionStore, setOnAccessLost, setOnUnauthorized, store, subscribe } from "./api";
+import { api, connectionStore, setCurrentWorkspace, setOnAccessLost, setOnUnauthorized, store, subscribe } from "./api";
 import { auth, getMe, loadMe } from "./auth";
 import { ChatDock, ChatNavItem } from "./chat";
 import { DocPage, DocsView } from "./docs";
@@ -109,6 +109,8 @@ function App() {
   useEffect(() => setNavOpen(false), [path]);
 
   const workspace = workspaces?.find((w) => w.key === workspaceKey) ?? workspaces?.[0] ?? null;
+  // Every request says which workspace it's in. Set while rendering, not in an effect: children's effects run first.
+  setCurrentWorkspace(workspace?.key ?? null);
 
   // Labels and members (assignees are people, delegates agents) of the current workspace, for pickers and filters.
   const currentKey = workspace?.key;

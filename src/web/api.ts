@@ -84,8 +84,13 @@ export const store = {
 let signedInAs: string | null = null;
 export const setSignedInAs = (username: string) => (signedInAs = username);
 
+/** The workspace this tab is in, sent as X-Docket-Workspace (the chat panel and new API keys act there). */
+let currentWorkspace: string | null = null;
+export const setCurrentWorkspace = (key: string | null) => (currentWorkspace = key);
+export const workspaceHeader = (): Record<string, string> => (currentWorkspace ? { "x-docket-workspace": currentWorkspace } : {});
+
 export async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = workspaceHeader();
   if (body !== undefined) headers["content-type"] = "application/json";
   if (signedInAs) headers["x-docket-user"] = signedInAs;
   const res = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) }).catch(() => {

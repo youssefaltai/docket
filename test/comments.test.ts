@@ -87,6 +87,8 @@ test("labels: counts of open issues, scoped by workspace", async () => {
 
   expect((await s.api("GET", "/api/labels")).body).toEqual(["bug", "infra", "ui"]);
   expect((await s.api("GET", `/api/labels?workspace=${s.workspace}`)).body).toEqual(["bug", "ui"]);
-  expect(await s.tool("list_labels", { workspace: s.workspace })).toBe("bug · 1 open\nui · 1 open");
-  expect(await s.tool("list_labels", { workspace: "side" })).toBe("infra · 1 open");
+  // A key lists its own workspace's labels.
+  expect(await s.tool("list_labels")).toBe("bug · 1 open\nui · 1 open");
+  const side = (await s.api("POST", "/api/api-keys", { name: "side", workspace: "side" })).body.token;
+  expect(await s.with({ token: side }).tool("list_labels")).toBe("infra · 1 open");
 });

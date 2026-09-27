@@ -1,31 +1,15 @@
-// The SQLite connection, the schema, change events and the validation helpers the data modules share.
+// Migration 4 (keys belong to one workspace) on a database written under schema 3: data survives, and every
+// existing key lands in the right workspace.
 import { Database } from "bun:sqlite";
-import { mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { xdgDataHome } from "./paths.ts";
-import type { ServerEvent } from "../shared/types.ts";
+import { afterAll, beforeAll, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { startServer, type TestServer } from "./server.ts";
 
-/** An error with an HTTP status; REST returns it as `{ error }`, MCP as a tool error. */
-export class AppError extends Error {
-  constructor(
-    message: string,
-    readonly status = 400,
-  ) {
-    super(message);
-  }
-}
-
-// --- Connection and schema ---
-
-const path = process.env.DATABASE_PATH ?? join(xdgDataHome(), "docket", "docket.db");
-mkdirSync(dirname(path), { recursive: true });
-export const db = new Database(path, { create: true });
-db.run("PRAGMA journal_mode = WAL");
-db.run("PRAGMA foreign_keys = ON");
-db.run("PRAGMA busy_timeout = 5000");
-
-// Append-only: each entry upgrades the schema by one PRAGMA user_version.
-const MIGRATIONS = [
+// Migrations 1–3 exactly as they shipped (src/server/db.ts). Frozen: never edit this fixture.
+const SCHEMA_V3 = [
   `
   -- People and agents; the username is the identity. Email is unverified contact info (there's no mail),
   -- so it's never used to find an account. Agents sign in only with API keys.
@@ -188,112 +172,80 @@ const MIGRATIONS = [
   CREATE INDEX api_keys_expires ON api_keys(expires_at) WHERE expires_at IS NOT NULL;
   CREATE INDEX api_keys_session ON api_keys(session_id) WHERE session_id IS NOT NULL;
   `,
-  // Keys belong to one workspace, as in Linear: an API key, agent token or chat key acts only there.
-  `
-  ALTER TABLE api_keys ADD COLUMN workspace TEXT REFERENCES workspaces(key) ON DELETE CASCADE;
-  DELETE FROM api_keys WHERE session_id IS NOT NULL; -- chat keys: short-lived, minted again per workspace
-  UPDATE api_keys SET workspace = (SELECT m.workspace FROM workspace_members m
-    WHERE m.user_id = api_keys.user_id AND m.suspended_at IS NULL ORDER BY m.created_at, m.workspace LIMIT 1);
-  DELETE FROM api_keys WHERE workspace IS NULL; -- the owner has no active workspace left
-  CREATE INDEX api_keys_workspace ON api_keys(user_id, workspace);
-  `,
 ];
 
-const { user_version } = db.query("PRAGMA user_version").get() as { user_version: number };
-MIGRATIONS.slice(user_version).forEach((sql, i) => {
-  db.transaction(() => {
-    db.run(sql);
-    db.run(`PRAGMA user_version = ${user_version + i + 1}`);
-  })();
+const hash = (secret: string) => createHash("sha256").update(secret).digest("hex");
+const ADMIN_KEY = `dk_${"a".repeat(64)}`;
+const AGENT_KEY = `dk_${"b".repeat(64)}`;
+const CHAT_KEY = `dk_${"c".repeat(64)}`;
+const GONE_KEY = `dk_${"d".repeat(64)}`;
+const SESSION = "e".repeat(64);
+
+let dir: string;
+let path: string;
+let s: TestServer;
+beforeAll(async () => {
+  dir = mkdtempSync(join(tmpdir(), "docket-migration-"));
+  path = join(dir, "docket.db");
+  const db = new Database(path, { create: true });
+  for (const sql of SCHEMA_V3) db.run(sql);
+  db.run("PRAGMA user_version = 3");
+  const t = (minutes: number) => new Date(Date.UTC(2026, 0, 1, 0, minutes)).toISOString();
+  const later = new Date(Date.now() + 20 * 60 * 1000).toISOString();
+  db.run(`INSERT INTO users (id, kind, username, name, email, created_at) VALUES
+    (1, 'person', 'admin', 'Admin', 'admin@example.com', '${t(0)}'),
+    (2, 'agent', 'bot', 'Bot', NULL, '${t(1)}'),
+    (3, 'person', 'gone', 'Gone', NULL, '${t(2)}')`);
+  // "zeta" sorts after "side" but admin joined it first: a person's key goes where they joined first.
+  db.run(`INSERT INTO workspaces (key, name, created_at, updated_at) VALUES
+    ('zeta', 'Zeta', '${t(0)}', '${t(0)}'), ('side', 'Side', '${t(5)}', '${t(5)}')`);
+  db.run(`INSERT INTO workspace_members (workspace, user_id, role, created_at, suspended_at) VALUES
+    ('zeta', 1, 'admin', '${t(0)}', NULL), ('side', 1, 'admin', '${t(5)}', NULL),
+    ('side', 2, 'agent', '${t(6)}', NULL), ('zeta', 3, 'member', '${t(7)}', '${t(8)}')`);
+  db.run(`INSERT INTO sessions (id, user_id, token_hash, created_at, last_seen_at, user_agent, ip)
+    VALUES (1, 1, '${hash(SESSION)}', '${t(0)}', '${new Date().toISOString()}', 'test', '127.0.0.1')`);
+  db.run(`INSERT INTO api_keys (user_id, name, scope, token_hash, created_at, expires_at, session_id) VALUES
+    (1, 'laptop', 'write', '${hash(ADMIN_KEY)}', '${t(1)}', NULL, NULL),
+    (2, 'agent token', 'write', '${hash(AGENT_KEY)}', '${t(6)}', NULL, NULL),
+    (1, 'Chat (automatic)', 'read', '${hash(CHAT_KEY)}', '${t(9)}', '${later}', 1),
+    (3, 'old', 'write', '${hash(GONE_KEY)}', '${t(7)}', NULL, NULL)`);
+  db.run(`INSERT INTO teams (key, workspace, name, created_at, updated_at, next_number) VALUES
+    ('ZET', 'zeta', 'Zeta team', '${t(0)}', '${t(0)}', 2), ('SID', 'side', 'Side team', '${t(5)}', '${t(5)}', 2)`);
+  db.run(`INSERT INTO issues (team_key, number, title, status, creator_id, created_at, updated_at) VALUES
+    ('ZET', 1, 'Zeta issue', 'todo', 1, '${t(0)}', '${t(0)}'), ('SID', 1, 'Side issue', 'todo', 2, '${t(6)}', '${t(6)}')`);
+  db.close();
+  s = await startServer({ setup: false, env: { DATABASE_PATH: path } });
+});
+afterAll(async () => {
+  await s.stop();
+  rmSync(dir, { recursive: true, force: true });
 });
 
-// --- Change events ---
+const workspacesOf = async (creds: { token?: string; cookie?: string }, via: "bearer" | "cookie" = "bearer") => {
+  const res = await s.with(creds, via).api("GET", "/api/me");
+  return res.status === 200 ? res.body.workspaces.map((w: { key: string }) => w.key) : res.status;
+};
 
-let listener: (event: ServerEvent) => void = () => {};
+test("a person's key lands in the workspace they joined first, an agent's in its own", async () => {
+  expect(await workspacesOf({ token: ADMIN_KEY })).toEqual(["zeta"]);
+  expect((await s.with({ token: ADMIN_KEY }).api("GET", "/api/issues")).body.map((i: any) => i.id)).toEqual(["ZET-1"]);
+  expect(await workspacesOf({ token: AGENT_KEY })).toEqual(["side"]);
+  expect((await s.with({ token: AGENT_KEY }).api("GET", "/api/issues/SID-1")).body.title).toBe("Side issue");
+});
 
-/** Called after every committed mutation (the server sends it over /ws to the workspace's members). */
-export function onChange(fn: (event: ServerEvent) => void) {
-  listener = fn;
-}
+test("chat keys are gone, and so are keys whose owner has no active workspace", async () => {
+  expect(await workspacesOf({ token: CHAT_KEY })).toBe(401);
+  expect(await workspacesOf({ token: GONE_KEY })).toBe(401);
+});
 
-export function changed(entity: ServerEvent["entity"], workspace: string, id: string) {
-  listener({ type: "changed", entity, workspace, id });
-}
+test("the session and the data survive", async () => {
+  expect((await workspacesOf({ cookie: `docket_session=${SESSION}` }, "cookie")).sort()).toEqual(["side", "zeta"]);
+  const keys = (await s.with({ cookie: `docket_session=${SESSION}` }, "cookie").api("GET", "/api/api-keys")).body;
+  expect(keys.map((k: any) => [k.name, k.workspace])).toEqual([["laptop", "zeta"]]);
+});
 
-// --- Validation ---
-
-export const now = () => new Date().toISOString();
-
-/**
- * updated_at doubles as a version token (baseUpdatedAt), so every change moves it strictly forward, even
- * within a millisecond. One rule, two forms that must agree: `bumpedAt(prev)` for a value computed in JS,
- * and `BUMPED_AT`, a SET clause for rows bumped in SQL (bind the current time to both `?`).
- */
-export const bumpedAt = (prev: string, time = now()) =>
-  time > prev ? time : new Date(Date.parse(prev) + 1).toISOString();
-export const BUMPED_AT =
-  "updated_at = CASE WHEN updated_at >= ? THEN strftime('%Y-%m-%dT%H:%M:%fZ', updated_at, '+0.001 seconds') ELSE ? END";
-
-export const exists = (table: string, column: string, value: string) =>
-  db.query(`SELECT 1 FROM ${table} WHERE ${column} = ?`).get(value) !== null;
-
-/** The longest text a field takes, in characters (a huge comment would freeze every viewer's page). */
-const MAX_LENGTH: Record<string, number> = { title: 500, name: 200, body: 100_000, description: 100_000, content: 500_000 };
-
-export function capLength(text: string, field: string): string {
-  const max = MAX_LENGTH[field];
-  if (max && text.length > max) throw new AppError(`${field} is too long: at most ${max.toLocaleString("en-US")} characters`);
-  return text;
-}
-
-export function requireText(value: unknown, field: string): string {
-  if (typeof value !== "string" || !value.trim()) throw new AppError(`${field} is required`);
-  return capLength(value.trim(), field);
-}
-
-export function optionalText(value: unknown, field: string): string {
-  if (value == null) return "";
-  if (typeof value !== "string") throw new AppError(`${field} must be a string`);
-  return capLength(value.trim(), field);
-}
-
-export function checkOneOf<T extends string | number>(value: unknown, allowed: readonly T[], field: string): T {
-  if (!allowed.includes(value as T)) throw new AppError(`Invalid ${field} "${value}". Use one of: ${allowed.join(", ")}`);
-  return value as T;
-}
-
-/** "Q3 Roadmap: Café!" → "q3-roadmap-cafe"; "" when nothing Latin is left (e.g. an Arabic title). */
-function slugify(title: string): string {
-  return title
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .slice(0, 60)
-    .replace(/^-+|-+$/g, "");
-}
-
-/**
- * An explicit slug must be valid and free; a derived one is deduped: base, base-2, base-3…
- * or `${fallback}-1`, `${fallback}-2`… when the name has nothing Latin in it.
- */
-export function pickSlug(
-  explicit: unknown,
-  name: string,
-  taken: (slug: string) => boolean,
-  { label, fallback }: { label: string; fallback: string },
-): string {
-  if (explicit !== undefined) {
-    const slug = typeof explicit === "string" ? explicit.trim().toLowerCase() : "";
-    if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(slug)) {
-      throw new AppError(`Invalid ${label} "${explicit}": use a-z, 0-9 and single dashes, e.g. "api-design"`);
-    }
-    if (taken(slug)) throw new AppError(`${label[0]!.toUpperCase()}${label.slice(1)} "${slug}" is already taken`, 409);
-    return slug;
-  }
-  const base = slugify(name);
-  for (let n = 1; ; n++) {
-    const slug = base ? (n === 1 ? base : `${base}-${n}`) : `${fallback}-${n}`;
-    if (!taken(slug)) return slug;
-  }
-}
+test("the schema is at version 4", () => {
+  const db = new Database(path, { readonly: true });
+  expect((db.query("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(4);
+  db.close();
+});

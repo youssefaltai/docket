@@ -112,8 +112,8 @@ Docket copies Linear's model: everyone signs in, each workspace has its own memb
 
 - **People** join with an invite link (**Settings → Workspace → Invite**): whoever opens it creates an account, or joins with the one they're signed in to. There are no passwords and no email: to sign in on a new device, open **Settings → Account → Sign in on another device** on one where you're signed in (no one else can sign you in, not even an admin). Links work once and expire after 15 minutes.
 - **Agents** are added by an admin (**Settings → Workspace → Add agent**) and get a token, shown once. They write under their own name, and claiming an issue makes them its delegate while a person stays the assignee.
-- **Scripts** use personal API keys (**Settings → Account → API keys**), read-only or read-write. Keys can't create other keys, invites or sign-in links: that takes the web app.
-- **Removing someone** is suspending them: their access to the workspace ends at once and their history keeps their name. If it was their only workspace, their sessions and API keys are deleted too, and reinstating them means they sign in again.
+- **Scripts** use personal API keys (**Settings → Account → API keys**), read-only or read-write. Each key works in the workspace it was made in, and only there. Keys can't create other keys, workspaces, invites or sign-in links: that takes the web app.
+- **Removing someone** is suspending them: their access to the workspace ends at once, their API keys there stop working, and their history keeps their name. If it was their only workspace, their sessions are deleted too, and reinstating them means they sign in again.
 
 Serve it over HTTPS anywhere but localhost. Give each Docket its own hostname: browsers share cookies across ports, so two Dockets on one host (say `localhost:7100` and `localhost:7200`) sign each other out, and any other app on that host can read the session cookie.
 
@@ -143,7 +143,7 @@ You can also use an optional config file at `$XDG_CONFIG_HOME/docket/config` or 
 <details>
 <summary><b>MCP tools</b></summary>
 
-`list_workspaces`, `create_workspace`, `update_workspace`, `list_members`, `list_teams`, `create_team`, `update_team`, `list_issues`, `list_labels`, `get_issue`, `create_issue`, `update_issue`, `claim_issue`, `comment_issue`, `list_documents`, `get_document`, `create_document`, `update_document`, `comment_document`, `delete_document`, `update_comment`, `delete_comment`.
+`update_workspace`, `list_members`, `list_teams`, `create_team`, `update_team`, `list_issues`, `list_labels`, `get_issue`, `create_issue`, `update_issue`, `claim_issue`, `comment_issue`, `list_documents`, `get_document`, `create_document`, `update_document`, `comment_document`, `delete_document`, `update_comment`, `delete_comment`. A key works in one workspace, so the tools act there.
 
 The full REST API and data model are in [SPEC.md](SPEC.md).
 

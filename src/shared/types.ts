@@ -71,7 +71,7 @@ export interface WorkspaceMember {
 /** GET /api/me. */
 export interface Me {
   user: User & { id: number }; // id: stable across renames, for services that key data by person (docket-chat); ids stay internal everywhere else
-  workspaces: { key: string; name: string; role: Role }[];
+  workspaces: { key: string; name: string; role: Role }[]; // for a key, only its own workspace
   credential: "session" | "key" | "chat"; // what this request came with; "chat": a key the chat proxy minted
   chat: boolean; // the assistant is set up (CHAT_URL): show its panel
 }
@@ -92,6 +92,7 @@ export interface ApiKey {
   id: number;
   name: string;
   scope: ApiKeyScope;
+  workspace: string; // the workspace key; the key works only there
   createdAt: string;
   lastUsedAt: string | null;
 }
@@ -133,7 +134,7 @@ export interface Team {
 
 export interface TeamInput {
   key: string;
-  workspace: string;
+  workspace?: string; // default: the request's (an API key's own)
   name: string;
   description?: string;
 }

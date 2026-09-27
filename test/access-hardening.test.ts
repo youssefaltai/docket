@@ -83,7 +83,7 @@ test("an API key can't mint credentials or change who it belongs to", async () =
   expect((await admin.api("PATCH", `/api/workspaces/${ws}/members/bob`, { role: "admin" })).status).toBe(403);
   expect((await admin.api("POST", `/api/workspaces/${ws}/agents`, { name: "Leak", username: "leak" })).status).toBe(403);
   // Nor can a key list or revoke keys and sessions: all of that is the browser session's job.
-  const spare = (await s.as("bob").api("POST", "/api/api-keys", { name: "spare" })).body;
+  const spare = (await s.as("bob").api("POST", "/api/api-keys", { name: "spare", workspace: s.workspace })).body;
   expect((await key.api("DELETE", `/api/api-keys/${spare.apiKey.id}`)).status).toBe(403);
   expect((await key.api("GET", "/api/api-keys")).status).toBe(403);
   expect((await key.api("GET", "/api/sessions")).status).toBe(403);
