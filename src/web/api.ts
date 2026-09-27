@@ -158,6 +158,10 @@ export const api = {
   resolveThread: (id: string, cid: number, resolved: boolean) =>
     request<Issue>(resolved ? "PUT" : "DELETE", `/api/issues/${enc(id)}/comments/${cid}/resolved`),
   subscribeIssue: (id: string, on: boolean) => request<Issue>(on ? "PUT" : "DELETE", `/api/issues/${enc(id)}/subscription`),
+  reactToIssue: (id: string, emoji: string, on: boolean) =>
+    request<Issue>(on ? "PUT" : "DELETE", `/api/issues/${enc(id)}/reactions/${enc(emoji)}`),
+  reactToComment: (id: string, cid: number, emoji: string, on: boolean) =>
+    request<Issue>(on ? "PUT" : "DELETE", `/api/issues/${enc(id)}/comments/${cid}/reactions/${enc(emoji)}`),
 
   labels: () => request<string[]>("GET", "/api/labels"),
   /** Which of your workspaces a link made before URLs carried one points into (404 if none). */
@@ -181,6 +185,8 @@ export const api = {
     request<Document>("DELETE", `/api/documents/${enc(slug)}/comments/${cid}`),
   resolveDocumentThread: (slug: string, cid: number, resolved: boolean) =>
     request<Document>(resolved ? "PUT" : "DELETE", `/api/documents/${enc(slug)}/comments/${cid}/resolved`),
+  reactToDocumentComment: (slug: string, cid: number, emoji: string, on: boolean) =>
+    request<Document>(on ? "PUT" : "DELETE", `/api/documents/${enc(slug)}/comments/${cid}/reactions/${enc(emoji)}`),
   versions: (slug: string) => request<DocumentVersionSummary[]>("GET", `/api/documents/${enc(slug)}/versions`),
   version: (slug: string, id: number) => request<DocumentVersion>("GET", `/api/documents/${enc(slug)}/versions/${id}`),
   subscribeDocument: (slug: string, on: boolean) => request<Document>(on ? "PUT" : "DELETE", `/api/documents/${enc(slug)}/subscription`),

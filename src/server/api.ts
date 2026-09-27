@@ -218,6 +218,18 @@ export const apiRoutes = {
     PUT: handle<"/api/issues/:id/comments/:cid/resolved">((req) => tracker.resolveIssueThread(actorOf(req), req.params.id, req.params.cid, true)),
     DELETE: handle<"/api/issues/:id/comments/:cid/resolved">((req) => tracker.resolveIssueThread(actorOf(req), req.params.id, req.params.cid, false)),
   },
+  "/api/issues/:id/reactions/:emoji": {
+    PUT: handle<"/api/issues/:id/reactions/:emoji">((req) => tracker.reactToIssue(actorOf(req), req.params.id, req.params.emoji, true)),
+    DELETE: handle<"/api/issues/:id/reactions/:emoji">((req) => tracker.reactToIssue(actorOf(req), req.params.id, req.params.emoji, false)),
+  },
+  "/api/issues/:id/comments/:cid/reactions/:emoji": {
+    PUT: handle<"/api/issues/:id/comments/:cid/reactions/:emoji">((req) =>
+      tracker.reactToIssueComment(actorOf(req), req.params.id, req.params.cid, req.params.emoji, true),
+    ),
+    DELETE: handle<"/api/issues/:id/comments/:cid/reactions/:emoji">((req) =>
+      tracker.reactToIssueComment(actorOf(req), req.params.id, req.params.cid, req.params.emoji, false),
+    ),
+  },
   "/api/issues/:id/subscription": {
     PUT: handle<"/api/issues/:id/subscription">((req) => tracker.subscribeIssue(actorOf(req), req.params.id, true)),
     DELETE: handle<"/api/issues/:id/subscription">((req) => tracker.subscribeIssue(actorOf(req), req.params.id, false)),
@@ -280,6 +292,14 @@ export const apiRoutes = {
     ),
     DELETE: handle<"/api/documents/:slug/comments/:cid/resolved">((req) =>
       tracker.resolveDocumentThread(actorOf(req), req.params.slug, req.params.cid, false),
+    ),
+  },
+  "/api/documents/:slug/comments/:cid/reactions/:emoji": {
+    PUT: handle<"/api/documents/:slug/comments/:cid/reactions/:emoji">((req) =>
+      tracker.reactToDocumentComment(actorOf(req), req.params.slug, req.params.cid, req.params.emoji, true),
+    ),
+    DELETE: handle<"/api/documents/:slug/comments/:cid/reactions/:emoji">((req) =>
+      tracker.reactToDocumentComment(actorOf(req), req.params.slug, req.params.cid, req.params.emoji, false),
     ),
   },
   "/api/documents/:slug/subscription": {

@@ -26,6 +26,7 @@ import {
   type IssueSummary,
   type LabelCount,
   type Priority,
+  type Reaction,
   type Status,
   type Team,
   type TeamInput,
@@ -118,6 +119,71 @@ function saveMentions(
   return fresh;
 }
 
+// --- Reactions ---
+
+const MAX_REACTIONS = 20; // distinct emoji per target
+
+/** A keycap: a digit, # or *, an optional variation selector, then the combining enclosing keycap mark. */
+const KEYCAP = /^[#*0-9]️?⃣$/;
+
+/**
+ * One emoji: after trimming, exactly one grapheme with a pictographic or regional-indicator code point (or a
+ * keycap), at most 32 UTF-16 units. Stored as sent, normalized to NFC.
+ */
+function checkEmoji(value: unknown): string {
+  const emoji = (typeof value === "string" ? value : "").trim().normalize("NFC");
+  const graphemes = [...new Intl.Segmenter().segment(emoji)];
+  const shaped = emoji.length > 0 && emoji.length <= 32 && graphemes.length === 1;
+  if (!shaped || !(/\p{Extended_Pictographic}|\p{Regional_Indicator}/u.test(emoji) || KEYCAP.test(emoji))) {
+    throw new AppError("emoji must be a single emoji, e.g. 👍");
+  }
+  return emoji;
+}
+
+/** Every target's reactions, one query: emoji ordered by first reaction, users within an emoji by when they reacted. */
+function listReactions(workspace: string, targets: string[]): Map<string, Reaction[]> {
+  const byTarget = new Map<string, Reaction[]>();
+  if (!targets.length) return byTarget;
+  const rows = db
+    .query<Record<string, unknown>, [string, ...string[]]>(
+      `SELECT r.target, r.emoji, ${userCols("u", "user")} FROM reactions r ${userJoin("u", "r.user_id", "?1")}
+       WHERE r.target IN (${inList(targets)}) ORDER BY r.created_at`,
+    )
+    .all(workspace, ...targets);
+  for (const row of rows) {
+    const target = row.target as string;
+    const list = byTarget.get(target) ?? byTarget.set(target, []).get(target)!;
+    const group = list.find((g) => g.emoji === row.emoji);
+    if (group) group.users.push(ref(row, "user")!);
+    else list.push({ emoji: row.emoji as string, users: [ref(row, "user")!] });
+  }
+  return byTarget;
+}
+
+/**
+ * Adds or removes the actor's own reaction on `target` ('issue:<id>', 'comment:<id>', 'document_comment:<id>');
+ * idempotent both ways. At most 20 distinct emoji per target (409 beyond, only when adding a new one).
+ */
+function setReaction(a: Actor, target: string, owner: { issueId?: number; documentId?: number }, emoji: unknown, on: boolean, time: string) {
+  const e = checkEmoji(emoji);
+  if (!on) {
+    db.query("DELETE FROM reactions WHERE target = ? AND user_id = ? AND emoji = ?").run(target, a.id, e);
+    return;
+  }
+  if (!db.query("SELECT 1 FROM reactions WHERE target = ? AND emoji = ?").get(target, e)) {
+    const { n } = db.query<{ n: number }, [string]>("SELECT COUNT(DISTINCT emoji) AS n FROM reactions WHERE target = ?").get(target)!;
+    if (n >= MAX_REACTIONS) throw new AppError(`At most ${MAX_REACTIONS} different reactions on one thing`, 409);
+  }
+  db.query("INSERT OR IGNORE INTO reactions (target, user_id, emoji, issue_id, document_id, created_at) VALUES (?, ?, ?, ?, ?, ?)").run(
+    target,
+    a.id,
+    e,
+    owner.issueId ?? null,
+    owner.documentId ?? null,
+    time,
+  );
+}
+
 // --- Comments ---
 
 // Issue and doc comments live in parallel tables; each helper serves both. `source`: how mentions name a comment.
@@ -133,7 +199,7 @@ const commentSelect = (owner: CommentOwner) =>
   `SELECT c.id, c.body, c.created_at, c.edited_at, c.parent_id, c.resolved_at, ${userCols("u", "a")}, ${userCols("r", "r")}
    FROM ${COMMENTS[owner].table} c ${userJoin("u", "c.author_id", "?1")} ${userJoin("r", "c.resolved_by_id", "?1")}`;
 
-const toComment = (r: Record<string, unknown>): Comment => ({
+const toComment = (r: Record<string, unknown>, reactions: Reaction[] = []): Comment => ({
   id: r.id as number,
   author: ref(r, "a")!,
   body: r.body as string,
@@ -142,14 +208,19 @@ const toComment = (r: Record<string, unknown>): Comment => ({
   parent: r.parent_id as number | null,
   resolvedAt: r.resolved_at as string | null,
   resolvedBy: ref(r, "r"),
+  reactions,
 });
 
 /** An issue's or doc's comments, one flat list by id (replies name their root); people as they're known in `workspace`, the owner's. */
 function listComments(owner: CommentOwner, ownerId: number, workspace: string): Comment[] {
-  return db
+  const rows = db
     .query<Record<string, unknown>, [string, number]>(`${commentSelect(owner)} WHERE c.${COMMENTS[owner].column} = ?2 ORDER BY c.id`)
-    .all(workspace, ownerId)
-    .map(toComment);
+    .all(workspace, ownerId);
+  const reactions = listReactions(
+    workspace,
+    rows.map((r) => `${COMMENTS[owner].source}:${r.id}`),
+  );
+  return rows.map((r) => toComment(r, reactions.get(`${COMMENTS[owner].source}:${r.id}`) ?? []));
 }
 
 /** A comment on this owner, by id (404 otherwise, as for any id elsewhere): its author and thread. */
@@ -188,7 +259,9 @@ function commentEvent(
   updatedFrom?: Record<string, unknown>,
 ) {
   const on = ownerRef(owner, ownerId);
-  const comment = toComment(db.query<Record<string, unknown>, [string, number]>(`${commentSelect(owner)} WHERE c.id = ?2`).get(workspace, id)!);
+  const row = db.query<Record<string, unknown>, [string, number]>(`${commentSelect(owner)} WHERE c.id = ?2`).get(workspace, id)!;
+  const source = `${COMMENTS[owner].source}:${id}`;
+  const comment = toComment(row, listReactions(workspace, [source]).get(source) ?? []);
   const data = { ...comment, issue: owner === "issue" ? on : null, document: owner === "document" ? on : null };
   enqueue({ workspace, type: "Comment", action, entity: String(id), actorId: a.id, time, data: () => data, updatedFrom });
 }
@@ -263,6 +336,7 @@ function deleteComment(a: Actor, owner: CommentOwner, ownerId: number, workspace
   commentEvent(a, owner, ownerId, workspace, id, "remove", time);
   db.query(`DELETE FROM ${table} WHERE id = ?`).run(id);
   db.query("DELETE FROM mentions WHERE source = ?").run(`${COMMENTS[owner].source}:${id}`);
+  db.query("DELETE FROM reactions WHERE target = ?").run(`${COMMENTS[owner].source}:${id}`);
   inbox.commentDeleted(targetOf(owner, ownerId), id);
 }
 
@@ -860,6 +934,7 @@ export function getIssue(a: Actor, identifier: string): Issue {
     activity: listActivity(id, row.workspace),
     docs,
     subscribed: inbox.isSubscribed(a.id, { issueId: id }),
+    reactions: listReactions(row.workspace, [`issue:${id}`]).get(`issue:${id}`) ?? [],
   };
 }
 
@@ -1126,6 +1201,25 @@ export const deleteIssueComment = (a: Actor, identifier: string, commentId: unkn
 
 export const resolveIssueThread = (a: Actor, identifier: string, commentId: unknown, resolved: boolean) =>
   changeIssueComments(a, identifier, (id, time, workspace) => resolveThread(a, "issue", id, workspace, commentId, resolved, time));
+
+/** Adds or removes your reaction on an issue's description. Doesn't bump updated_at or notify anyone. */
+export function reactToIssue(a: Actor, identifier: string, emoji: unknown, on: boolean): Issue {
+  const { id, workspace } = liveIssue(a, identifier);
+  setReaction(a, `issue:${id}`, { issueId: id }, emoji, on, now());
+  const issue = getIssue(a, identifier);
+  changed("issue", workspace, issue.id);
+  return issue;
+}
+
+/** Adds or removes your reaction on a comment of this issue (404 if `commentId` isn't one). Doesn't bump updated_at. */
+export function reactToIssueComment(a: Actor, identifier: string, commentId: unknown, emoji: unknown, on: boolean): Issue {
+  const { id, workspace } = liveIssue(a, identifier);
+  const { id: cid } = commentRow("issue", id, workspace, commentId);
+  setReaction(a, `${COMMENTS.issue.source}:${cid}`, { issueId: id }, emoji, on, now());
+  const issue = getIssue(a, identifier);
+  changed("issue", workspace, issue.id);
+  return issue;
+}
 
 /** Follows or unfollows an issue; it sticks until you create, claim, comment on or are assigned, delegated or mentioned in it. */
 export function subscribeIssue(a: Actor, identifier: string, on: boolean): Issue {
@@ -1413,6 +1507,13 @@ export const deleteDocumentComment = (a: Actor, slug: string, commentId: unknown
 
 export const resolveDocumentThread = (a: Actor, slug: string, commentId: unknown, resolved: boolean) =>
   changeDocumentComments(a, slug, (id, time, workspace) => resolveThread(a, "document", id, workspace, commentId, resolved, time));
+
+/** Adds or removes your reaction on a comment of this document (404 if `commentId` isn't one). */
+export const reactToDocumentComment = (a: Actor, slug: string, commentId: unknown, emoji: unknown, on: boolean) =>
+  changeDocumentComments(a, slug, (id, time, workspace) => {
+    const { id: cid } = commentRow("document", id, workspace, commentId);
+    setReaction(a, `${COMMENTS.document.source}:${cid}`, { documentId: id }, emoji, on, time);
+  });
 
 /** Follows or unfollows a doc (see subscribeIssue). */
 export function subscribeDocument(a: Actor, slug: string, on: boolean): Document {
