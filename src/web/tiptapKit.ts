@@ -2,7 +2,7 @@
 // Headless (no React), so tests run it as is; the editor UI around it is tiptap.tsx. Markdown stays the stored format.
 import { Editor, Extension, type AnyExtension } from "@tiptap/core";
 import { Markdown } from "@tiptap/markdown";
-import { TaskItem, TaskList } from "@tiptap/extension-list";
+import { BulletList, getListMarker, ListItem, OrderedList, TaskItem, TaskList } from "@tiptap/extension-list";
 import { Table, TableCell, TableHeader, TableRow } from "@tiptap/extension-table";
 import { Node as PMNode, Slice } from "@tiptap/pm/model";
 import { Plugin } from "@tiptap/pm/state";
@@ -51,6 +51,103 @@ const PipeSafeTable = Table.extend({
   },
 });
 
+// Lists, patched where @tiptap/extension-list's markdown doesn't round-trip (DKT-37):
+// - An item's soft line breaks stay "\n" in its text, as in a paragraph (the read view shows them as line breaks),
+//   and the lines after the first are indented under the item, not joined or left to lazy continuation.
+// - A tight item's text after a block (a code block, a sublist) is a paragraph, not raw text whose markdown gets
+//   escaped (its backticks compounded on every save).
+// - Lists remember whether they're loose (blank lines between items: the read view spaces them as paragraphs).
+
+type Json = { type?: string; text?: string; attrs?: Record<string, any>; content?: Json[] };
+const LISTS = ["bulletList", "orderedList", "taskList"];
+const loose = { loose: { default: false, rendered: false } };
+
+/**
+ * An item as markdown: its marker, its first paragraph (every line after the first indented like the item's other
+ * content), then its other blocks. In a tight list they follow on the next line, unless a paragraph follows a
+ * paragraph or a list, which takes a blank line; in a loose one, blocks are separated by blank lines.
+ */
+function renderItem(node: Json, h: any, marker: string, pad: string, isLoose: boolean): string {
+  const [first, ...rest] = node.content ?? [];
+  let out = marker + h.renderChildren([first]).replace(/\n/g, `\n${pad}`);
+  let prev = first!;
+  rest.forEach((child, i) => {
+    const blank = isLoose || (child.type === "paragraph" && (prev.type === "paragraph" || LISTS.includes(prev.type!)));
+    const text = h.renderChild?.(child, i + 1) ?? h.renderChildren([child]);
+    out += (blank ? "\n\n" : "\n") + text.split("\n").map((line: string) => pad + line).join("\n");
+    prev = child;
+  });
+  return out;
+}
+
+const LooseBulletList = BulletList.extend({
+  addAttributes() {
+    return { ...this.parent?.(), ...loose };
+  },
+  parseMarkdown: (token, h) => {
+    const list = BulletList.config.parseMarkdown!(token, h) as Json;
+    return Array.isArray(list) ? list : { ...list, attrs: { loose: !!token.loose } };
+  },
+  renderMarkdown: (node, h) => h.renderChildren(node.content ?? [], node.attrs?.loose ? "\n\n" : "\n"),
+});
+
+const LooseOrderedList = OrderedList.extend({
+  addAttributes() {
+    return { ...this.parent?.(), ...loose };
+  },
+  // Read by marked, as the read view reads them: Tiptap's own tokenizer leaves a space on every line under an item,
+  // so its blocks shift on each save, and doesn't say if a list is loose.
+  markdownTokenizer: null as never,
+  parseMarkdown: (token, h) =>
+    token.type === "list" && token.ordered
+      ? { type: "orderedList", attrs: { start: token.start ?? 1, loose: !!token.loose }, content: h.parseChildren(token.items ?? []) }
+      : [],
+  renderMarkdown: (node, h) => h.renderChildren(node.content ?? [], node.attrs?.loose ? "\n\n" : "\n"),
+});
+
+const FaithfulListItem = ListItem.extend({
+  // marked leaves a tight item's text as `text` tokens: read each as a paragraph (upstream reads only the first).
+  parseMarkdown: (token, h) => {
+    const tokens = token.tokens?.map((t) => (t.type === "text" ? { ...t, type: "paragraph", tokens: t.tokens ?? h.tokenizeInline?.(t.text ?? "") } : t));
+    return ListItem.config.parseMarkdown!({ ...token, tokens }, h);
+  },
+  renderMarkdown: (node, h, ctx) => {
+    const attrs = ctx.meta?.parentAttrs ?? {};
+    if (ctx.parentType !== "orderedList") return renderItem(node, h, "- ", h.indent(""), !!attrs.loose);
+    const marker = getListMarker(attrs.type, (attrs.start ?? 1) - 1 + (ctx.index ?? 0));
+    return renderItem(node, h, marker, " ".repeat(marker.length), !!attrs.loose);
+  },
+});
+
+const FaithfulTaskItem = TaskItem.extend({
+  // Tiptap's task list tokenizer reads a task's first line as its text and the lines under it as nested blocks:
+  // lines that directly follow it (a paragraph, or an indented code block when they're indented 4 or more) are
+  // more of its paragraph.
+  parseMarkdown: (token, h) => {
+    const [next, ...rest] = token.nestedTokens ?? [];
+    if (next && h.tokenizeInline && (next.type === "paragraph" || (next.type === "code" && next.codeBlockStyle === "indented"))) {
+      const text = `${token.text}\n${next.text}`.replace(/\n[ \t]+/g, "\n");
+      token = { ...token, text, tokens: h.tokenizeInline(text), nestedTokens: rest };
+    }
+    return TaskItem.config.parseMarkdown!(token, h);
+  },
+  renderMarkdown: (node, h) => renderItem(node, h, `- [${node.attrs?.checked ? "x" : " "}] `, h.indent(""), false),
+});
+
+/**
+ * Inline code holding backticks is written the CommonMark way: fenced with one more backtick than its longest run
+ * inside, and padded with a space if it starts or ends with one. Tiptap always writes a single backtick and sees only
+ * a placeholder when it renders a mark, so the extra fence goes into the text itself (code text isn't escaped).
+ */
+function fenceCode(node: Json & { marks?: { type: string }[] }) {
+  node.content?.forEach(fenceCode);
+  const text = node.text;
+  if (!text?.includes("`") || !node.marks?.some((m) => m.type === "code")) return;
+  const fence = "`".repeat(Math.max(...text.match(/`+/g)!.map((run) => run.length)));
+  const pad = /^`|`$/.test(text) ? " " : "";
+  node.text = fence + pad + text + pad + fence;
+}
+
 /** Only web and mail links, or paths in the app. Anything else (javascript:, data:) is refused. */
 export const allowedHref = (href: string) => {
   const url = href.replace(/[\u0000- ]/g, "");
@@ -91,6 +188,9 @@ export function extensions(extra: AnyExtension[] = []): AnyExtension[] {
   return [
     StarterKit.configure({
       underline: false, // no markdown for it
+      bulletList: false, // the patched lists below
+      orderedList: false,
+      listItem: false,
       link: {
         openOnClick: false,
         autolink: true,
@@ -104,8 +204,11 @@ export function extensions(extra: AnyExtension[] = []): AnyExtension[] {
     TableRow,
     TableHeader,
     TableCell,
+    LooseBulletList,
+    LooseOrderedList,
+    FaithfulListItem,
     TaskList,
-    TaskItem.configure({ nested: true }),
+    FaithfulTaskItem.configure({ nested: true }),
     SafePaste,
     ...extra,
   ];
@@ -116,6 +219,7 @@ export function toMarkdown(editor: Editor): string {
   const json = editor.getJSON();
   const blocks = json.content ?? [];
   while (blocks.length > 1 && blocks.at(-1)!.type === "paragraph" && !blocks.at(-1)!.content?.length) blocks.pop();
+  fenceCode(json);
   return editor.markdown!.serialize(json);
 }
 
@@ -127,7 +231,8 @@ export function roundtrip(markdown: string): string {
   return toMarkdown(headless);
 }
 
-// What a reader sees, rendered as the read view renders it: text, link targets, checkboxes and line breaks.
+// What a reader sees, rendered as the read view renders it: text, link targets, checkboxes, line breaks and
+// paragraphs (so a tight list can't turn loose).
 const reader = new Marked({ gfm: true, breaks: true, renderer: { html: ({ text }) => text.replace(/</g, "&lt;") } });
 const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'" };
 export function plainText(markdown: string): string {
@@ -136,6 +241,7 @@ export function plainText(markdown: string): string {
     .replace(/<img [^>]*>/g, (tag) => ` ${/src="([^"]*)"/.exec(tag)?.[1]} ${/alt="([^"]*)"/.exec(tag)?.[1]} `)
     .replace(/<input [^>]*>/g, (tag) => (/ checked/.test(tag) ? "[x]" : "[ ]"))
     .replace(/<br>/g, "⏎")
+    .replace(/<p>/g, "¶")
     .replace(/<[^>]+>/g, "")
     .replace(/&(amp|lt|gt|quot|#39);/g, (_, e: string) => ENTITIES[e]!)
     .replace(/\s+/g, "");

@@ -26,10 +26,9 @@ const corpus = readdirSync(dir).map((name) => ({ name, markdown: readFileSync(jo
 const mount = (markdown: string) =>
   new Editor({ element: document.createElement("div"), extensions: extensions(), content: markdown, contentType: "markdown", textDirection: "auto" });
 
-// What the guard sends to markdown source mode, and why: soft line breaks in task and ordered list items that
-// Tiptap joins or re-indents (19, 20, 22, 31–33); inline code after a code block in a list item, whose backticks
-// get escaped and compound on every save (21, 23, 4, the design doc); ``double backtick`` code (4).
-const REJECTED = ["DKT-19.md", "DKT-20.md", "DKT-21.md", "DKT-22.md", "DKT-23.md", "DKT-31.md", "DKT-32.md", "DKT-33.md", "DKT-4.md", "design-doc.md"];
+// What the guard sends to markdown source mode. None of the corpus since DKT-37 fixed list soft breaks, text after a
+// block in a list item, and ``double backtick`` code.
+const REJECTED: string[] = [];
 
 test("the guard admits the corpus except the known lossy cases", () => {
   expect(corpus.length).toBe(37);
@@ -78,10 +77,44 @@ test("pipes in table cells stay escaped, so no cell is lost", () => {
   expect(admits(table)).toBe(true);
 });
 
-test("the guard rejects what the editor would change: compounding backticks, images", () => {
-  const backticks = "- item:\n  ```sql\n  SELECT 1;\n  ```\n  Note `docket-ask` here.\n";
-  expect(roundtrip(backticks)).toContain("\\`docket-ask\\`"); // the bug the guard contains
-  expect(admits(backticks)).toBe(false);
+/** Loads and saves exactly as written, and the guard lets it in. */
+const exact = (markdown: string) => {
+  expect(roundtrip(markdown)).toBe(markdown);
+  expect(admits(markdown)).toBe(true);
+};
+
+test("soft line breaks in list items stay where they are", () => {
+  exact("- [ ] a task\n  that wraps\n- [x] done");
+  exact("- [ ] a task\n  - [ ] a subtask\n    that wraps");
+  exact("1. a step\n   that wraps\n2. next");
+  exact("9. nine\n   wraps\n10. ten\n    wraps too");
+  exact("- a point\n  that wraps\n  - a subpoint\n    that wraps");
+  expect(roundtrip("- [ ] a task\n      indented deeper")).toBe("- [ ] a task\n  indented deeper"); // not a code block
+  expect(roundtrip("- lazy\ncontinuation")).toBe("- lazy\n  continuation");
+});
+
+test("text after a block in a list item stays markdown: no escaped, compounding backticks", () => {
+  exact("- item:\n  ```sql\n  SELECT 1;\n  ```\n  Note `docket-ask` here.\n- next");
+  exact("1. item:\n   ```sh\n   ls\n   ```\n   Note `docket-ask` here.\n2. next");
+  exact("- [ ] item:\n  ```sh\n  ls\n  ```\n  Note `docket-ask` here.");
+  // A paragraph after a sublist needs a blank line, which makes the list loose (so it was already).
+  expect(roundtrip("- item\n  1. a\n  2. b\n\n  Note `x` here.\n- next")).toBe("- item\n\n  1. a\n  2. b\n\n  Note `x` here.\n\n- next");
+});
+
+test("inline code holding backticks gets a longer fence", () => {
+  exact("Use ``code with ` inside`` and `plain`.");
+  exact("A `` `quoted` `` span and ```` ``a``` ```` too.");
+});
+
+test("tight lists stay tight, loose lists stay loose", () => {
+  exact("- a\n- b\n\n1. a\n2. b");
+  exact("- a\n\n- b\n\n1. a\n\n2. b");
+  exact("- item:\n\n  ```sql\n  SELECT 1;\n  ```\n\n  Note.\n\n- next");
+  // Tiptap splits a list mixing tasks and bullets into lists that read as one loose list: the guard keeps it out.
+  expect(admits("- [ ] task\n- bullet")).toBe(false);
+});
+
+test("the guard rejects what the editor would change", () => {
   expect(admits("![chart](https://example.com/chart.png)")).toBe(false); // no image node: it would become its alt text
   expect(admits("")).toBe(true);
   expect(admits("Plain, **bold** and `code`. هذا نص عربي")).toBe(true);
