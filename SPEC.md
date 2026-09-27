@@ -135,7 +135,7 @@ Plus the Access routes above. Everything here acts in the request's workspace (s
 | PATCH / DELETE | /api/issues/:id/comments/:cid | `{ body }` | `Issue` (own comments only; a `:cid` not on that issue is 404) |
 | PUT / DELETE | /api/issues/:id/subscription | | `Issue`: follow or unfollow it (409 in the trash) |
 | GET | /api/labels | | `string[]` (distinct, sorted) |
-| GET | /api/notifications | `?unread=true` | `Inbox` `{ notifications, unread }`: yours in the request's workspace, newest first, at most 500; `unread` counts all your unread ones there |
+| GET | /api/notifications | `?unread=true` | `Inbox` `{ notifications, unread }`: yours in the request's workspace, newest first, at most 500; `unread` counts the issues and docs with unread ones there, one per inbox row |
 | PATCH | /api/notifications | `{ ids?: number[], read: boolean }` (no ids: all of yours here) | `Inbox` |
 | DELETE | /api/notifications | `?ids=1,2` or `?read=true` (all your read ones here); neither is 400 | `Inbox` |
 

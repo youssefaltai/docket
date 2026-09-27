@@ -120,8 +120,9 @@ test("marking and deleting: yours only, or 404", async () => {
   await comment(bob, issue.id, "two");
   const inbox = (await ana.api("GET", "/api/notifications")).body;
   const [newest, second] = inbox.notifications;
+  // unread counts rows (issues and docs), not notifications: one of Pile's three read leaves Pile unread.
   const read = await ana.api("PATCH", "/api/notifications", { ids: [newest.id], read: true });
-  expect([read.status, read.body.unread]).toEqual([200, inbox.unread - 1]);
+  expect([read.status, read.body.unread]).toEqual([200, inbox.unread]);
   expect(read.body.notifications[0].readAt).not.toBeNull();
   expect((await ana.api("GET", "/api/notifications?unread=true")).body.notifications.map((n: any) => n.id)).not.toContain(newest.id);
 
@@ -129,7 +130,7 @@ test("marking and deleting: yours only, or 404", async () => {
   expect((await bob.api("PATCH", "/api/notifications", { ids: [second.id], read: true })).status).toBe(404);
   expect((await bob.api("DELETE", `/api/notifications?ids=${second.id}`)).status).toBe(404);
   expect((await claude.api("PATCH", "/api/notifications", { ids: [newest.id, second.id], read: false })).status).toBe(404);
-  expect((await ana.api("GET", "/api/notifications")).body.unread).toBe(inbox.unread - 1);
+  expect((await ana.api("GET", "/api/notifications")).body.unread).toBe(inbox.unread);
 
   const deleted = await ana.api("DELETE", "/api/notifications?read=true");
   expect(deleted.status).toBe(200);
@@ -138,6 +139,12 @@ test("marking and deleting: yours only, or 404", async () => {
   expect((await ana.api("DELETE", `/api/notifications?ids=${second.id}`)).body.notifications.map((n: any) => n.id)).not.toContain(second.id);
   expect((await ana.api("DELETE", "/api/notifications")).status).toBe(400);
   expect((await ana.api("PATCH", "/api/notifications", { read: "yes" })).status).toBe(400);
+
+  // Reading the rest of Pile's (its assignment) takes Pile off the count.
+  const now = (await ana.api("GET", "/api/notifications")).body;
+  const pile = now.notifications.filter((n: any) => n.issue?.id === issue.id && !n.readAt).map((n: any) => n.id);
+  expect(pile.length).toBe(1);
+  expect((await ana.api("PATCH", "/api/notifications", { ids: pile, read: true })).body.unread).toBe(now.unread - 1);
 
   const all = await ana.api("PATCH", "/api/notifications", { read: true });
   expect(all.body.unread).toBe(0);
