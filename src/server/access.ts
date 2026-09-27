@@ -148,7 +148,7 @@ export function me(a: Actor): Me {
     )
     .all(a.id)
     .filter((w) => a.workspaces.has(w.key));
-  const credential =a.sessionId !== null ? "session" : a.chat ? "chat" : "key";
+  const credential = a.sessionId !== null ? "session" : a.chat ? "chat" : "key";
   return { user: { ...toUser(userById(a.id)), id: a.id }, workspaces, credential, chat: !!process.env.CHAT_URL };
 }
 
