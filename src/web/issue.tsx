@@ -166,6 +166,8 @@ export function IssuePage({ id }: { id: string }) {
     add: (body) => withFresh(() => api.comment(issue.id, body)),
     edit: (cid, body) => withFresh(() => api.editComment(issue.id, cid, body)),
     remove: (cid) => withFresh(() => api.deleteComment(issue.id, cid)),
+    reply: (parent, body) => withFresh(() => api.comment(issue.id, body, parent)),
+    resolve: (cid, resolved) => withFresh(() => api.resolveThread(issue.id, cid, resolved)),
   };
 
   // You can claim an open issue no other active member holds (a suspended member doesn't hold one),

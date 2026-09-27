@@ -444,6 +444,8 @@ export function DocPage({ slug }: { slug: string }) {
                           add: (body) => withFresh(() => api.commentDocument(doc.slug, body)),
                           edit: (cid, body) => withFresh(() => api.editDocumentComment(doc.slug, cid, body)),
                           remove: (cid) => withFresh(() => api.deleteDocumentComment(doc.slug, cid)),
+                          reply: (parent, body) => withFresh(() => api.commentDocument(doc.slug, body, parent)),
+                          resolve: (cid, resolved) => withFresh(() => api.resolveDocumentThread(doc.slug, cid, resolved)),
                         }}
                       />
                     )}

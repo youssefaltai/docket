@@ -128,8 +128,10 @@ const COMMENTS = {
 
 type CommentOwner = keyof typeof COMMENTS;
 
+/** Comments with their author and resolver as known in workspace `?1`; add a WHERE on `?2`. */
 const commentSelect = (owner: CommentOwner) =>
-  `SELECT c.id, c.body, c.created_at, c.edited_at, ${userCols("u", "a")} FROM ${COMMENTS[owner].table} c ${userJoin("u", "c.author_id", "?")}`;
+  `SELECT c.id, c.body, c.created_at, c.edited_at, c.parent_id, c.resolved_at, ${userCols("u", "a")}, ${userCols("r", "r")}
+   FROM ${COMMENTS[owner].table} c ${userJoin("u", "c.author_id", "?1")} ${userJoin("r", "c.resolved_by_id", "?1")}`;
 
 const toComment = (r: Record<string, unknown>): Comment => ({
   id: r.id as number,
@@ -137,14 +139,33 @@ const toComment = (r: Record<string, unknown>): Comment => ({
   body: r.body as string,
   createdAt: r.created_at as string,
   editedAt: r.edited_at as string | null,
+  parent: r.parent_id as number | null,
+  resolvedAt: r.resolved_at as string | null,
+  resolvedBy: ref(r, "r"),
 });
 
-/** An issue's or doc's comments; authors as they're known in `workspace`, the owner's. */
+/** An issue's or doc's comments, one flat list by id (replies name their root); people as they're known in `workspace`, the owner's. */
 function listComments(owner: CommentOwner, ownerId: number, workspace: string): Comment[] {
   return db
-    .query<Record<string, unknown>, [string, number]>(`${commentSelect(owner)} WHERE c.${COMMENTS[owner].column} = ? ORDER BY c.id`)
+    .query<Record<string, unknown>, [string, number]>(`${commentSelect(owner)} WHERE c.${COMMENTS[owner].column} = ?2 ORDER BY c.id`)
     .all(workspace, ownerId)
     .map(toComment);
+}
+
+/** A comment on this owner, by id (404 otherwise, as for any id elsewhere): its author and thread. */
+function commentRow(owner: CommentOwner, ownerId: number, workspace: string, commentId: unknown) {
+  const { table, column } = COMMENTS[owner];
+  const id = Number(commentId);
+  const row = Number.isInteger(id)
+    ? db
+        .query<{ id: number; author_id: number; username: string | null; parent_id: number | null; resolved_at: string | null }, [string, number, number]>(
+          `SELECT c.id, c.author_id, m.username, c.parent_id, c.resolved_at FROM ${table} c
+           LEFT JOIN workspace_members m ON m.user_id = c.author_id AND m.workspace = ? WHERE c.id = ? AND c.${column} = ?`,
+        )
+        .get(workspace, id, ownerId)
+    : null;
+  if (!row) throw new AppError(`Comment ${commentId} not found`, 404);
+  return row;
 }
 
 /** An issue's identifier or a doc's slug, by row id. */
@@ -167,7 +188,7 @@ function commentEvent(
   updatedFrom?: Record<string, unknown>,
 ) {
   const on = ownerRef(owner, ownerId);
-  const comment = toComment(db.query<Record<string, unknown>, [string, number]>(`${commentSelect(owner)} WHERE c.id = ?`).get(workspace, id)!);
+  const comment = toComment(db.query<Record<string, unknown>, [string, number]>(`${commentSelect(owner)} WHERE c.id = ?2`).get(workspace, id)!);
   const data = { ...comment, issue: owner === "issue" ? on : null, document: owner === "document" ? on : null };
   enqueue({ workspace, type: "Comment", action, entity: String(id), actorId: a.id, time, data: () => data, updatedFrom });
 }
@@ -178,11 +199,27 @@ const targetOf = (owner: CommentOwner, ownerId: number): inbox.Target => (owner 
 const commentMentions = (a: Actor, owner: CommentOwner, ownerId: number, workspace: string, id: number, body: string, time: string) =>
   saveMentions(a, workspace, `${COMMENTS[owner].source}:${id}`, targetOf(owner, ownerId), body, time, { commentId: id });
 
-/** Adds a comment: its author follows the issue or doc, and its other subscribers hear of it (unless it mentions them). */
-function insertComment(a: Actor, owner: CommentOwner, ownerId: number, workspace: string, body: unknown, time: string): number {
+/**
+ * Adds a comment, or with `parent` a reply in that comment's thread (a reply to a reply joins its root's thread),
+ * which reopens the thread if it was resolved. Its author follows the issue or doc, and its other subscribers
+ * hear of it (unless it mentions them).
+ */
+function insertComment(a: Actor, owner: CommentOwner, ownerId: number, workspace: string, body: unknown, time: string, parent?: unknown): number {
   const { table, column } = COMMENTS[owner];
   const text = requireText(body, "body");
-  const id = Number(db.query(`INSERT INTO ${table} (${column}, author_id, body, created_at) VALUES (?, ?, ?, ?)`).run(ownerId, a.id, text, time).lastInsertRowid);
+  let root: number | null = null;
+  if (parent != null) {
+    const p = commentRow(owner, ownerId, workspace, parent);
+    root = p.parent_id ?? p.id;
+    const was = db.query<{ resolved_at: string | null }, [number]>(`SELECT resolved_at FROM ${table} WHERE id = ?`).get(root)!.resolved_at;
+    if (was) {
+      db.query(`UPDATE ${table} SET resolved_at = NULL, resolved_by_id = NULL WHERE id = ?`).run(root);
+      commentEvent(a, owner, ownerId, workspace, root, "update", time, { resolvedAt: was });
+    }
+  }
+  const id = Number(
+    db.query(`INSERT INTO ${table} (${column}, author_id, body, created_at, parent_id) VALUES (?, ?, ?, ?, ?)`).run(ownerId, a.id, text, time, root).lastInsertRowid,
+  );
   commentEvent(a, owner, ownerId, workspace, id, "create", time); // before the notifications it causes
   const mentioned = commentMentions(a, owner, ownerId, workspace, id, text, time);
   const target = targetOf(owner, ownerId);
@@ -193,24 +230,23 @@ function insertComment(a: Actor, owner: CommentOwner, ownerId: number, workspace
 }
 
 /** The id of a comment on this owner (in `workspace`) that the actor wrote; others' comments are 403. */
-function ownComment(a: Actor, owner: CommentOwner, ownerId: number, workspace: string, commentId: unknown): number {
-  const { table, column } = COMMENTS[owner];
-  const id = Number(commentId);
-  const row = Number.isInteger(id)
-    ? db
-        .query<{ author_id: number; username: string | null }, [string, number, number]>(
-          `SELECT c.author_id, m.username FROM ${table} c
-           LEFT JOIN workspace_members m ON m.user_id = c.author_id AND m.workspace = ? WHERE c.id = ? AND c.${column} = ?`,
-        )
-        .get(workspace, id, ownerId)
-    : null;
-  if (!row) throw new AppError(`Comment ${commentId} not found`, 404);
+function ownComment(a: Actor, owner: CommentOwner, ownerId: number, workspace: string, commentId: unknown) {
+  const row = commentRow(owner, ownerId, workspace, commentId);
   if (row.author_id !== a.id) throw new AppError(`Only @${row.username} can change this comment`, 403);
-  return id;
+  return row;
+}
+
+/** Resolves a thread, or reopens it: anyone who can comment can, from its first comment. Idempotent. */
+function resolveThread(a: Actor, owner: CommentOwner, ownerId: number, workspace: string, commentId: unknown, resolved: boolean, time: string) {
+  const row = commentRow(owner, ownerId, workspace, commentId);
+  if (row.parent_id !== null) throw new AppError("Resolve a thread from its first comment");
+  if (!!row.resolved_at === resolved) return;
+  db.query(`UPDATE ${COMMENTS[owner].table} SET resolved_at = ?, resolved_by_id = ? WHERE id = ?`).run(resolved ? time : null, resolved ? a.id : null, row.id);
+  commentEvent(a, owner, ownerId, workspace, row.id, "update", time, { resolvedAt: row.resolved_at });
 }
 
 function updateComment(a: Actor, owner: CommentOwner, ownerId: number, workspace: string, commentId: unknown, body: unknown, time: string) {
-  const id = ownComment(a, owner, ownerId, workspace, commentId);
+  const { id } = ownComment(a, owner, ownerId, workspace, commentId);
   const text = requireText(body, "body");
   const { table } = COMMENTS[owner];
   const before = db.query<{ body: string; edited_at: string | null }, [number]>(`SELECT body, edited_at FROM ${table} WHERE id = ?`).get(id)!;
@@ -220,9 +256,12 @@ function updateComment(a: Actor, owner: CommentOwner, ownerId: number, workspace
 }
 
 function deleteComment(a: Actor, owner: CommentOwner, ownerId: number, workspace: string, commentId: unknown, time: string) {
-  const id = ownComment(a, owner, ownerId, workspace, commentId);
+  const { id } = ownComment(a, owner, ownerId, workspace, commentId);
+  const { table } = COMMENTS[owner];
+  // Nobody's replies go with it.
+  if (db.query(`SELECT 1 FROM ${table} WHERE parent_id = ?`).get(id)) throw new AppError("This comment has replies; edit it instead", 409);
   commentEvent(a, owner, ownerId, workspace, id, "remove", time);
-  db.query(`DELETE FROM ${COMMENTS[owner].table} WHERE id = ?`).run(id);
+  db.query(`DELETE FROM ${table} WHERE id = ?`).run(id);
   db.query("DELETE FROM mentions WHERE source = ?").run(`${COMMENTS[owner].source}:${id}`);
   inbox.commentDeleted(targetOf(owner, ownerId), id);
 }
@@ -1076,14 +1115,17 @@ function changeIssueComments(a: Actor, identifier: string, change: (id: number, 
   return issue;
 }
 
-export const addComment = (a: Actor, identifier: string, body: unknown) =>
-  changeIssueComments(a, identifier, (id, time, workspace) => insertComment(a, "issue", id, workspace, body, time));
+export const addComment = (a: Actor, identifier: string, body: unknown, parent?: unknown) =>
+  changeIssueComments(a, identifier, (id, time, workspace) => insertComment(a, "issue", id, workspace, body, time, parent));
 
 export const updateIssueComment = (a: Actor, identifier: string, commentId: unknown, body: unknown) =>
   changeIssueComments(a, identifier, (id, time, workspace) => updateComment(a, "issue", id, workspace, commentId, body, time));
 
 export const deleteIssueComment = (a: Actor, identifier: string, commentId: unknown) =>
   changeIssueComments(a, identifier, (id, time, workspace) => deleteComment(a, "issue", id, workspace, commentId, time));
+
+export const resolveIssueThread = (a: Actor, identifier: string, commentId: unknown, resolved: boolean) =>
+  changeIssueComments(a, identifier, (id, time, workspace) => resolveThread(a, "issue", id, workspace, commentId, resolved, time));
 
 /** Follows or unfollows an issue; it sticks until you create, claim, comment on or are assigned, delegated or mentioned in it. */
 export function subscribeIssue(a: Actor, identifier: string, on: boolean): Issue {
@@ -1360,14 +1402,17 @@ function changeDocumentComments(a: Actor, slug: string, change: (id: number, tim
   return getDocument(a, row.slug);
 }
 
-export const addDocumentComment = (a: Actor, slug: string, body: unknown) =>
-  changeDocumentComments(a, slug, (id, time, workspace) => insertComment(a, "document", id, workspace, body, time));
+export const addDocumentComment = (a: Actor, slug: string, body: unknown, parent?: unknown) =>
+  changeDocumentComments(a, slug, (id, time, workspace) => insertComment(a, "document", id, workspace, body, time, parent));
 
 export const updateDocumentComment = (a: Actor, slug: string, commentId: unknown, body: unknown) =>
   changeDocumentComments(a, slug, (id, time, workspace) => updateComment(a, "document", id, workspace, commentId, body, time));
 
 export const deleteDocumentComment = (a: Actor, slug: string, commentId: unknown) =>
   changeDocumentComments(a, slug, (id, time, workspace) => deleteComment(a, "document", id, workspace, commentId, time));
+
+export const resolveDocumentThread = (a: Actor, slug: string, commentId: unknown, resolved: boolean) =>
+  changeDocumentComments(a, slug, (id, time, workspace) => resolveThread(a, "document", id, workspace, commentId, resolved, time));
 
 /** Follows or unfollows a doc (see subscribeIssue). */
 export function subscribeDocument(a: Actor, slug: string, on: boolean): Document {

@@ -1,9 +1,9 @@
-// A comment thread with composer, shared by issues and docs; an issue's history interleaves with it.
+// Comment threads with composer, shared by issues and docs; an issue's history interleaves with them.
 import { Fragment, useState, type ReactNode } from "react";
 import { PRIORITY_LABELS, STATUS_LABELS, type Activity, type Comment, type Priority, type Status, type UserRef } from "../shared/types";
 import { Avatar, isMe, Kbd, Section } from "./components";
 import { RichEditor } from "./editor";
-import { PencilIcon, StatusIcon, TrashIcon } from "./icons";
+import { CheckIcon, PencilIcon, ReplyIcon, StatusIcon, TrashIcon } from "./icons";
 import { Link } from "./routing";
 import { useRun } from "./hooks";
 import { Markdown } from "./markdown";
@@ -14,9 +14,11 @@ export interface CommentActions {
   add: (body: string) => Promise<void>;
   edit: (id: number, body: string) => Promise<void>;
   remove: (id: number) => Promise<void>;
+  reply: (parent: number, body: string) => Promise<void>;
+  resolve: (id: number, resolved: boolean) => Promise<void>;
 }
 
-/** A comment thread with composer, shared by issues and docs; `activity` (an issue's history) interleaves by time. */
+/** Comment threads with composer, shared by issues and docs; `activity` (an issue's history) interleaves by the roots' times. */
 export function Comments({
   title = "Comments",
   comments,
@@ -28,11 +30,20 @@ export function Comments({
   activity?: Activity[];
   actions: CommentActions;
 }) {
+  const replies = new Map<number, Comment[]>();
+  for (const c of comments) if (c.parent !== null) replies.set(c.parent, [...(replies.get(c.parent) ?? []), c]);
   return (
     <Section title={title}>
       <ol className="timeline">
-        {timeline(comments, activity).map((item) =>
-          "body" in item ? <CommentItem key={`c${item.id}`} comment={item} actions={actions} /> : <Run key={item[0]!.rows[0]!.id} lines={item} />,
+        {timeline(
+          comments.filter((c) => c.parent === null),
+          activity,
+        ).map((item) =>
+          "body" in item ? (
+            <Thread key={`c${item.id}`} root={item} replies={replies.get(item.id) ?? []} actions={actions} />
+          ) : (
+            <Run key={item[0]!.rows[0]!.id} lines={item} />
+          ),
         )}
       </ol>
       <Composer onSubmit={actions.add} />
@@ -187,7 +198,87 @@ function describe({ kind, from, to }: Activity, actor: UserRef): ReactNode {
   }
 }
 
-function CommentItem({ comment: c, actions }: { comment: Comment; actions: CommentActions }) {
+/** A root comment and its replies (one level), with a reply composer at the end. A resolved thread collapses to one line. */
+function Thread({ root, replies, actions }: { root: Comment; replies: Comment[]; actions: CommentActions }) {
+  const [shown, setShown] = useState(false);
+  const [replyTo, setReplyTo] = useState<number | null>(null);
+  const n = replies.length;
+  const resolve = (resolved: boolean) => {
+    setShown(false);
+    actions.resolve(root.id, resolved).catch(errorToast);
+  };
+  const item = (c: Comment) => (
+    <CommentItem
+      key={c.id}
+      comment={c}
+      actions={actions}
+      onReply={() => setReplyTo(c.id)}
+      onResolve={c === root && !root.resolvedAt ? () => resolve(true) : undefined}
+      deletable={c !== root || n === 0}
+    />
+  );
+  return (
+    <li className="comment">
+      {root.resolvedAt && (
+        <div className="thread-resolved">
+          <CheckIcon className="thread-check" />
+          <span>
+            Resolved by{" "}
+            <b className="event-name" dir="auto">
+              {root.resolvedBy?.name ?? "someone"}
+            </b>
+            {n > 0 && ` · ${n} ${n === 1 ? "reply" : "replies"}`}
+          </span>
+          <span className="thread-toggles">
+            {shown && (
+              <button className="event-more" onClick={() => resolve(false)}>
+                Reopen
+              </button>
+            )}
+            <button className="event-more" onClick={() => setShown(!shown)} aria-expanded={shown}>
+              {shown ? "Hide" : "Show"}
+            </button>
+          </span>
+        </div>
+      )}
+      {(!root.resolvedAt || shown) && (
+        <>
+          {item(root)}
+          {(n > 0 || replyTo !== null) && (
+            <div className="replies">
+              {replies.map(item)}
+              {replyTo !== null && (
+                <Composer
+                  action="Reply"
+                  placeholder="Reply…"
+                  onSubmit={async (body) => {
+                    await actions.reply(replyTo, body);
+                    setReplyTo(null);
+                  }}
+                  onCancel={() => setReplyTo(null)}
+                />
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </li>
+  );
+}
+
+function CommentItem({
+  comment: c,
+  actions,
+  onReply,
+  onResolve,
+  deletable,
+}: {
+  comment: Comment;
+  actions: CommentActions;
+  onReply: () => void;
+  onResolve?: () => void;
+  deletable: boolean;
+}) {
   const [editing, setEditing] = useState(false);
   const save = async (body: string) => {
     if (body !== c.body.trim()) await actions.edit(c.id, body);
@@ -197,7 +288,7 @@ function CommentItem({ comment: c, actions }: { comment: Comment; actions: Comme
     if (await ask("Delete this comment? This can’t be undone.", "Delete")) actions.remove(c.id).catch(errorToast);
   };
   return (
-    <li className="comment">
+    <div className="comment-item">
       <div className="comment-head">
         <Avatar user={c.author} />
         <span className="comment-author" dir="auto" title={`@${c.author.username}`}>
@@ -209,14 +300,28 @@ function CommentItem({ comment: c, actions }: { comment: Comment; actions: Comme
             edited
           </span>
         )}
-        {isMe(c.author) && !editing && (
+        {!editing && (
           <span className="comment-actions">
-            <button className="icon-btn xs" onClick={() => setEditing(true)} aria-label="Edit comment" title="Edit">
-              <PencilIcon />
+            <button className="icon-btn xs" onClick={onReply} aria-label="Reply to comment" title="Reply">
+              <ReplyIcon />
             </button>
-            <button className="icon-btn xs" onClick={remove} aria-label="Delete comment" title="Delete">
-              <TrashIcon />
-            </button>
+            {onResolve && (
+              <button className="icon-btn xs" onClick={onResolve} aria-label="Resolve thread" title="Resolve thread">
+                <CheckIcon />
+              </button>
+            )}
+            {isMe(c.author) && (
+              <>
+                <button className="icon-btn xs" onClick={() => setEditing(true)} aria-label="Edit comment" title="Edit">
+                  <PencilIcon />
+                </button>
+                {deletable && (
+                  <button className="icon-btn xs" onClick={remove} aria-label="Delete comment" title="Delete">
+                    <TrashIcon />
+                  </button>
+                )}
+              </>
+            )}
           </span>
         )}
       </div>
@@ -225,20 +330,22 @@ function CommentItem({ comment: c, actions }: { comment: Comment; actions: Comme
       ) : (
         <Markdown text={c.body} />
       )}
-    </li>
+    </div>
   );
 }
 
-/** Writes a new comment, or edits one when given `initial` and `onCancel`. */
+/** Writes a new comment or reply, or edits one when given `initial`; with `onCancel` it opens at once (Esc cancels). */
 function Composer({
   onSubmit,
   initial = "",
   action = "Comment",
+  placeholder = "Leave a comment…",
   onCancel,
 }: {
   onSubmit: (body: string) => Promise<void>;
   initial?: string;
   action?: string;
+  placeholder?: string;
   onCancel?: () => void;
 }) {
   const [body, setBody] = useState(initial);
@@ -255,7 +362,7 @@ function Composer({
   if (!open)
     return (
       <button className="composer composer-idle" onClick={() => setOpen(true)} onFocus={() => setOpen(true)}>
-        Leave a comment…
+        {placeholder}
       </button>
     );
   return (
@@ -263,7 +370,7 @@ function Composer({
       <RichEditor
         className="composer-input"
         label="Comment"
-        placeholder="Leave a comment…"
+        placeholder={placeholder}
         value={body}
         onChange={setBody}
         autoFocus

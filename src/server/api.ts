@@ -203,13 +203,20 @@ export const apiRoutes = {
     POST: handle<"/api/issues/:id/claim">((req) => tracker.claimIssue(actorOf(req), req.params.id)),
   },
   "/api/issues/:id/comments": {
-    POST: handle<"/api/issues/:id/comments">(async (req) => tracker.addComment(actorOf(req), req.params.id, (await body(req)).body), 201),
+    POST: handle<"/api/issues/:id/comments">(async (req) => {
+      const { body: text, parent } = await body(req);
+      return tracker.addComment(actorOf(req), req.params.id, text, parent);
+    }, 201),
   },
   "/api/issues/:id/comments/:cid": {
     PATCH: handle<"/api/issues/:id/comments/:cid">(async (req) =>
       tracker.updateIssueComment(actorOf(req), req.params.id, req.params.cid, (await patch(req, "a comment", ["body"])).body),
     ),
     DELETE: handle<"/api/issues/:id/comments/:cid">((req) => tracker.deleteIssueComment(actorOf(req), req.params.id, req.params.cid)),
+  },
+  "/api/issues/:id/comments/:cid/resolved": {
+    PUT: handle<"/api/issues/:id/comments/:cid/resolved">((req) => tracker.resolveIssueThread(actorOf(req), req.params.id, req.params.cid, true)),
+    DELETE: handle<"/api/issues/:id/comments/:cid/resolved">((req) => tracker.resolveIssueThread(actorOf(req), req.params.id, req.params.cid, false)),
   },
   "/api/issues/:id/subscription": {
     PUT: handle<"/api/issues/:id/subscription">((req) => tracker.subscribeIssue(actorOf(req), req.params.id, true)),
@@ -254,10 +261,10 @@ export const apiRoutes = {
     ),
   },
   "/api/documents/:slug/comments": {
-    POST: handle<"/api/documents/:slug/comments">(
-      async (req) => tracker.addDocumentComment(actorOf(req), req.params.slug, (await body(req)).body),
-      201,
-    ),
+    POST: handle<"/api/documents/:slug/comments">(async (req) => {
+      const { body: text, parent } = await body(req);
+      return tracker.addDocumentComment(actorOf(req), req.params.slug, text, parent);
+    }, 201),
   },
   "/api/documents/:slug/comments/:cid": {
     PATCH: handle<"/api/documents/:slug/comments/:cid">(async (req) =>
@@ -265,6 +272,14 @@ export const apiRoutes = {
     ),
     DELETE: handle<"/api/documents/:slug/comments/:cid">((req) =>
       tracker.deleteDocumentComment(actorOf(req), req.params.slug, req.params.cid),
+    ),
+  },
+  "/api/documents/:slug/comments/:cid/resolved": {
+    PUT: handle<"/api/documents/:slug/comments/:cid/resolved">((req) =>
+      tracker.resolveDocumentThread(actorOf(req), req.params.slug, req.params.cid, true),
+    ),
+    DELETE: handle<"/api/documents/:slug/comments/:cid/resolved">((req) =>
+      tracker.resolveDocumentThread(actorOf(req), req.params.slug, req.params.cid, false),
     ),
   },
   "/api/documents/:slug/subscription": {

@@ -58,14 +58,14 @@ test("tools/list shows each caller only what it can use", async () => {
   const ro = s.with({ token: (await ana.api("POST", "/api/api-keys", { name: "ro", scope: "read" })).body.token });
   const reads = ["get_document", "get_issue", "list_documents", "list_issues", "list_labels", "list_members", "list_notifications", "list_teams"];
   const writes = ["claim_issue", "comment_document", "comment_issue", "create_document", "create_issue"];
-  writes.push("delete_comment", "delete_document", "mark_notifications_read", "subscribe", "update_comment", "update_document", "update_issue");
+  writes.push("delete_comment", "delete_document", "mark_notifications_read", "resolve_thread", "subscribe", "update_comment", "update_document", "update_issue");
   const agent = [...reads, ...writes].sort();
   const member = [...agent, "create_team", "update_team"].sort();
   expect(await ro.tools()).toEqual(reads);
   expect(await claude.tools()).toEqual(agent);
   expect(await ana.tools()).toEqual(member);
   expect(await s.admin.tools()).toEqual([...member, "update_workspace"].sort());
-  expect([reads.length, agent.length, member.length]).toEqual([8, 20, 22]);
+  expect([reads.length, agent.length, member.length]).toEqual([8, 21, 23]);
 
   // A hidden tool can't be called either, and nothing changes.
   await expect(claude.tool("create_team", { key: "HID", name: "Hidden" })).rejects.toThrow(/not found/);

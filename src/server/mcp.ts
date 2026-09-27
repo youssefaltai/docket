@@ -74,6 +74,14 @@ const docContent = z
 const title = z.string().describe("Short, imperative title");
 const description = z.string().describe(`Markdown description. ${MENTION}`);
 const body = z.string().describe(`Markdown. ${MENTION}`);
+const parent = z
+  .number()
+  .int()
+  .optional()
+  .describe(
+    "Reply in the thread of comment #N (ids are shown in get_issue/get_document). Reply to the comment you're answering rather than starting a new one; replying reopens a resolved thread.",
+  );
+const THREADS = "Comments are threaded: top-level comments start threads, replies go under them.";
 
 const at = (user: UserRef) => `@${user.username}`;
 
@@ -181,9 +189,19 @@ function historySection(activity: Activity[]): string {
   return `## History\n${cut > 0 ? `(${cut} earlier changes)\n` : ""}${shown.join("\n")}`;
 }
 
+/** Threads in order: each root, then its replies (`↳`); a resolved thread is its root's header only (bodies are in structuredContent). */
 function commentsSection(comments: Comment[]): string {
   const header = (c: Comment) => [`**${at(c.author)}**`, `#${c.id}`, c.createdAt, c.editedAt && "edited"].filter(Boolean).join(" · ");
-  return `## Comments\n${comments.map((c) => `${header(c)}\n${c.body}`).join("\n\n")}`;
+  const threads = comments
+    .filter((c) => c.parent === null)
+    .map((root) => {
+      const replies = comments.filter((c) => c.parent === root.id);
+      if (root.resolvedAt) {
+        return `${header(root)} · resolved by ${at(root.resolvedBy!)} · ${replies.length} ${replies.length === 1 ? "reply" : "replies"}`;
+      }
+      return [root, ...replies].map((c) => `${c.parent === null ? "" : "↳ "}${header(c)}\n${c.body}`).join("\n\n");
+    });
+  return `## Comments\n${threads.join("\n\n")}`;
 }
 
 /** Routes a comment tool to its issue or its document; exactly one must be given. */
@@ -502,12 +520,12 @@ function createServer(a: Actor, origin: string): McpServer {
     "comment_issue",
     {
       description:
-        "Add a markdown comment to an issue, as you. Use it for progress notes, findings, decisions, and a summary of what you did when finishing (changes made, links). Comments bump the issue's updated time.",
-      inputSchema: { id: identifier, body },
+        `Add a markdown comment to an issue, as you. Use it for progress notes, findings, decisions, and a summary of what you did when finishing (changes made, links). ${THREADS} Comments bump the issue's updated time.`,
+      inputSchema: { id: identifier, body, parent },
     },
-    writes(({ id, body }) => {
-      const issue = tracker.addComment(a, id, body);
-      return result(`Commented on ${issue.id}`, { issue });
+    writes(({ id, body, parent }) => {
+      const issue = tracker.addComment(a, id, body, parent);
+      return result(`${parent === undefined ? "Commented on" : `Replied to #${parent} on`} ${issue.id}`, { issue });
     }),
   );
 
@@ -597,12 +615,12 @@ function createServer(a: Actor, origin: string): McpServer {
     "comment_document",
     {
       description:
-        "Add a markdown comment to a document, as you, e.g. review notes, questions, or a summary of what you changed. Comments don't change the content.",
-      inputSchema: { slug, body },
+        `Add a markdown comment to a document, as you, e.g. review notes, questions, or a summary of what you changed. ${THREADS} Comments don't change the content.`,
+      inputSchema: { slug, body, parent },
     },
-    writes(({ slug, body }) => {
-      const document = tracker.addDocumentComment(a, slug, body);
-      return result(`Commented on document ${document.slug}`, docMeta(document));
+    writes(({ slug, body, parent }) => {
+      const document = tracker.addDocumentComment(a, slug, body, parent);
+      return result(`${parent === undefined ? "Commented on" : `Replied to #${parent} on`} document ${document.slug}`, docMeta(document));
     }),
   );
 
@@ -654,6 +672,34 @@ function createServer(a: Actor, origin: string): McpServer {
         },
       ),
     ),
+  );
+
+  register(
+    "resolve_thread",
+    {
+      description:
+        "Mark a comment thread resolved (the question is answered or the decision made), or reopen it with resolved: false. Anyone can. Pass the thread's first comment; a resolved thread shows collapsed, and a new reply reopens it.",
+      inputSchema: {
+        issue: commentTarget.issue,
+        document: commentTarget.document,
+        comment: z.number().int().describe("The thread's first comment id, shown as #12 in get_issue / get_document"),
+        resolved: z.boolean().optional().describe("Default true; false reopens it"),
+      },
+    },
+    writes(({ comment, resolved = true, ...target }) => {
+      const done = `${resolved ? "Resolved" : "Reopened"} thread #${comment} on`;
+      return commentOn(
+        target,
+        (id) => {
+          const issue = tracker.resolveIssueThread(a, id, comment, resolved);
+          return result(`${done} ${issue.id}`, { issue });
+        },
+        (slug) => {
+          const document = tracker.resolveDocumentThread(a, slug, comment, resolved);
+          return result(`${done} document ${document.slug}`, docMeta(document));
+        },
+      );
+    }),
   );
 
   register(

@@ -150,11 +150,13 @@ export const api = {
   /** Moves it to the trash; `restoreIssue` brings it back (for 30 days). */
   deleteIssue: (id: string) => request<Issue>("DELETE", `/api/issues/${enc(id)}`),
   restoreIssue: (id: string) => request<Issue>("POST", `/api/issues/${enc(id)}/restore`),
-  comment: (id: string, body: string) => request<Issue>("POST", `/api/issues/${enc(id)}/comments`, { body }),
+  comment: (id: string, body: string, parent?: number) => request<Issue>("POST", `/api/issues/${enc(id)}/comments`, { body, parent }),
   editComment: (id: string, cid: number, body: string) =>
     request<Issue>("PATCH", `/api/issues/${enc(id)}/comments/${cid}`, { body }),
   deleteComment: (id: string, cid: number) =>
     request<Issue>("DELETE", `/api/issues/${enc(id)}/comments/${cid}`),
+  resolveThread: (id: string, cid: number, resolved: boolean) =>
+    request<Issue>(resolved ? "PUT" : "DELETE", `/api/issues/${enc(id)}/comments/${cid}/resolved`),
   subscribeIssue: (id: string, on: boolean) => request<Issue>(on ? "PUT" : "DELETE", `/api/issues/${enc(id)}/subscription`),
 
   labels: () => request<string[]>("GET", "/api/labels"),
@@ -171,12 +173,14 @@ export const api = {
   deleteDocument: (slug: string) => request<Document>("DELETE", `/api/documents/${enc(slug)}`),
   restoreDocument: (slug: string) => request<Document>("POST", `/api/documents/${enc(slug)}/restore`),
   trash: (team: string) => request<Trash>("GET", `/api/teams/${enc(team)}/trash`),
-  commentDocument: (slug: string, body: string) =>
-    request<Document>("POST", `/api/documents/${enc(slug)}/comments`, { body }),
+  commentDocument: (slug: string, body: string, parent?: number) =>
+    request<Document>("POST", `/api/documents/${enc(slug)}/comments`, { body, parent }),
   editDocumentComment: (slug: string, cid: number, body: string) =>
     request<Document>("PATCH", `/api/documents/${enc(slug)}/comments/${cid}`, { body }),
   deleteDocumentComment: (slug: string, cid: number) =>
     request<Document>("DELETE", `/api/documents/${enc(slug)}/comments/${cid}`),
+  resolveDocumentThread: (slug: string, cid: number, resolved: boolean) =>
+    request<Document>(resolved ? "PUT" : "DELETE", `/api/documents/${enc(slug)}/comments/${cid}/resolved`),
   versions: (slug: string) => request<DocumentVersionSummary[]>("GET", `/api/documents/${enc(slug)}/versions`),
   version: (slug: string, id: number) => request<DocumentVersion>("GET", `/api/documents/${enc(slug)}/versions/${id}`),
   subscribeDocument: (slug: string, on: boolean) => request<Document>(on ? "PUT" : "DELETE", `/api/documents/${enc(slug)}/subscription`),
