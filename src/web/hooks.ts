@@ -94,6 +94,17 @@ export function useRun() {
   return { busy, run };
 }
 
+/** j/k and arrows move focus between rows or cards (`[data-nav]`); false if there are none. */
+export function moveFocus(delta: number): boolean {
+  const items = [...document.querySelectorAll<HTMLElement>("[data-nav]")];
+  if (!items.length) return false;
+  const i = items.indexOf(document.activeElement as HTMLElement);
+  const next = i < 0 ? items[delta > 0 ? 0 : items.length - 1] : items[Math.max(0, Math.min(items.length - 1, i + delta))];
+  next?.focus();
+  next?.scrollIntoView({ block: "nearest" });
+  return true;
+}
+
 export const isEditable = (t: EventTarget | null) =>
   t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
 

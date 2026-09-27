@@ -238,8 +238,8 @@ export function useMembers(kind: UserKind): UserRef[] {
 }
 const toggle = (xs: string[], x: string) => (xs.includes(x) ? xs.filter((y) => y !== x) : [...xs, x]);
 
-const STATUS_OPTIONS: Option[] = STATUSES.map((s) => ({ value: s, label: STATUS_LABELS[s], icon: <StatusIcon status={s} /> }));
-const PRIORITY_OPTIONS: Option[] = PRIORITIES.map((p) => ({
+export const STATUS_OPTIONS: Option[] = STATUSES.map((s) => ({ value: s, label: STATUS_LABELS[s], icon: <StatusIcon status={s} /> }));
+export const PRIORITY_OPTIONS: Option[] = PRIORITIES.map((p) => ({
   value: String(p),
   label: PRIORITY_LABELS[p],
   icon: <PriorityIcon priority={p} />,

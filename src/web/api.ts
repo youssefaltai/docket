@@ -1,6 +1,8 @@
 // Typed wrappers for the REST API and the /ws event stream (see SPEC.md).
 import type {
   ApiError,
+  BulkIssuePatch,
+  BulkIssueResult,
   Document,
   DocumentFilter,
   DocumentInput,
@@ -150,6 +152,9 @@ export const api = {
   /** Moves it to the trash; `restoreIssue` brings it back (for 30 days). */
   deleteIssue: (id: string) => request<Issue>("DELETE", `/api/issues/${enc(id)}`),
   restoreIssue: (id: string) => request<Issue>("POST", `/api/issues/${enc(id)}/restore`),
+  /** One change for many issues (up to 100), each applied on its own: see `BulkIssueResult`. */
+  bulkIssues: (ids: string[], patch: BulkIssuePatch) =>
+    request<{ results: BulkIssueResult[] }>("POST", "/api/issues/bulk", { ids, patch }).then((r) => r.results),
   comment: (id: string, body: string, parent?: number) => request<Issue>("POST", `/api/issues/${enc(id)}/comments`, { body, parent }),
   editComment: (id: string, cid: number, body: string) =>
     request<Issue>("PATCH", `/api/issues/${enc(id)}/comments/${cid}`, { body }),

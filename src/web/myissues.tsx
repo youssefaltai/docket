@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import type { IssueFilter } from "../shared/types";
 import { api, store } from "./api";
+import { useBulk } from "./bulk";
 import { Board, IssueList, useListShortcuts } from "./issues";
 import { MY_TABS, type MyTab } from "./routing";
 import {
@@ -59,6 +60,7 @@ export function MyIssuesView({ tab }: { tab: MyTab }) {
   const shown = tab === "delegated" ? issues?.filter((i) => i.delegate) : issues;
 
   useListShortcuts(setIssues, invalidate, reload);
+  const { selection, bar } = useBulk(shown ?? null, { setIssues, invalidate, reload }, [tab]);
 
   const patch = (id: string, p: IssueChange) => {
     invalidate();
@@ -86,9 +88,9 @@ export function MyIssuesView({ tab }: { tab: MyTab }) {
       </EmptyState>
     );
   } else if (view === "board") {
-    body = <Board issues={shown} onPatch={patch} />;
+    body = <Board issues={shown} onPatch={patch} selection={selection} />;
   } else {
-    body = <IssueList issues={shown} onPatch={patch} />;
+    body = <IssueList issues={shown} onPatch={patch} selection={selection} />;
   }
 
   return (
@@ -112,6 +114,7 @@ export function MyIssuesView({ tab }: { tab: MyTab }) {
         </div>
       </header>
       <div className={cls("content", view === "board" && !!shown?.length && "content-board")}>{body}</div>
+      {bar}
     </>
   );
 }

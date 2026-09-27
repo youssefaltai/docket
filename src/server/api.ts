@@ -189,6 +189,12 @@ export const apiRoutes = {
     }),
     POST: handle(async (req) => tracker.createIssue(actorOf(req), await body<IssueInput>(req)), 201),
   },
+  "/api/issues/bulk": {
+    POST: handle(async (req) => {
+      const { ids, patch: change } = await patch(req, "a bulk edit", ["ids", "patch"]);
+      return { results: tracker.bulkUpdateIssues(actorOf(req), ids, change) };
+    }),
+  },
   "/api/issues/:id": {
     GET: handle<"/api/issues/:id">((req) => tracker.getIssue(actorOf(req), req.params.id)),
     PATCH: handle<"/api/issues/:id">(async (req) =>

@@ -10,6 +10,7 @@ import {
   STATUSES,
   type Activity,
   type ActivityKind,
+  type BulkIssueResult,
   type Comment,
   type Document,
   type DocumentFilter,
@@ -1104,6 +1105,49 @@ function trashIssue(a: Actor, identifier: string, trash: boolean): Issue {
 
 export const deleteIssue = (a: Actor, identifier: string) => trashIssue(a, identifier, true);
 export const restoreIssue = (a: Actor, identifier: string) => trashIssue(a, identifier, false);
+
+const MAX_BULK = 100;
+const BULK_FIELDS = ["status", "priority", "assignee", "delegate", "labels", "addLabels", "removeLabels"];
+
+/**
+ * One change for many issues (the list's multi-select). Each goes through `updateIssue`/`deleteIssue` on its
+ * own, with its own transaction, history, notifications, webhooks and change event, exactly like N single
+ * edits; one that fails (not found, in the trash, an unknown assignee) reports its error and the rest apply.
+ */
+export function bulkUpdateIssues(a: Actor, ids: unknown, patch: unknown): BulkIssueResult[] {
+  if (!Array.isArray(ids) || !ids.length || !ids.every((id) => typeof id === "string")) {
+    throw new AppError("ids must be a non-empty array of issue identifiers");
+  }
+  if (ids.length > MAX_BULK) throw new AppError(`Select at most ${MAX_BULK} issues`);
+  if (typeof patch !== "object" || patch === null || Array.isArray(patch) || !Object.keys(patch).length) {
+    throw new AppError("patch must be an object with something to change");
+  }
+  const remove = "delete" in patch;
+  if (remove && (patch.delete !== true || Object.keys(patch).length > 1)) throw new AppError("patch.delete must be true, on its own");
+  for (const field of Object.keys(patch)) {
+    if (!remove && !BULK_FIELDS.includes(field)) throw new AppError(`Unknown field "${field}" for a bulk edit: use ${BULK_FIELDS.join(", ")} or delete`);
+  }
+  const { addLabels, removeLabels, ...edit } = patch as IssuePatch & { addLabels?: unknown; removeLabels?: unknown };
+  const add = addLabels === undefined ? [] : checkLabels(addLabels);
+  const drop = removeLabels === undefined ? [] : checkLabels(removeLabels);
+  const labelsOf = db.query<{ labels: string }, [number]>("SELECT labels FROM issues WHERE id = ?");
+  // This issue's labels after the edit: `labels` (or its own), plus `addLabels`, minus `removeLabels`.
+  const labels = (id: string): string[] => {
+    const base = edit.labels !== undefined ? checkLabels(edit.labels) : (JSON.parse(labelsOf.get(issueRef(a, id).id)!.labels) as string[]);
+    return [...new Set([...base, ...add])].filter((l) => !drop.includes(l));
+  };
+  const relabel = addLabels !== undefined || removeLabels !== undefined;
+  return [...new Set(ids as string[])].map((id): BulkIssueResult => {
+    try {
+      if (remove) return { id, issue: deleteIssue(a, id) };
+      return { id, issue: updateIssue(a, id, relabel ? { ...edit, labels: labels(id) } : edit) };
+    } catch (e) {
+      if (e instanceof AppError) return { id, error: e.message, status: e.status };
+      console.error(e);
+      return { id, error: "Internal server error", status: 500 };
+    }
+  });
+}
 
 const TRASH_DAYS = 30;
 
