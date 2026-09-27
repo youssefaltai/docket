@@ -51,6 +51,10 @@ const status = z.enum(STATUSES).describe("backlog | todo | in_progress | in_revi
 const priority = z.literal(PRIORITIES).describe("0 none, 1 urgent, 2 high, 3 medium, 4 low");
 const labels = z.array(z.string()).describe('Label names, e.g. ["bug", "ui"]');
 const blockedBy = z.array(identifier).describe("Identifiers of issues that must be finished before this one");
+const relatedTo = z
+  .array(identifier)
+  .describe("Identifiers of issues connected to this one that aren't duplicates or blockers; related is two-way. Replaces the whole list");
+const duplicateOf = identifier.describe("The issue this one duplicates: it's set to canceled and the relation is recorded");
 const assignee = z.string().describe('A person\'s username (see list_members), or "me"');
 const delegate = z.string().describe('An agent\'s username (see list_members), or "me" if you are one');
 
@@ -88,6 +92,9 @@ function details(issue: Issue): string {
     issue.parent && `parent ${issue.parent}`,
     issue.blockedBy.length > 0 && `blocked by ${issue.blockedBy.join(", ")}`,
     issue.blocks.length > 0 && `blocks ${issue.blocks.join(", ")}`,
+    issue.relatedTo.length > 0 && `related to ${issue.relatedTo.join(", ")}`,
+    issue.duplicateOf && `duplicate of ${issue.duplicateOf}`,
+    issue.duplicates.length > 0 && `duplicates: ${issue.duplicates.join(", ")}`,
     `updated ${issue.updatedAt}`,
   ];
   const parts = [line(issue), meta.filter(Boolean).join(" · "), issue.description || "_No description._"];
@@ -121,6 +128,10 @@ function change({ kind, from, to }: Activity): string {
       return `labels ${diff()}`;
     case "blockedBy":
       return `blocked by ${diff()}`;
+    case "relatedTo":
+      return `related ${diff()}`;
+    case "duplicateOf":
+      return `duplicate of ${show(from)} → ${show(to)}`;
     case "claimed":
       return `claimed (${from} → ${to})`;
     case "trashed":
@@ -384,7 +395,7 @@ function createServer(a: Actor, origin: string): McpServer {
     "get_issue",
     {
       description:
-        "Get one issue by identifier (e.g. BRD-12): markdown description, status, priority, labels, assignee, delegate, parent, sub-issues, blocked-by/blocks, and comments, plus its history: who changed what and when (latest 30). Read it before starting work on an issue.",
+        "Get one issue by identifier (e.g. BRD-12): markdown description, status, priority, labels, assignee, delegate, parent, sub-issues, blocked-by/blocks, related, duplicate-of/duplicates, and comments, plus its history: who changed what and when (latest 30). Read it before starting work on an issue.",
       inputSchema: { id: identifier },
       annotations: { readOnlyHint: true },
     },
@@ -398,7 +409,7 @@ function createServer(a: Actor, origin: string): McpServer {
     "create_issue",
     {
       description:
-        "Create an issue in a team; returns its identifier (e.g. BRD-13). Defaults: status backlog (as in Linear; pass todo when it's ready to be picked up), priority 0 (none). Set parent to make it a sub-issue, blockedBy for issues that must be finished first.",
+        "Create an issue in a team; returns its identifier (e.g. BRD-13). Defaults: status backlog (as in Linear; pass todo when it's ready to be picked up), priority 0 (none). Set parent to make it a sub-issue, blockedBy for issues that must be finished first. Mark an issue a duplicate with duplicateOf: it's set to canceled and the relation is recorded; use relatedTo for issues that are connected but not duplicates or blockers.",
       inputSchema: {
         team: teamKey,
         title,
@@ -410,6 +421,8 @@ function createServer(a: Actor, origin: string): McpServer {
         delegate: delegate.optional().describe("An agent to work on it"),
         parent: identifier.optional().describe("Parent issue identifier, making this a sub-issue"),
         blockedBy: blockedBy.optional(),
+        relatedTo: relatedTo.optional(),
+        duplicateOf: duplicateOf.optional(),
       },
     },
     writes((input) => {
@@ -422,7 +435,7 @@ function createServer(a: Actor, origin: string): McpServer {
     "update_issue",
     {
       description:
-        "Update an issue; only the fields you pass change. Status flow: in_progress when you start, in_review when ready for review, done when finished, canceled instead of deleting (there is no delete). labels and blockedBy replace the whole list, so include existing entries you want to keep, and pass baseUpdatedAt (from get_issue) when replacing them or the description, so you don't overwrite someone else's change. To start work, use claim_issue. Don't reassign an issue someone else holds; use claim_issue. Pass null for assignee, delegate or parent to clear it. Log progress with comment_issue rather than editing the description.",
+        "Update an issue; only the fields you pass change. Status flow: in_progress when you start, in_review when ready for review, done when finished, canceled instead of deleting (there is no delete). labels, blockedBy and relatedTo replace the whole list, so include existing entries you want to keep, and pass baseUpdatedAt (from get_issue) when replacing them or the description, so you don't overwrite someone else's change. To start work, use claim_issue. Don't reassign an issue someone else holds; use claim_issue. Mark an issue a duplicate with duplicateOf: it's set to canceled and the relation is recorded; use relatedTo for issues that are connected but not duplicates or blockers. Pass null for assignee, delegate, parent or duplicateOf to clear it (clearing duplicateOf leaves the status as it is). Log progress with comment_issue rather than editing the description.",
       inputSchema: {
         id: identifier,
         title: title.optional(),
@@ -434,6 +447,8 @@ function createServer(a: Actor, origin: string): McpServer {
         delegate: delegate.nullable().optional().describe("The agent working on it; null to clear"),
         parent: identifier.nullable().optional().describe("Parent issue identifier; null to detach"),
         blockedBy: blockedBy.optional(),
+        relatedTo: relatedTo.optional(),
+        duplicateOf: duplicateOf.nullable().optional().describe("The issue this one duplicates (it's set to canceled); null to clear"),
         baseUpdatedAt: z
           .string()
           .optional()
