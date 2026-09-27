@@ -180,6 +180,29 @@ Light theme only, neutral and modern, in the spirit of Linear, Vercel, Resend. G
 - Service worker: never caches non-OK responses; clears cached `/api/*` on a 401 and after a successful setup, redeem or logout, with a generation counter so a GET in flight across the switch can't re-cache the old session's data.
 - Works on a phone: the sidebar collapses below 768px.
 
+### Keyboard
+
+Global (never while typing in a field, in a popover, or during IME composition):
+
+| Key | Action |
+|---|---|
+| `C` | New issue |
+| `/` | Focus search |
+| `J` / `K` / `↓` / `↑` | Move focus between rows or cards (issues and docs lists only) |
+| `Esc` | Close the mobile nav if open, else leave an issue/doc page for the last list, else blur |
+
+In a popover picker (status, priority, assignee, delegate, labels, parent, blocked by, team, workspace switcher, account menu):
+
+| Key | Action |
+|---|---|
+| `↓` / `Ctrl-N` | Next option |
+| `↑` / `Ctrl-P` | Previous option |
+| `Enter` | Pick |
+| `Esc` | Close and refocus the trigger |
+| `Tab` | Close without refocusing |
+
+Elsewhere: `Enter` saves an inline title (issue/doc) by blurring; `⌘/Ctrl-Enter` saves or sends (description, comments, modals); `Esc` reverts an inline title or cancels an edit, or closes a modal/dialog (which also traps `Tab`); `E` opens a doc for editing, and inside it `⌘/Ctrl-S` saves immediately. A capture-phase guard drops any keystroke from an IME composition (e.g. confirming Japanese/Chinese input) before it reaches a shortcut.
+
 ## Documents
 
 Linear-style docs inside teams. Markdown is the source of truth (agents write via MCP).
