@@ -97,6 +97,10 @@ export function guard<T>(route: T, { mcp = false } = {}): T {
     // else in another tab, a stale tab would silently act as the new account: refuse, and it reloads.
     const expected = req.headers.get("x-docket-user");
     if (expected && expected !== actor.username) return json({ error: "Signed in as someone else", switched: true }, 401);
+    // The workspace the web app is in. A key acts only in its own: naming another is as if it didn't exist.
+    const workspace = req.headers.get("x-docket-workspace")?.trim().toLowerCase();
+    if (workspace && actor.keyId !== null && workspace !== actor.workspace) return json({ error: `Workspace ${workspace} not found` }, 404);
+    if (workspace) actor.workspace = workspace;
     actors.set(req, actor);
     const result = fn(req, ...rest);
     if (!actor.renewCookie) return result;

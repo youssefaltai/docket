@@ -1,9 +1,10 @@
 // /api/chat[/*] → {CHAT_URL}/chat[/*] (the docket-chat service, see its CHAT_API.md), on the same origin so
 // the web app needs no CORS or new CSP.
-// Only a signed-in browser gets through; the service sees a short-lived read key for that session, never
-// the person's cookie. Bodies and answers stream straight through (server-sent events included).
-import { chatKey, chatWriteKey } from "./access.ts";
+// Only a signed-in browser gets through; the service sees a short-lived read key for that session and the
+// workspace the chat panel is in (X-Docket-Workspace), never the person's cookie. Bodies and answers stream straight through (server-sent events included).
+import { chatKey, chatWriteKey, requestWorkspace } from "./access.ts";
 import { actorOf, isJson } from "./auth.ts";
+import { AppError } from "./db.ts";
 
 const HEADERS_TIMEOUT_MS = 90_000; // for the service to start answering (it may be waiting on a model)
 const MAX_MS = 5 * 60 * 1000; // for a whole answer
@@ -91,6 +92,14 @@ export async function proxyChat(req: Request, server: Bun.Server<unknown>): Prom
   // And the result must still be the service's /chat, whatever the path held.
   const root = new URL(base).pathname.replace(/\/+$/, "") + "/chat";
   if (target.pathname !== root && !target.pathname.startsWith(`${root}/`)) return error("Not found", "not_found", 404);
+
+  // A chat key acts in one workspace: the one the chat panel is in.
+  try {
+    requestWorkspace(actor);
+  } catch (err) {
+    if (!(err instanceof AppError)) throw err;
+    return error(err.message, err.status === 404 ? "not_found" : "invalid", err.status);
+  }
 
   // Every request reads with the session's chat key, except a confirm: it writes, with a key made for it alone.
   // Minted last, so every return below either hands it upstream or drops it.

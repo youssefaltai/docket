@@ -19,8 +19,8 @@ export interface Caller {
   username: string | null;
   token?: string;
   cookie?: string;
-  /** JSON request; resolves to `{ status, body, headers }`. */
-  api: (method: string, path: string, body?: unknown) => Promise<Reply>;
+  /** JSON request, with optional extra headers (e.g. X-Docket-Workspace); resolves to `{ status, body, headers }`. */
+  api: (method: string, path: string, body?: unknown, headers?: Record<string, string>) => Promise<Reply>;
   /** Calls an MCP tool and returns its text output; throws on a tool error. */
   tool: (name: string, args?: Record<string, unknown>) => Promise<string>;
   /** The MCP tool names this caller sees in tools/list, sorted. */
@@ -54,11 +54,14 @@ export interface TestServer {
   anon: Caller;
   /** Arbitrary credentials, for tests of forged, stale or revoked ones. */
   with: (creds: Creds, via?: Via) => Caller;
-  /** A user made earlier by s.user or s.agent, here or on a server this one shares with. People default to their cookie, agents to their key. */
-  as: (username: string, via?: Via) => Caller;
-  /** Invites a person into a workspace (default: setup's, invited by `by`, default admin) and signs them in. For an existing user it adds the workspace. */
+  /**
+   * A user made earlier by s.user or s.agent, here or on a server this one shares with. People default to their cookie, agents to their key.
+   * Keys act in one workspace: `workspace` picks that one's key (default: the workspace they joined first).
+   */
+  as: (username: string, via?: Via, workspace?: string) => Caller;
+  /** Invites a person into a workspace (default: setup's, invited by `by`, default admin) and signs them in. For an existing user it adds the workspace, and a key for it. */
   user: (username: string, opts?: { role?: "admin" | "member"; workspace?: string; name?: string; by?: string }) => Promise<Caller>;
-  /** Signs a person in again through an admin's sign-in link, with a fresh session and API key (e.g. after a suspension). */
+  /** Signs a person in again through an admin's sign-in link, with a fresh session and API keys (e.g. after a suspension). */
   signIn: (username: string) => Promise<Caller>;
   /** Creates an agent in a workspace (default: setup's). */
   agent: (username: string, opts?: { workspace?: string; name?: string }) => Promise<Caller>;
@@ -68,7 +71,9 @@ export interface TestServer {
 }
 
 export type Creds = { token?: string; cookie?: string };
-type Internal = TestServer & { users: Map<string, Creds> };
+/** A test user's session cookie (people) and one API key per workspace, in the order they joined. */
+type Known = { cookie?: string; keys: Map<string, string> };
+type Internal = TestServer & { users: Map<string, Known> };
 
 /**
  * Starts Docket on a free port and runs setup as "admin" with workspace "acme".
@@ -93,7 +98,7 @@ export async function startServer(
   const proc = Bun.spawn(["bun", entry], { env, stdout: "pipe", stderr: "inherit" });
   const url = await readUrl(proc.stdout);
 
-  const users: Map<string, Creds> = (opts.sharing as Internal | undefined)?.users ?? new Map();
+  const users: Map<string, Known> = (opts.sharing as Internal | undefined)?.users ?? new Map();
   const mcps: Client[] = [];
 
   function caller(username: string | null, creds: Creds, via: Via): Caller {
@@ -113,10 +118,10 @@ export async function startServer(
     return {
       username,
       ...creds,
-      async api(method, path, body) {
+      async api(method, path, body, headers = {}) {
         const res = await fetch(new URL(path, url), {
           method,
-          headers: { "Content-Type": "application/json", Origin: new URL(url).origin, ...auth }, // browsers send Origin
+          headers: { "Content-Type": "application/json", Origin: new URL(url).origin, ...auth, ...headers }, // browsers send Origin
           body: body === undefined ? undefined : JSON.stringify(body),
         });
         return { status: res.status, body: await parse(res), headers: res.headers };
@@ -144,15 +149,16 @@ export async function startServer(
 
   const anon = caller(null, {}, "bearer");
 
-  /** Records a signed-in person, minting an API key the first time. */
-  async function signedIn(username: string, cookie: string, fresh = false): Promise<Caller> {
-    let token = fresh ? undefined : users.get(username)?.token;
-    if (!token) {
-      const key = await caller(username, { cookie }, "cookie").api("POST", "/api/api-keys", { name: "tests" });
-      if (key.status !== 201) throw new Error(`api key for ${username}: ${key.status} ${JSON.stringify(key.body)}`);
-      token = key.body.token as string;
+  /** Records a signed-in person, minting an API key for each of `workspaces` they have none in yet. */
+  async function signedIn(username: string, cookie: string, workspaces: string[], fresh = false): Promise<Caller> {
+    const keys = fresh ? new Map<string, string>() : (users.get(username)?.keys ?? new Map<string, string>());
+    for (const workspace of workspaces) {
+      if (keys.has(workspace)) continue;
+      const key = await caller(username, { cookie }, "cookie").api("POST", "/api/api-keys", { name: "tests", workspace });
+      if (key.status !== 201) throw new Error(`api key for ${username} in ${workspace}: ${key.status} ${JSON.stringify(key.body)}`);
+      keys.set(workspace, key.body.token as string);
     }
-    users.set(username, { token, cookie });
+    users.set(username, { cookie, keys });
     return as(username);
   }
 
@@ -166,15 +172,17 @@ export async function startServer(
       workspace: { name: "Acme", key: "acme" },
     });
     if (res.status !== 201) throw new Error(`setup: ${res.status} ${JSON.stringify(res.body)}`);
-    await signedIn("admin", sessionCookie(res.headers));
+    await signedIn("admin", sessionCookie(res.headers), ["acme"]);
     workspace = "acme";
   }
 
   // People act through their browser session, agents through their key, as in real use.
-  function as(username: string, via?: Via): Caller {
-    const creds = users.get(username);
-    if (!creds) throw new Error(`no test user "${username}"; make it with s.user or s.agent first`);
-    return caller(username, creds, via ?? (creds.cookie ? "cookie" : "bearer"));
+  function as(username: string, via?: Via, workspace?: string): Caller {
+    const known = users.get(username);
+    if (!known) throw new Error(`no test user "${username}"; make it with s.user or s.agent first`);
+    const token = workspace ? known.keys.get(workspace) : known.keys.values().next().value;
+    if (workspace && !token) throw new Error(`test user "${username}" has no key in ${workspace}`);
+    return caller(username, { token, cookie: known.cookie }, via ?? (known.cookie ? "cookie" : "bearer"));
   }
   const admin = users.has("admin") ? as("admin") : anon;
 
@@ -196,11 +204,11 @@ export async function startServer(
       // An existing user accepts while signed in; a new one creates an account.
       const known = users.get(username);
       const redeemed = known
-        ? await caller(username, known, "cookie").api("POST", "/api/auth/redeem", { code: invite.body.code })
+        ? await caller(username, { cookie: known.cookie }, "cookie").api("POST", "/api/auth/redeem", { code: invite.body.code })
         : await anon.api("POST", "/api/auth/redeem", { code: invite.body.code, name, username });
       if (redeemed.status >= 300) throw new Error(`redeem ${username}: ${redeemed.status} ${JSON.stringify(redeemed.body)}`);
       const fresh = redeemed.headers.getSetCookie().some((c) => c.startsWith("docket_session="));
-      return signedIn(username, fresh ? sessionCookie(redeemed.headers) : known!.cookie!);
+      return signedIn(username, fresh ? sessionCookie(redeemed.headers) : known!.cookie!, [key]);
     },
     // Signs someone in afresh the only way that doesn't need their own session: the server's recovery CLI.
     async signIn(username) {
@@ -209,12 +217,14 @@ export async function startServer(
       if (out.exitCode !== 0 || !code) throw new Error(`sign-in-link ${username}: ${out.exitCode} ${out.stderr}`);
       const redeemed = await anon.api("POST", "/api/auth/redeem", { code });
       if (redeemed.status !== 200) throw new Error(`redeem ${username}: ${redeemed.status} ${JSON.stringify(redeemed.body)}`);
-      return signedIn(username, sessionCookie(redeemed.headers), true);
+      const cookie = sessionCookie(redeemed.headers);
+      const me = await caller(username, { cookie }, "cookie").api("GET", "/api/me");
+      return signedIn(username, cookie, me.body.workspaces.map((w: { key: string }) => w.key), true);
     },
     async agent(username, { workspace: key = workspace!, name = username } = {}) {
       const res = await admin.api("POST", `/api/workspaces/${key}/agents`, { name, username });
       if (res.status !== 201) throw new Error(`agent ${username}: ${res.status} ${JSON.stringify(res.body)}`);
-      users.set(username, { token: res.body.token });
+      users.set(username, { keys: new Map([[key, res.body.token as string]]) });
       return as(username);
     },
     async cli(script, ...args) {

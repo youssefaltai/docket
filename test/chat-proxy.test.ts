@@ -337,6 +337,27 @@ describe("with CHAT_URL", () => {
   test("bodies over 16 KB are refused before reaching the service", async () => {
     expect((await s.api("POST", "/api/chat/echo", { message: "x".repeat(17_000) })).status).toBe(413);
   });
+
+  // Last: from here on the admin is in two workspaces, so every chat request must name one.
+  test("the chat key acts only in the chat panel's workspace", async () => {
+    await s.api("POST", "/api/workspaces", { name: "Side", key: "side" });
+    const echo = (workspace: string) => s.api("POST", "/api/chat/echo", {}, { "X-Docket-Workspace": workspace });
+    const inSide = (await echo("side")).body.headers as Record<string, string>;
+    expect(inSide["x-docket-workspace"]).toBeUndefined(); // not forwarded
+    const key = s.with({ token: inSide.authorization!.replace("Bearer ", "") });
+    expect((await key.api("GET", "/api/me")).body).toMatchObject({ credential: "chat", workspaces: [{ key: "side" }] });
+    expect((await key.api("GET", "/api/me")).body.workspaces).toHaveLength(1);
+    const inAcme = (await echo("acme")).body.headers.authorization;
+    expect(inAcme).not.toBe(inSide.authorization);
+    expect((await s.with({ token: inAcme.replace("Bearer ", "") }).api("GET", "/api/me")).body.workspaces).toEqual([
+      { key: "acme", name: "Acme", role: "admin" },
+    ]);
+
+    const none = await s.api("POST", "/api/chat/echo", {});
+    expect([none.status, none.body.code]).toEqual([400, "invalid"]);
+    const elsewhere = await echo("nope");
+    expect([elsewhere.status, elsewhere.body.code]).toEqual([404, "not_found"]);
+  });
 });
 
 describe("rotation and expiry", () => {

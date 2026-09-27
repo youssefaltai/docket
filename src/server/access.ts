@@ -26,7 +26,8 @@ export interface Actor {
   renewCookie?: boolean; // a session in use: re-send its cookie so the browser's copy slides with the idle window
   username: string;
   kind: UserKind;
-  workspaces: Map<string, Role>; // active memberships
+  workspaces: Map<string, Role>; // active memberships (a key's: just its own workspace)
+  workspace: string | null; // the request's: a key's own, else X-Docket-Workspace or a session's only one (see requestWorkspace)
   scope: ApiKeyScope; // an API key's scope; sessions can write
   sessionId: number | null;
   keyId: number | null;
@@ -145,7 +146,8 @@ export function me(a: Actor): Me {
       `SELECT w.key, w.name, m.role FROM workspace_members m JOIN workspaces w ON w.key = m.workspace
        WHERE m.user_id = ? AND m.suspended_at IS NULL ORDER BY w.name COLLATE NOCASE`,
     )
-    .all(a.id);
+    .all(a.id)
+    .filter((w) => a.workspaces.has(w.key));
   const credential = a.sessionId !== null ? "session" : a.chat ? "chat" : "key";
   return { user: { ...toUser(userById(a.id)), id: a.id }, workspaces, credential, chat: !!process.env.CHAT_URL };
 }
@@ -166,17 +168,19 @@ export function updateMe(a: Actor, patch: { name?: unknown; username?: unknown; 
 
 // --- Actors ---
 
-function actorFor(user: UserRow, credential: { scope: ApiKeyScope; sessionId?: number; keyId?: number }): Actor {
+/** An actor with the user's active memberships: all of them for a session, only `workspace`'s for a key. */
+function actorFor(user: UserRow, credential: { scope: ApiKeyScope; sessionId?: number; keyId?: number }, workspace?: string): Actor {
   const memberships = db
-    .query<{ workspace: string; role: Role }, [number]>(
-      "SELECT workspace, role FROM workspace_members WHERE user_id = ? AND suspended_at IS NULL",
+    .query<{ workspace: string; role: Role }, [number, string | null]>(
+      "SELECT workspace, role FROM workspace_members WHERE user_id = ?1 AND suspended_at IS NULL AND (?2 IS NULL OR workspace = ?2)",
     )
-    .all(user.id);
+    .all(user.id, workspace ?? null);
   return {
     id: user.id,
     username: user.username,
     kind: user.kind,
     workspaces: new Map(memberships.map((m) => [m.workspace, m.role])),
+    workspace: workspace ?? (memberships.length === 1 ? memberships[0]!.workspace : null),
     scope: credential.scope,
     sessionId: credential.sessionId ?? null,
     keyId: credential.keyId ?? null,
@@ -205,11 +209,17 @@ export function sessionActor(token: string): Actor | null {
   return actor;
 }
 
-/** The actor behind an API key (`dk_…`), or null if it's unknown, revoked or expired. */
+/**
+ * The actor behind an API key (`dk_…`), or null if it's unknown, revoked or expired, or its owner isn't an
+ * active member of the key's workspace. A key acts only in its own workspace.
+ */
 export function keyActor(token: string): Actor | null {
+  type Row = UserRow & { key_id: number; scope: ApiKeyScope; last_used_at: string | null; session_id: number | null; key_workspace: string };
   const row = db
-    .query<UserRow & { key_id: number; scope: ApiKeyScope; last_used_at: string | null; session_id: number | null }, [string, string]>(
-      `SELECT u.*, k.id AS key_id, k.scope, k.last_used_at, k.session_id FROM api_keys k JOIN users u ON u.id = k.user_id
+    .query<Row, [string, string]>(
+      `SELECT u.*, k.id AS key_id, k.scope, k.last_used_at, k.session_id, k.workspace AS key_workspace
+       FROM api_keys k JOIN users u ON u.id = k.user_id
+       JOIN workspace_members m ON m.user_id = k.user_id AND m.workspace = k.workspace AND m.suspended_at IS NULL
        WHERE k.token_hash = ? AND k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at > ?)`,
     )
     .get(hash(token), now());
@@ -217,7 +227,7 @@ export function keyActor(token: string): Actor | null {
   if (!row.last_used_at || Date.now() - Date.parse(row.last_used_at) > TOUCH_MS) {
     db.query("UPDATE api_keys SET last_used_at = ? WHERE id = ?").run(now(), row.key_id);
   }
-  return { ...actorFor(row, { scope: row.scope, keyId: row.key_id }), chat: row.session_id !== null };
+  return { ...actorFor(row, { scope: row.scope, keyId: row.key_id }, row.key_workspace), chat: row.session_id !== null };
 }
 
 // --- Access checks (used by every data module) ---
@@ -227,6 +237,16 @@ export function requireMember(a: Actor, workspace: unknown): string {
   const key = typeof workspace === "string" ? workspace.trim().toLowerCase() : "";
   if (!a.workspaces.has(key)) throw new AppError(`Workspace ${workspace} not found`, 404);
   return key;
+}
+
+/**
+ * The workspace this request acts in: a key's own, or a session's X-Docket-Workspace (else its only
+ * workspace). 404 if you aren't an active member there; 400 if a session in several names none.
+ */
+export function requestWorkspace(a: Actor): string {
+  if (a.workspace === null) throw new AppError("Pick a workspace: send X-Docket-Workspace", 400);
+  if (!a.workspaces.has(a.workspace)) throw new AppError(`Workspace ${a.workspace} not found`, 404);
+  return a.workspace;
 }
 
 function requireAdmin(a: Actor, workspace: unknown): string {
@@ -359,6 +379,7 @@ interface ApiKeyRow {
   id: number;
   name: string;
   scope: ApiKeyScope;
+  workspace: string;
   created_at: string;
   last_used_at: string | null;
 }
@@ -367,20 +388,21 @@ const toApiKey = (row: ApiKeyRow): ApiKey => ({
   id: row.id,
   name: row.name,
   scope: row.scope,
+  workspace: row.workspace,
   createdAt: row.created_at,
   lastUsedAt: row.last_used_at,
 });
 
 const newApiToken = () => `dk_${randomBytes(32).toString("hex")}`;
 
-function insertApiKey(userId: number, name: string, scope: ApiKeyScope): { apiKey: ApiKey; token: string } {
+function insertApiKey(userId: number, workspace: string, name: string, scope: ApiKeyScope): { apiKey: ApiKey; token: string } {
   const token = newApiToken();
   const row = db
-    .query<ApiKeyRow, [number, string, ApiKeyScope, string, string]>(
-      `INSERT INTO api_keys (user_id, name, scope, token_hash, created_at) VALUES (?, ?, ?, ?, ?)
-       RETURNING id, name, scope, created_at, last_used_at`,
+    .query<ApiKeyRow, [number, string, string, ApiKeyScope, string, string]>(
+      `INSERT INTO api_keys (user_id, workspace, name, scope, token_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)
+       RETURNING id, name, scope, workspace, created_at, last_used_at`,
     )
-    .get(userId, name, scope, hash(token), now())!;
+    .get(userId, workspace, name, scope, hash(token), now())!;
   return { apiKey: toApiKey(row), token };
 }
 
@@ -388,17 +410,19 @@ export function listApiKeys(a: Actor): ApiKey[] {
   requireSession(a);
   return db
     .query<ApiKeyRow, [number]>(
-      "SELECT id, name, scope, created_at, last_used_at FROM api_keys WHERE user_id = ? AND revoked_at IS NULL AND session_id IS NULL ORDER BY id",
+      "SELECT id, name, scope, workspace, created_at, last_used_at FROM api_keys WHERE user_id = ? AND revoked_at IS NULL AND session_id IS NULL ORDER BY id",
     )
     .all(a.id)
     .map(toApiKey);
 }
 
-export function createApiKey(a: Actor, input: { name?: unknown; scope?: unknown }) {
+/** A key for one workspace, the given one or else the request's; it acts only there. */
+export function createApiKey(a: Actor, input: { name?: unknown; scope?: unknown; workspace?: unknown }) {
   requireSession(a);
   const name = requireText(input.name, "name");
   const scope = input.scope === undefined ? "write" : checkOneOf(input.scope, API_KEY_SCOPES, "scope");
-  return insertApiKey(a.id, name, scope);
+  const workspace = input.workspace === undefined ? requestWorkspace(a) : requireMember(a, input.workspace);
+  return insertApiKey(a.id, workspace, name, scope);
 }
 
 export function revokeApiKey(a: Actor, id: unknown) {
@@ -413,32 +437,35 @@ export function revokeApiKey(a: Actor, id: unknown) {
 // --- Chat keys: what the chat proxy hands the chat service to read Docket as this person ---
 
 const CHAT_KEY_TTL_MS = Number(process.env.DOCKET_CHAT_KEY_TTL_MS) || 30 * 60 * 1000;
-// Tokens are stored only hashed, so the one in use lives here, by session; a restart just mints another.
-const chatKeys = new Map<number, { token: string; expiresAt: number }>();
+// Tokens are stored only hashed, so the one in use lives here, by `${session}:${workspace}`; a restart just mints another.
+const chatKeys = new Map<string, { token: string; expiresAt: number }>();
 
 /** Deletes keys past their expiry (and forgets chat keys for sessions that are gone). */
 export function purgeExpiredKeys() {
   db.query("DELETE FROM api_keys WHERE expires_at <= ?").run(now());
-  for (const [sessionId, held] of chatKeys) if (held.expiresAt <= Date.now()) chatKeys.delete(sessionId);
+  for (const [slot, held] of chatKeys) if (held.expiresAt <= Date.now()) chatKeys.delete(slot);
 }
 purgeExpiredKeys();
 
 /**
- * A read key for the chat service, bound to this browser session: reused while it has most of its life left
- * (so a long answer never outlives it), then replaced. It dies with the session: sign-out, revoke, suspension.
+ * A read key for the chat service, bound to this browser session and the request's workspace: reused while
+ * it has most of its life left (so a long answer never outlives it), then replaced. It dies with the session
+ * (sign-out, revoke) or with suspension from that workspace.
  */
 export function chatKey(a: Actor): string {
   if (a.sessionId === null) throw new AppError("The assistant works from the web app, not with an API key", 403);
-  const held = chatKeys.get(a.sessionId);
+  const workspace = requestWorkspace(a);
+  const slot = `${a.sessionId}:${workspace}`;
+  const held = chatKeys.get(slot);
   if (held && held.expiresAt - Date.now() > (CHAT_KEY_TTL_MS * 2) / 3) {
     // Still ours? Session ids can be reused after a delete, and the key goes with its session.
     const live = db
-      .query("SELECT 1 FROM api_keys WHERE token_hash = ? AND session_id = ? AND user_id = ? AND expires_at > ?")
-      .get(hash(held.token), a.sessionId, a.id, now());
+      .query("SELECT 1 FROM api_keys WHERE token_hash = ? AND session_id = ? AND user_id = ? AND workspace = ? AND expires_at > ?")
+      .get(hash(held.token), a.sessionId, a.id, workspace, now());
     if (live) return held.token;
   }
-  const { token, expiresAt } = mintChatKey(a, "read", CHAT_KEY_TTL_MS);
-  chatKeys.set(a.sessionId, { token, expiresAt });
+  const { token, expiresAt } = mintChatKey(a, workspace, "read", CHAT_KEY_TTL_MS);
+  chatKeys.set(slot, { token, expiresAt });
   return token;
 }
 
@@ -450,7 +477,7 @@ const CHAT_WRITE_KEY_TTL_MS = 5 * 60 * 1000;
  */
 export function chatWriteKey(a: Actor): { token: string; drop: () => void } {
   if (a.sessionId === null) throw new AppError("The assistant works from the web app, not with an API key", 403);
-  const { token, id } = mintChatKey(a, "write", CHAT_WRITE_KEY_TTL_MS);
+  const { token, id } = mintChatKey(a, requestWorkspace(a), "write", CHAT_WRITE_KEY_TTL_MS);
   return {
     token,
     drop: () => {
@@ -460,25 +487,17 @@ export function chatWriteKey(a: Actor): { token: string; drop: () => void } {
   };
 }
 
-function mintChatKey(a: Actor, scope: ApiKeyScope, ttl: number) {
+function mintChatKey(a: Actor, workspace: string, scope: ApiKeyScope, ttl: number) {
   purgeExpiredKeys();
   const token = newApiToken();
   const expiresAt = Date.now() + ttl;
   const { id } = db
-    .query<{ id: number }, [number, ApiKeyScope, string, string, string, number]>(
-      `INSERT INTO api_keys (user_id, name, scope, token_hash, created_at, expires_at, session_id)
-       VALUES (?, 'Chat (automatic)', ?, ?, ?, ?, ?) RETURNING id`,
+    .query<{ id: number }, [number, string, ApiKeyScope, string, string, string, number]>(
+      `INSERT INTO api_keys (user_id, workspace, name, scope, token_hash, created_at, expires_at, session_id)
+       VALUES (?, ?, 'Chat (automatic)', ?, ?, ?, ?, ?) RETURNING id`,
     )
-    .get(a.id, scope, hash(token), now(), new Date(expiresAt).toISOString(), a.sessionId!)!;
+    .get(a.id, workspace, scope, hash(token), now(), new Date(expiresAt).toISOString(), a.sessionId!)!;
   return { token, expiresAt, id };
-}
-
-/** Revokes every session, key and unused sign-in code of a user. */
-function signOutEverywhere(userId: number) {
-  db.query("DELETE FROM sessions WHERE user_id = ?").run(userId);
-  db.query("DELETE FROM codes WHERE user_id = ? AND used_at IS NULL").run(userId);
-  db.query("DELETE FROM api_keys WHERE user_id = ?").run(userId);
-  revoked({ userId });
 }
 
 // --- One-time codes: invites and sign-in links ---
@@ -628,6 +647,7 @@ export function listWorkspaces(a: Actor): Workspace[] {
   return db
     .query<WorkspaceRow, [number]>(`${WORKSPACE_SELECT} ORDER BY w.name COLLATE NOCASE, w.key`)
     .all(a.id)
+    .filter((w) => a.workspaces.has(w.key))
     .map(toWorkspace);
 }
 
@@ -641,7 +661,8 @@ function insertWorkspace(input: WorkspaceInput, adminId: number): string {
 }
 
 export function createWorkspace(a: Actor, input: WorkspaceInput): Workspace {
-  requirePerson(a);
+  // Only people have sessions; a key couldn't reach the new workspace anyway.
+  if (a.sessionId === null) throw new AppError("Sign in to the web app to create a workspace; API keys work in one workspace", 403);
   const key = db.transaction(() => insertWorkspace(input, a.id))();
   changed("workspace", key, key);
   return workspaceFor(a.id, key);
@@ -700,16 +721,20 @@ const activeAdmins = (workspace: string) =>
 
 /**
  * Suspends a membership. Access to this workspace ends at once (membership is checked on every request,
- * and their sockets reconnect without it). If it was their last active membership, their credentials
- * go too (sessions, API keys, unused codes), so reinstating gives a clean account that signs in again.
- * While they're active elsewhere their credentials stay: otherwise any admin of any workspace they
- * joined could sign them out of the others and kill their keys there.
+ * and their sockets reconnect without it), and their keys here die: API keys, agent token, chat keys.
+ * If it was their last active membership, their sessions and unused sign-in codes go too, so reinstating
+ * gives a clean account that signs in again. Other workspaces' keys are never touched, so one workspace's
+ * admin can't cut anyone off from the others.
  */
 function suspend(key: string, row: MemberRow) {
-  setSuspended(key, row.id, now());
-  const elsewhere = db.query("SELECT 1 FROM workspace_members WHERE user_id = ? AND suspended_at IS NULL LIMIT 1").get(row.id);
-  if (elsewhere) revoked({ userId: row.id });
-  else signOutEverywhere(row.id);
+  setSuspended(key, row.id, row.suspended_at ?? now());
+  db.query("DELETE FROM api_keys WHERE user_id = ? AND workspace = ?").run(row.id, key);
+  const active = db.query("SELECT 1 FROM workspace_members WHERE user_id = ? AND suspended_at IS NULL LIMIT 1").get(row.id);
+  if (!active) {
+    db.query("DELETE FROM sessions WHERE user_id = ?").run(row.id);
+    db.query("DELETE FROM codes WHERE user_id = ? AND used_at IS NULL").run(row.id);
+  }
+  revoked({ userId: row.id });
 }
 
 export function updateMember(a: Actor, workspace: unknown, username: unknown, patch: { role?: unknown; suspended?: unknown }): WorkspaceMember {
@@ -741,7 +766,7 @@ export function createAgent(a: Actor, workspace: unknown, input: { name?: unknow
   const { agent, token } = db.transaction(() => {
     const id = insertUser("agent", input);
     addMember(key, id, "agent");
-    const { token } = insertApiKey(id, "agent token", "write");
+    const { token } = insertApiKey(id, key, "agent token", "write");
     return { agent: toRef(userById(id)), token };
   })();
   changed("member", key, agent.username);
@@ -755,24 +780,22 @@ function agentRow(a: Actor, workspace: unknown, username: unknown): { key: strin
   return { key, row };
 }
 
-/** A new token for an agent; the old one stops working. Reinstates a removed agent. */
+/** A new token for an agent; its old ones in this workspace stop working. Reinstates a removed agent. */
 export function rotateAgentToken(a: Actor, workspace: unknown, username: unknown): { token: string } {
   const { key, row } = agentRow(a, workspace, username);
   const token = db.transaction(() => {
-    signOutEverywhere(row.id);
+    db.query("DELETE FROM api_keys WHERE user_id = ? AND workspace = ?").run(row.id, key);
     setSuspended(key, row.id, null);
-    return insertApiKey(row.id, "agent token", "write").token;
+    return insertApiKey(row.id, key, "agent token", "write").token;
   })();
+  revoked({ userId: row.id });
   changed("member", key, row.username);
   return { token };
 }
 
-/** Removes an agent: its token dies and it leaves the workspace; its history keeps its name. */
+/** Removes an agent: suspending it, so its token dies and it leaves the workspace; its history keeps its name. */
 export function removeAgent(a: Actor, workspace: unknown, username: unknown) {
   const { key, row } = agentRow(a, workspace, username);
-  db.transaction(() => {
-    setSuspended(key, row.id, row.suspended_at ?? now());
-    signOutEverywhere(row.id);
-  })();
+  db.transaction(() => suspend(key, row))();
   changed("member", key, row.username);
 }

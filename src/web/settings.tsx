@@ -169,12 +169,13 @@ function RowMenu({ label, actions }: { label: string; actions: [label: string, r
 // ---------- Account ----------
 
 function AccountSettings() {
+  const { workspace } = useApp();
   return (
     <>
       <Profile />
       <SignInLink />
       <Sessions />
-      <ApiKeys />
+      {workspace && <ApiKeys key={workspace.key} workspace={workspace} />}
     </>
   );
 }
@@ -300,8 +301,9 @@ const SCOPES: [ApiKeyScope, string][] = [
 ];
 const scopeLabel = (scope: ApiKeyScope) => SCOPES.find(([s]) => s === scope)![1];
 
-function ApiKeys() {
-  const keys = useFetch(() => auth.apiKeys(), []);
+/** This workspace's API keys: each acts only in the workspace it was made in. */
+function ApiKeys({ workspace }: { workspace: Workspace }) {
+  const keys = useFetch(() => auth.apiKeys().then((all) => all.filter((k) => k.workspace === workspace.key)), []);
   const [adding, setAdding] = useState(false);
   const { secret, show } = useSecret();
   const revoke = async (id: number, name: string) => {
@@ -324,9 +326,9 @@ function ApiKeys() {
         )
       }
     >
-      <p className="settings-hint">For scripts and MCP clients that act as you.</p>
+      <p className="settings-hint" dir="auto">For scripts and MCP clients that act as you in {workspace.name}.</p>
       {secret}
-      {adding && <NewApiKey onCancel={() => setAdding(false)} onCreated={created} />}
+      {adding && <NewApiKey workspace={workspace.key} onCancel={() => setAdding(false)} onCreated={created} />}
       {!!keys.data?.length && (
         <div className="settings-list">
           {keys.data.map((k) => (
@@ -346,13 +348,13 @@ function ApiKeys() {
   );
 }
 
-function NewApiKey({ onCancel, onCreated }: { onCancel: () => void; onCreated: (token: string) => void }) {
+function NewApiKey({ workspace, onCancel, onCreated }: { workspace: string; onCancel: () => void; onCreated: (token: string) => void }) {
   const [name, setName] = useState("");
   const [scope, setScope] = useState<ApiKeyScope>("read");
   const { busy, run } = useRun();
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    if (name.trim()) run(async () => onCreated((await auth.createApiKey(name.trim(), scope)).token));
+    if (name.trim()) run(async () => onCreated((await auth.createApiKey(name.trim(), scope, workspace)).token));
   };
   return (
     <form className="settings-form settings-card" onSubmit={submit}>
@@ -410,7 +412,8 @@ function Members({ workspace, members, reload, readOnly }: { workspace: string; 
     if (m.suspendedAt) return [["Reinstate", () => update(m, { suspended: false })]];
     const role = m.role === "admin" ? "member" : "admin";
     const suspend = async () => {
-      const note = "They lose access to this workspace; if it's their only one, they're signed out everywhere. What they wrote stays theirs.";
+      const note =
+        "They lose access to this workspace and its API keys stop working; if it's their only workspace, they're signed out everywhere. What they wrote stays theirs.";
       if (await ask(`Suspend ${name}? ${note}`, "Suspend")) update(m, { suspended: true });
     };
     return [
