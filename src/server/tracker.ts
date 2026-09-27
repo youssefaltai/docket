@@ -4,6 +4,8 @@
 import type { SQLQueryBindings } from "bun:sqlite";
 import {
   CLOSED_STATUSES,
+  DUE_FILTERS,
+  ISSUE_SORTS,
   PRIORITIES,
   STATUSES,
   type Activity,
@@ -53,6 +55,14 @@ import { enqueue } from "./webhooks.ts";
 
 const checkStatus = (value: unknown) => checkOneOf(value, STATUSES, "status");
 const checkPriority = (value: unknown) => checkOneOf(value as Priority, PRIORITIES, "priority (0 none, 1 urgent, 2 high, 3 medium, 4 low)");
+
+/** A calendar date, "YYYY-MM-DD", that exists (no 2026-02-30). */
+function checkDueOn(value: unknown): string {
+  const date = typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : "";
+  const time = Date.parse(`${date}T00:00:00Z`);
+  if (Number.isNaN(time) || !new Date(time).toISOString().startsWith(date)) throw new AppError("dueOn must be a date like 2026-09-30");
+  return date;
+}
 
 function checkLabels(value: unknown): string[] {
   if (!Array.isArray(value) || !value.every((l) => typeof l === "string")) {
@@ -323,6 +333,7 @@ type IssueRow = Record<string, unknown> & {
   blocked_by: string; // JSON array of identifiers
   related_to: string; // JSON array of identifiers
   duplicate_of: string | null; // identifier
+  due_on: string | null; // "YYYY-MM-DD"
   created_at: string;
   updated_at: string;
   completed_at: string | null;
@@ -358,7 +369,10 @@ const ISSUE_SELECT = `
 // also what a page cursor records (with updated_at and id), so pages resume exactly where they stopped.
 const STATUS_RANK = `CASE i.status ${STATUSES.map((s, n) => `WHEN '${s}' THEN ${n}`).join(" ")} END`;
 const PRIORITY_RANK = "CASE i.priority WHEN 0 THEN 5 ELSE i.priority END";
-const ISSUE_ORDER = `ORDER BY ${STATUS_RANK}, ${PRIORITY_RANK}, i.updated_at DESC, i.id DESC`;
+const DEFAULT_ORDER = `${STATUS_RANK}, ${PRIORITY_RANK}, i.updated_at DESC, i.id DESC`;
+const ISSUE_ORDER = `ORDER BY ${DEFAULT_ORDER}`;
+// sort=due: earliest due date first, issues without one last, then the default order.
+const DUE_ORDER = `ORDER BY i.due_on IS NULL, i.due_on, ${DEFAULT_ORDER}`;
 const LIVE = "i.deleted_at IS NULL";
 
 const toSummary = (row: IssueRow): IssueSummary => ({
@@ -375,6 +389,7 @@ const toSummary = (row: IssueRow): IssueSummary => ({
   blockedBy: JSON.parse(row.blocked_by),
   relatedTo: JSON.parse(row.related_to),
   duplicateOf: row.duplicate_of,
+  dueOn: row.due_on,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
   completedAt: row.completed_at,
@@ -512,6 +527,7 @@ function issueColumns(a: Actor, workspace: string, patch: IssuePatch): Record<st
     cols[`${field}_id`] = value?.trim() ? activeMemberId(a, workspace, value, kind, field) : null;
   }
   if (patch.parent !== undefined) cols.parent_id = patch.parent === null ? null : relatedId(a, patch.parent, "parent");
+  if (patch.dueOn !== undefined) cols.due_on = patch.dueOn === null ? null : checkDueOn(patch.dueOn);
   return cols;
 }
 
@@ -555,15 +571,25 @@ function userFilter(a: Actor, value: string, workspace: string, field: string, c
   return [`EXISTS (SELECT 1 FROM workspace_members m WHERE m.user_id = ${column} AND m.workspace = t.workspace AND m.username = ?)`, username];
 }
 
-/** Page cursors: the last row's sort keys (status rank, priority rank, updated_at, id), opaque to clients. */
+/**
+ * Page cursors: the last row's sort keys (status rank, priority rank, updated_at, id, due_on), opaque to clients.
+ * They carry every order's keys, so a cursor resumes in either order.
+ */
+type Cursor = [number, number, string, number, string | null];
 const cursorOf = (issue: IssueSummary, id: number) =>
-  Buffer.from(JSON.stringify([STATUSES.indexOf(issue.status), issue.priority || 5, issue.updatedAt, id])).toString("base64url");
+  Buffer.from(JSON.stringify([STATUSES.indexOf(issue.status), issue.priority || 5, issue.updatedAt, id, issue.dueOn])).toString("base64url");
 
-function parseCursor(cursor: string): [number, number, string, number] {
+function parseCursor(cursor: string): Cursor {
   try {
     const keys = JSON.parse(Buffer.from(cursor, "base64url").toString());
-    if (Array.isArray(keys) && keys.length === 4 && typeof keys[2] === "string" && [0, 1, 3].every((i) => Number.isInteger(keys[i]))) {
-      return keys as [number, number, string, number];
+    if (
+      Array.isArray(keys) &&
+      keys.length === 5 &&
+      typeof keys[2] === "string" &&
+      [0, 1, 3].every((i) => Number.isInteger(keys[i])) &&
+      (keys[4] === null || typeof keys[4] === "string")
+    ) {
+      return keys as Cursor;
     }
   } catch {}
   throw new AppError("Invalid cursor: pass an endCursor from a previous page");
@@ -588,7 +614,16 @@ export function listIssuesPage(a: Actor, filter: IssueFilter, page: { first?: un
   return { issues: issues.map(toSummary), pageInfo: { hasNextPage, endCursor: last ? cursorOf(toSummary(last), last.id) : null } };
 }
 
-function queryIssues(a: Actor, filter: IssueFilter, after?: [number, number, string, number], limit?: number): IssueRow[] {
+// Linear's due-date filters, by the server's date (SQLite's date('now'), UTC). Finished work is never overdue.
+const DUE_WHERE: Record<(typeof DUE_FILTERS)[number], string> = {
+  overdue: `i.due_on < date('now') AND i.status NOT IN (${CLOSED_STATUSES.map((s) => `'${s}'`).join(", ")})`,
+  soon: "i.due_on BETWEEN date('now') AND date('now', '+7 days')",
+  today: "i.due_on = date('now')",
+  any: "i.due_on IS NOT NULL",
+  none: "i.due_on IS NULL",
+};
+
+function queryIssues(a: Actor, filter: IssueFilter, after?: Cursor, limit?: number): IssueRow[] {
   const { where, params, workspace } = listScope(a, "i", filter, ["i.title", "i.description", ident("t", "i")]);
   if (filter.status?.length) {
     where.push(`i.status IN (${inList(filter.status)})`);
@@ -618,13 +653,22 @@ function queryIssues(a: Actor, filter: IssueFilter, after?: [number, number, str
     where.push("EXISTS (SELECT 1 FROM subscriptions s WHERE s.issue_id = i.id AND s.user_id = ?)");
     params.push(a.id);
   }
+  if (filter.due) where.push(DUE_WHERE[checkOneOf(filter.due, DUE_FILTERS, "due")]);
+  const byDue = checkOneOf(filter.sort ?? "default", ISSUE_SORTS, "sort") === "due";
   if (after) {
-    const [s, p, u, id] = after;
-    where.push(`(${STATUS_RANK} > ? OR (${STATUS_RANK} = ? AND (${PRIORITY_RANK} > ? OR (${PRIORITY_RANK} = ? AND (i.updated_at < ? OR (i.updated_at = ? AND i.id < ?))))))`);
-    params.push(s, s, p, p, u, u, id);
+    const [s, p, u, id, due] = after;
+    let rest = `(${STATUS_RANK} > ? OR (${STATUS_RANK} = ? AND (${PRIORITY_RANK} > ? OR (${PRIORITY_RANK} = ? AND (i.updated_at < ? OR (i.updated_at = ? AND i.id < ?))))))`;
+    const restParams: SQLQueryBindings[] = [s, s, p, p, u, u, id];
+    if (byDue && due === null) rest = `(i.due_on IS NULL AND ${rest})`; // past the dated rows: only undated ones follow
+    else if (byDue) {
+      rest = `(i.due_on IS NULL OR i.due_on > ? OR (i.due_on = ? AND ${rest}))`;
+      restParams.unshift(due, due);
+    }
+    where.push(rest);
+    params.push(...restParams);
   }
   return db
-    .query<IssueRow, SQLQueryBindings[]>(`${ISSUE_SELECT} ${whereClause(where)} ${ISSUE_ORDER}${limit ? ` LIMIT ${limit}` : ""}`)
+    .query<IssueRow, SQLQueryBindings[]>(`${ISSUE_SELECT} ${whereClause(where)} ${byDue ? DUE_ORDER : ISSUE_ORDER}${limit ? ` LIMIT ${limit}` : ""}`)
     .all(...params);
 }
 
@@ -705,6 +749,7 @@ const TRACKED: [ActivityKind, (row: IssueRow) => unknown][] = [
   ["blockedBy", (r) => JSON.parse(r.blocked_by)],
   ["relatedTo", (r) => JSON.parse(r.related_to)],
   ["duplicateOf", (r) => r.duplicate_of],
+  ["dueOn", (r) => r.due_on],
 ];
 
 /** What really changed between two reads of an issue; lists (labels, blockers, related) compare as sets. */
@@ -797,6 +842,7 @@ export function createIssue(a: Actor, input: IssueInput): Issue {
     assignee_id: null,
     delegate_id: null,
     parent_id: null,
+    due_on: null,
     ...issueColumns(a, team.workspace, input),
     title: requireText(input.title, "title"),
   };

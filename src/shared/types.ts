@@ -176,6 +176,7 @@ export interface IssueSummary {
   blockedBy: string[]; // identifiers
   relatedTo: string[]; // identifiers, either direction: related is symmetric
   duplicateOf: string | null; // identifier of the canonical issue this one duplicates
+  dueOn: string | null; // due date, a calendar date "YYYY-MM-DD" (no time), as in Linear
   createdAt: string;
   updatedAt: string;
   completedAt: string | null; // set when status becomes done/canceled
@@ -225,6 +226,7 @@ export const ACTIVITY_KINDS = [
   "blockedBy",
   "relatedTo",
   "duplicateOf",
+  "dueOn",
   "claimed",
   "trashed",
   "restored",
@@ -232,8 +234,8 @@ export const ACTIVITY_KINDS = [
 export type ActivityKind = (typeof ACTIVITY_KINDS)[number];
 
 /**
- * One change to an issue. from/to by kind: title, parent and duplicateOf (identifiers), status and claimed (Status) are
- * strings; priority a number; assignee, delegate a UserRef; labels, blockedBy, relatedTo string arrays; null when unset, and both
+ * One change to an issue. from/to by kind: title, parent and duplicateOf (identifiers), status and claimed (Status), dueOn
+ * ("YYYY-MM-DD") are strings; priority a number; assignee, delegate a UserRef; labels, blockedBy, relatedTo string arrays; null when unset, and both
  * null for created, description, trashed, restored.
  */
 export type ActivityValue = string | number | string[] | UserRef | null;
@@ -325,6 +327,7 @@ export interface IssueInput {
   blockedBy?: string[];
   relatedTo?: string[]; // replaces the whole list, on both sides
   duplicateOf?: string | null; // marks it a duplicate of that issue and sets it canceled; null clears (status stays)
+  dueOn?: string | null; // "YYYY-MM-DD"; null clears
 }
 
 export type IssuePatch = Partial<Omit<IssueInput, "team">> & {
@@ -341,7 +344,20 @@ export interface IssueFilter {
   parent?: string;
   q?: string; // matches identifier, title, description
   subscribed?: boolean; // true: only issues you're subscribed to
+  due?: DueFilter;
+  sort?: IssueSort;
 }
+
+/**
+ * Linear's due-date filters, by the server's date (UTC): overdue (before today, open issues only), soon (today to 7 days
+ * ahead), today, any (has a due date), none (no due date).
+ */
+export const DUE_FILTERS = ["overdue", "soon", "today", "any", "none"] as const;
+export type DueFilter = (typeof DUE_FILTERS)[number];
+
+/** List order: default (status, priority, most recently updated) or due (earliest due date first, none last; then default). */
+export const ISSUE_SORTS = ["default", "due"] as const;
+export type IssueSort = (typeof ISSUE_SORTS)[number];
 
 export const NOTIFICATION_KINDS = ["assigned", "delegated", "mentioned", "commented", "status"] as const;
 export type NotificationKind = (typeof NOTIFICATION_KINDS)[number];

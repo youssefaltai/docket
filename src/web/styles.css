@@ -769,6 +769,45 @@ fieldset.plain {
   height: 13px;
 }
 
+/* Due dates: red when due today or overdue, orange within a week, gray otherwise. */
+.due {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.due > svg {
+  width: 13px;
+  height: 13px;
+}
+.due-now {
+  color: var(--danger);
+}
+.due-soon {
+  color: var(--urgent);
+}
+.due-prop {
+  position: relative;
+}
+.due-prop:not(.due-now, .due-soon) > svg {
+  color: var(--muted);
+}
+.due-prop:focus-within {
+  background: var(--bg-hover);
+}
+/* The native input covers the button, invisible: a tap or click opens the browser's date picker. */
+.due-prop > input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
 .labels {
   display: flex;
   gap: 4px;

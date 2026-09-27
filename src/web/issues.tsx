@@ -1,6 +1,6 @@
 // Issues view: header with search + filters, and the list / board layouts.
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { CLOSED_STATUSES, STATUSES, STATUS_LABELS, type IssueSummary, type Status } from "../shared/types";
+import { CLOSED_STATUSES, STATUSES, STATUS_LABELS, type DueFilter, type IssueSummary, type Status } from "../shared/types";
 import { api, store } from "./api";
 import { getYou } from "./auth";
 import { AssigneePicker, Picker, PriorityPicker, StatusPicker, useMembers, userOption } from "./pickers";
@@ -8,7 +8,9 @@ import {
   Avatar,
   BlockedIcon,
   BoardIcon,
+  CalendarIcon,
   ChevronDownIcon,
+  DueChip,
   EmptyState,
   IssuesIcon,
   Kbd,
@@ -48,8 +50,9 @@ export function IssuesView({ teamKey }: { teamKey: string | null }) {
   const [label, setLabel] = useState("");
   const [assignee, setAssignee] = useState("");
   const [delegate, setDelegate] = useState("");
+  const [due, setDue] = useState<DueFilter | "">("");
   const q = useDebounced(search.trim(), 150);
-  const filtered = !!(q || label || assignee || delegate);
+  const filtered = !!(q || label || assignee || delegate || due);
 
   useEffect(() => {
     nav.lastList = location.pathname;
@@ -63,8 +66,8 @@ export function IssuesView({ teamKey }: { teamKey: string | null }) {
     reload,
     invalidate,
   } = useFetch(
-    () => api.issues({ team: teamKey ?? undefined, q, label, assignee, delegate }),
-    [teamKey, q, label, assignee, delegate],
+    () => api.issues({ team: teamKey ?? undefined, q, label, assignee, delegate, due: due || undefined }),
+    [teamKey, q, label, assignee, delegate, due],
   );
 
   const patch: Patch = (id, p) => {
@@ -86,6 +89,7 @@ export function IssuesView({ teamKey }: { teamKey: string | null }) {
     setLabel("");
     setAssignee("");
     setDelegate("");
+    setDue("");
   };
 
   let body;
@@ -157,6 +161,8 @@ export function IssuesView({ teamKey }: { teamKey: string | null }) {
           setAssignee={setAssignee}
           delegate={delegate}
           setDelegate={setDelegate}
+          due={due}
+          setDue={setDue}
         />
         {filtered && (
           <button className="btn btn-ghost btn-sm" onClick={clearFilters}>
@@ -185,6 +191,8 @@ function Filters(props: {
   setAssignee: (v: string) => void;
   delegate: string;
   setDelegate: (v: string) => void;
+  due: DueFilter | "";
+  setDue: (v: DueFilter | "") => void;
 }) {
   const { labels, loadDirectory } = useApp();
   const people = useMembers("person");
@@ -242,9 +250,30 @@ function Filters(props: {
         </span>
         <ChevronDownIcon className="chip-caret" />
       </Picker>
+      <Picker
+        label="Filter by due date"
+        options={DUE_OPTIONS.map(([value, label]) => ({ value, label, icon: <CalendarIcon /> }))}
+        selected={[props.due]}
+        onPick={(v) => props.setDue(v as DueFilter | "")}
+        className={cls("chip", props.due && "chip-on")}
+      >
+        <CalendarIcon />
+        <span className="chip-text">{props.due ? DUE_OPTIONS.find(([v]) => v === props.due)![1] : "Due date"}</span>
+        <ChevronDownIcon className="chip-caret" />
+      </Picker>
     </>
   );
 }
+
+// Linear's due-date filters; the server applies them by its own date (UTC).
+const DUE_OPTIONS: [DueFilter | "", string][] = [
+  ["", "Any due date"],
+  ["overdue", "Overdue"],
+  ["soon", "Due soon"],
+  ["today", "Due today"],
+  ["any", "Has due date"],
+  ["none", "No due date"],
+];
 
 // ---------- List ----------
 
@@ -329,6 +358,7 @@ function IssueRow({ issue, onPatch }: { issue: IssueSummary; onPatch: Patch }) {
       </Link>
       <Blocked by={issue.blockedBy} />
       <span className="grow" />
+      <DueChip issue={issue} />
       <Labels labels={issue.labels} max={3} />
       <AssigneePicker value={issue.assignee} onChange={(assignee) => set({ assignee })} className="row-btn" align="end" />
       <time className="row-time" dateTime={issue.updatedAt} title={`Updated ${fullDate(issue.updatedAt)}`}>
@@ -458,6 +488,7 @@ function Card({
       <div className="card-meta">
         <PriorityPicker value={issue.priority} onChange={(priority) => set({ priority })} className="row-btn chip-icon" />
         <Blocked by={issue.blockedBy} />
+        <DueChip issue={issue} />
         <Labels labels={issue.labels} max={2} />
       </div>
     </div>
