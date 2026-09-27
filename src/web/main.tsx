@@ -5,6 +5,7 @@ import type { Inbox, IssueInput, Team, Workspace, WorkspaceMember } from "../sha
 import { api, connectionStore, setCurrentWorkspace, setOnAccessLost, setOnUnauthorized, store, subscribe } from "./api";
 import { auth, getMe, getYou, loadMe } from "./auth";
 import { ChatDock, ChatNavItem } from "./chat";
+import { CommandMenu, openCommandMenu } from "./commandmenu";
 import { DocPage, DocsView } from "./docs";
 import { InboxView } from "./inbox";
 import { IssuePage } from "./issue";
@@ -28,7 +29,9 @@ import {
   Link,
   LiveContext,
   Logo,
+  MOD,
   PlusIcon,
+  SearchIcon,
   TeamMark,
   Toaster,
   Confirm,
@@ -244,6 +247,7 @@ function App() {
     },
     newTeam: () => setModal({ kind: "team" }),
     newWorkspace: () => setModal({ kind: "workspace" }),
+    switchWorkspace,
     teamSettings: (team) => setModal({ kind: "team-settings", team }),
     setDocTeam,
     openNav: () => setNavOpen(true),
@@ -338,6 +342,7 @@ function App() {
         )}
         <Toaster />
         <Confirm />
+        <CommandMenu />
       </LiveContext.Provider>
     </AppContext.Provider>
   );
@@ -377,6 +382,11 @@ function Sidebar({ route, active, onSwitch }: { route: Route; active: string | n
         <ComposeIcon />
         <span>New issue</span>
         <Kbd>C</Kbd>
+      </button>
+      <button className="new-issue cmdk-trigger" onClick={openCommandMenu}>
+        <SearchIcon />
+        <span>Search</span>
+        <Kbd>{MOD}K</Kbd>
       </button>
       <nav className="nav">
         <Link to="/inbox" className={cls("nav-item", on("inbox") && "active")}>
