@@ -80,3 +80,50 @@ test("tools/list shows each caller only what it can use", async () => {
   expect(instructions).not.toContain("claim_issue");
   expect(await claude.instructions()).toContain("claim_issue");
 });
+
+test("the server says which Docket and workspace it is", async () => {
+  const server = await claude.server();
+  expect([server.name, server.title, server.websiteUrl]).toEqual(["docket-acme", "Docket · Acme", s.url.replace(/\/+$/, "")]);
+  expect(server.instructions).toStartWith(`You're connected to Docket at ${s.url.replace(/\/+$/, "")}, `);
+  expect(server.instructions).toContain('workspace "Acme" (acme), as @claude (agent). Every tool acts there.\nDocket is an issue tracker');
+  // A person's key names them as they're known there.
+  expect((await s.admin.server()).instructions).toContain('workspace "Acme" (acme), as @admin (person)');
+  // A read key keeps its read-only line (DKT-2), after this one.
+  const read = (await s.api("POST", "/api/api-keys", { name: "reader", scope: "read" })).body.token;
+  const lines = (await s.with({ token: read }).server()).instructions!.split("\n");
+  expect(lines[0]).toStartWith("You're connected to Docket at");
+  expect(lines).toContain("- This key is read-only: you can list and read everything here, but not change anything.");
+});
+
+test("the origin is DOCKET_URL when set, else the one the client used (honouring a proxy's)", async () => {
+  const other = await startServer({ env: { DOCKET_URL: "https://docket.example.com/" } });
+  try {
+    const server = await other.admin.server();
+    expect(server.websiteUrl).toBe("https://docket.example.com");
+    expect(server.instructions).toStartWith("You're connected to Docket at https://docket.example.com, ");
+  } finally {
+    await other.stop();
+  }
+  // Behind a proxy, without DOCKET_URL: the forwarded host and protocol.
+  const res = await fetch(new URL("/mcp", s.url), {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${claude.token}`,
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream",
+      "X-Forwarded-Host": "tracker.example.org",
+      "X-Forwarded-Proto": "https",
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "0" } },
+    }),
+  });
+  const { result } = (await res.json()) as any;
+  expect([result.serverInfo.websiteUrl, result.instructions.split(",")[0]]).toEqual([
+    "https://tracker.example.org",
+    "You're connected to Docket at https://tracker.example.org",
+  ]);
+});

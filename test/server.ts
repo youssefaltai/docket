@@ -1,6 +1,6 @@
 // Runs a real Docket server in a subprocess against a throwaway database, so tests only see HTTP.
 // Tests authenticate only through s.as / s.user / s.agent / s.anon, so an auth redesign touches this file alone.
-// MCP goes through the real SDK client, bearer only: a caller's tool(), tools() (what tools/list shows) and instructions().
+// MCP goes through the real SDK client, bearer only: a caller's tool(), tools() (what tools/list shows), instructions() and server().
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,6 +27,8 @@ export interface Caller {
   tools: () => Promise<string[]>;
   /** The MCP server's instructions for this caller. */
   instructions: () => Promise<string | undefined>;
+  /** Who the MCP server says it is (its `initialize` answer): serverInfo plus instructions. */
+  server: () => Promise<{ name: string; title?: string; websiteUrl?: string; instructions?: string }>;
   /** Opens /ws with this caller's credentials. */
   ws: () => Socket;
 }
@@ -149,6 +151,10 @@ export async function startServer(
       },
       async instructions() {
         return (await client()).getInstructions();
+      },
+      async server() {
+        const c = await client();
+        return { ...c.getServerVersion()!, instructions: c.getInstructions() };
       },
       ws() {
         return socket(new WebSocket(new URL("/ws", url.replace(/^http/, "ws")), { headers: { Origin: url, ...auth } } as never));

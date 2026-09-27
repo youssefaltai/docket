@@ -61,9 +61,9 @@ export function SettingsPage({ section }: { section: "account" | "workspace" }) 
 
 // ---------- Shared bits ----------
 
-/** The command that connects an MCP client with a token. */
-const mcpCommand = (token: string) =>
-  `claude mcp add --transport http --scope user docket ${location.origin}/mcp --header "Authorization: Bearer ${token}"`;
+/** Connects an MCP client to one workspace; the server's name says which. Local scope: the project it's run in. */
+const mcpCommand = (token: string, workspace: string) =>
+  `claude mcp add --transport http docket-${workspace} ${location.origin}/mcp --header "Authorization: Bearer ${token}"`;
 
 interface Shown {
   lead?: ReactNode;
@@ -74,6 +74,7 @@ interface Shown {
 
 const LINK_NOTE = "Expires in 15 minutes, works once.";
 const TOKEN_NOTE = "Shown once. Treat it like a password.";
+const COMMAND_NOTE = `${TOKEN_NOTE} Run it in the project folder the agent works in. Add --scope user to use it everywhere.`;
 const linkSecret = (link: CodeLink, lead?: ReactNode, note = LINK_NOTE): Shown => ({ lead, value: link.url, note, copies: [["link", link.url]] });
 
 /** A secret shown this one time: a link or a token, with copy buttons. */
@@ -353,7 +354,13 @@ function ApiKeys({ workspace }: { workspace: Workspace }) {
   };
   const created = (token: string) => {
     setAdding(false);
-    show({ value: token, note: TOKEN_NOTE, copies: [["token", token], ["MCP command", mcpCommand(token)]] });
+    const command = mcpCommand(token, workspace.key);
+    show({
+      lead: "Connect an MCP client with this command, or copy the token for scripts.",
+      value: command,
+      note: COMMAND_NOTE,
+      copies: [["command", command], ["token", token]],
+    });
     keys.reload();
   };
   return (
@@ -513,11 +520,11 @@ function Agents({ workspace, agents, reload }: { workspace: string; agents: Work
   const [adding, setAdding] = useState(false);
   const { secret, show } = useSecret();
   const showToken = (name: string, token: string) => {
-    const command = mcpCommand(token);
+    const command = mcpCommand(token, workspace);
     show({
       lead: <>Connect <strong dir="auto">{name}</strong> with this command.</>,
       value: command,
-      note: TOKEN_NOTE,
+      note: COMMAND_NOTE,
       copies: [["command", command], ["token", token]],
     });
     reload();
