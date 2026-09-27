@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import type { IssueFilter } from "../shared/types";
 import { api, store } from "./api";
-import { Board, IssueList } from "./issues";
+import { Board, IssueList, useListShortcuts } from "./issues";
 import { MY_TABS, type MyTab } from "./routing";
 import {
   BoardIcon,
@@ -57,6 +57,8 @@ export function MyIssuesView({ tab }: { tab: MyTab }) {
 
   const { data: issues, setData: setIssues, failed, reload, invalidate } = useFetch(() => api.issues(filterFor(tab)), [tab]);
   const shown = tab === "delegated" ? issues?.filter((i) => i.delegate) : issues;
+
+  useListShortcuts(setIssues, invalidate, reload);
 
   const patch = (id: string, p: IssueChange) => {
     invalidate();

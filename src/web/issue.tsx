@@ -55,6 +55,7 @@ import {
   useApp,
   useFetch,
   type CommentActions,
+  useIssueShortcuts,
   useResolved,
   TrashBanner,
 } from "./ui";
@@ -67,6 +68,10 @@ export function IssuePage({ id }: { id: string }) {
   useEffect(() => {
     document.title = `${issue ? `${issue.id} ${issue.title}` : id} · Docket`;
   }, [id, issue?.title]);
+
+  // S/P/A/D/L, I and ⌘⌫ click the matching data-cmd trigger anywhere on the page (the Properties panel's
+  // pickers, and the header's Claim/trash buttons below) — see useIssueShortcuts.
+  useIssueShortcuts(() => (issue ? { root: document.body, id: issue.id } : null));
 
   const teamKey = issue?.team ?? id.replace(/-\d+$/, "");
   const team = app.teams?.find((t) => t.key === teamKey);
@@ -216,7 +221,7 @@ export function IssuePage({ id }: { id: string }) {
       {header(
         <>
           {claimable && (
-            <button className="btn btn-sm" onClick={claim} title="Assign it to you and set it in progress">
+            <button className="btn btn-sm" data-cmd="claim" onClick={claim} title="Assign it to you and set it in progress">
               Claim
             </button>
           )}
@@ -225,7 +230,7 @@ export function IssuePage({ id }: { id: string }) {
             <CopyIcon />
           </button>
           {!issue.deletedAt && (
-            <button className="icon-btn" onClick={remove} aria-label="Delete issue" title="Delete issue">
+            <button className="icon-btn" data-cmd="delete" onClick={remove} aria-label="Delete issue" title="Delete issue">
               <TrashIcon />
             </button>
           )}
@@ -544,7 +549,7 @@ function Properties({ issue, patch }: { issue: Issue; patch: (p: IssueChange) =>
           {issue.delegate ? <span dir="auto">{issue.delegate.name}</span> : none}
         </DelegatePicker>
       </Prop>
-      <Prop label="Labels">
+      <Prop label="Labels" cmd="labels">
         <LabelsPicker value={issue.labels} onChange={(labels) => patch({ labels })} className="prop-btn prop-wrap">
           {issue.labels.length ? issue.labels.map((l) => <LabelChip key={l} name={l} />) : <span className="muted">Add labels</span>}
         </LabelsPicker>

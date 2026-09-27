@@ -15,6 +15,7 @@ import { MyIssuesView } from "./myissues";
 import { NewDocModal, NewIssueModal, NewTeamModal, NewWorkspaceModal, TeamSettingsModal } from "./modals";
 import { Picker } from "./pickers";
 import { SettingsPage } from "./settings";
+import { ShortcutsHelp } from "./shortcuts";
 import { TrashView } from "./trash";
 import {
   AppContext,
@@ -72,6 +73,9 @@ function App() {
   const [modal, setModal] = useState<ModalState>(null);
   const [navOpen, setNavOpen] = useState(false);
   const [docTeam, setDocTeam] = useState<string | null>(null);
+  const [helpOpen, setHelpOpen] = useState(false);
+  // `G` arms a 900ms window for a chord's second key (G I / G D / G S); anything else drops it.
+  const chord = useRef<number | null>(null);
 
   // The URL says which workspace this is (/acme/…). Where it names none (/, or a link from before), it's the one
   // you used last, else your first. Until the list loads, your workspaces as of boot.
@@ -258,12 +262,35 @@ function App() {
     if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey || modal || isEditable(e.target)) return;
     if (document.querySelector(".pop, .backdrop")) return;
     const key = e.key;
+
+    // A G-chord's second key: consumed whether or not it's bound, so a stray "GX" never falls through to X's
+    // own binding. Escape only cancels the chord — it still runs its own action below.
+    if (chord.current !== null && Date.now() - chord.current < 900) {
+      chord.current = null;
+      if (key !== "Escape") {
+        const k = key.toLowerCase();
+        if (k === "i") navigate("/my");
+        else if (k === "d") navigate("/docs");
+        else if (k === "s") navigate("/settings/account");
+        if (k === "i" || k === "d" || k === "s") e.preventDefault();
+        return;
+      }
+    } else if (key === "g" || key === "G") {
+      chord.current = Date.now();
+      return; // no bare-G binding: wait for the next key, or let the window lapse
+    } else {
+      chord.current = null;
+    }
+
     if (key === "c" || key === "C") {
       e.preventDefault();
       app.newIssue();
     } else if (key === "/") {
       e.preventDefault();
       focusSearch();
+    } else if (key === "?") {
+      e.preventDefault();
+      setHelpOpen(true);
     } else if (key === "Escape") {
       if (navOpen) setNavOpen(false);
       else if (route.view === "issue") navigate(nav.lastList);
@@ -343,6 +370,7 @@ function App() {
         <Toaster />
         <Confirm />
         <CommandMenu />
+        {helpOpen && <ShortcutsHelp onClose={() => setHelpOpen(false)} />}
       </LiveContext.Provider>
     </AppContext.Provider>
   );

@@ -97,6 +97,41 @@ export function useRun() {
 export const isEditable = (t: EventTarget | null) =>
   t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
 
+const PROP_CMD: Record<string, string> = { s: "status", p: "priority", a: "assignee", d: "delegate", l: "labels", i: "claim" };
+
+/**
+ * `S`/`P`/`A`/`D`/`L` (set status/priority/assignee/delegate/labels), `I` (claim) and `⌘⌫`/`Ctrl⌫` (delete to
+ * trash) on "the current issue": a focused list row/card, or the issue page. Each just clicks the matching
+ * `data-cmd` trigger within `scope().root` (the same attribute DKT-15's command menu clicks by, extended with
+ * `labels`, `claim` and `delete`); one a page doesn't render (a row has no Delegate or Labels picker, and no
+ * Claim/trash button at all) is silently a no-op, unless `fallback` implements it directly (a row's `I`/`⌘⌫`,
+ * which call the API itself — see `useListShortcuts` in issues.tsx).
+ *
+ * Guarded exactly like every other single-key shortcut (`isEditable`, an open popover/modal, IME composition),
+ * and excludes Shift so Shift-S (subscribe) keeps working.
+ */
+export function useIssueShortcuts(
+  scope: () => { root: ParentNode; id: string } | null,
+  fallback?: { claim: (id: string) => void; delete: (id: string) => void },
+) {
+  useKeydown((e) => {
+    if (e.defaultPrevented || e.shiftKey || e.altKey || isEditable(e.target)) return;
+    if (document.querySelector(".pop, .backdrop")) return;
+    const mod = e.metaKey || e.ctrlKey;
+    const cmd = mod ? (e.key === "Backspace" ? "delete" : null) : (PROP_CMD[e.key.toLowerCase()] ?? null);
+    if (!cmd) return;
+    const current = scope();
+    if (!current) return;
+    e.preventDefault();
+    const nodes = [...current.root.querySelectorAll<HTMLElement>(`[data-cmd="${cmd}"]`)];
+    const target = nodes.find((n) => n.offsetParent !== null);
+    const btn = target instanceof HTMLButtonElement ? target : target?.querySelector<HTMLButtonElement>("button");
+    if (btn) btn.click();
+    else if (cmd === "claim") fallback?.claim(current.id);
+    else if (cmd === "delete") fallback?.delete(current.id);
+  });
+}
+
 export const openCount = (t: Team) => OPEN_STATUSES.reduce((n, s) => n + t.counts[s], 0);
 
 /** An issue edit as the UI shows it (users as refs), so it can be applied optimistically. */
