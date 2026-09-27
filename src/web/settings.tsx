@@ -1,6 +1,6 @@
-// Settings: your account (profile, devices, API keys) and, for admins, the workspace (members, invites, agents).
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
-import type { ApiKeyScope, CodeLink, Role, Session, Workspace, WorkspaceMember } from "../shared/types";
+// Settings: your account (profile, devices, API keys) and, for admins, the workspace (members, invites, agents, webhooks).
+import { Fragment, useEffect, useState, type FormEvent, type ReactNode } from "react";
+import type { ApiKeyScope, CodeLink, Role, Session, Webhook, WebhookDelivery, WebhookResource, Workspace, WorkspaceMember } from "../shared/types";
 import { auth, getMe, getYou } from "./auth";
 import { Picker } from "./pickers";
 import {
@@ -447,6 +447,7 @@ function WorkspaceSettings({ workspace }: { workspace: Workspace }) {
         <>
           <Invite workspace={workspace.key} />
           <Agents workspace={workspace.key} agents={agents} reload={loadDirectory} />
+          <Webhooks workspace={workspace.key} />
         </>
       )}
     </>
@@ -609,5 +610,215 @@ function NewAgent({ workspace, onCancel, onCreated }: { workspace: string; onCan
       </Field>
       <FormButtons label="Add agent" disabled={!ready} onCancel={onCancel} />
     </form>
+  );
+}
+
+// ---------- Webhooks ----------
+
+const RESOURCES: [WebhookResource, string][] = [
+  ["Issue", "Issues"],
+  ["Comment", "Comments"],
+  ["Document", "Documents"],
+  ["Notification", "Agent notifications"],
+];
+const SIGNING_NOTE = "Shown once. Verify Docket-Signature (HMAC-SHA256 of the raw body) and reject a webhookTimestamp more than a minute off.";
+
+const hostOf = (url: string) => {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+};
+const hookName = (h: Webhook) => h.label || hostOf(h.url);
+const hookState = (h: Webhook) => (h.enabled ? "Enabled" : h.failures >= 10 ? "Disabled after 10 failed deliveries" : "Disabled");
+
+/** "in 58m", "in 12s": how long until `iso`. */
+function inTime(iso: string): string {
+  const s = Math.max(0, (Date.parse(iso) - Date.now()) / 1000);
+  return s < 60 ? `in ${Math.ceil(s)}s` : s < 3600 ? `in ${Math.round(s / 60)}m` : `in ${Math.round(s / 3600)}h`;
+}
+
+function deliveryState(d: WebhookDelivery): string {
+  if (d.status === "delivered") return `Delivered ${d.responseStatus}`;
+  if (d.status === "failed") return `Failed: ${d.error}`;
+  if (!d.nextAttemptAt) return "Pending";
+  return d.attempts ? `${d.error}, retry ${inTime(d.nextAttemptAt)}` : `Pending, sends ${inTime(d.nextAttemptAt)}`;
+}
+
+/** Endpoints that get this workspace's changes as they happen, signed. */
+function Webhooks({ workspace }: { workspace: string }) {
+  const hooks = useFetch(() => auth.webhooks(workspace), [workspace]);
+  const [editing, setEditing] = useState<Webhook | "new" | null>(null);
+  const [log, setLog] = useState<number | null>(null);
+  const { secret, show } = useSecret();
+  const showSecret = (name: string, value: string) =>
+    show({ lead: <>Signing secret for <strong dir="auto">{name}</strong>.</>, value, note: SIGNING_NOTE, copies: [["secret", value]] });
+  const update = (h: Webhook, patch: { enabled: boolean }) => auth.updateWebhook(workspace, h.id, patch).then(hooks.reload, errorToast);
+  const actions = (h: Webhook): [string, () => void][] => {
+    const name = hookName(h);
+    const rotate = async () => {
+      if (await ask(`New signing secret for ${name}? The old one stops working at once.`, "New secret"))
+        auth.rotateWebhookSecret(workspace, h.id).then(({ secret }) => showSecret(name, secret), errorToast);
+    };
+    const remove = async () => {
+      if (await ask(`Delete the webhook ${name}? Its delivery log goes with it.`, "Delete")) auth.deleteWebhook(workspace, h.id).then(hooks.reload, errorToast);
+    };
+    return [
+      ["Edit", () => setEditing(h)],
+      [h.enabled ? "Disable" : "Enable", () => update(h, { enabled: !h.enabled })],
+      ["New secret", rotate],
+      [log === h.id ? "Hide deliveries" : "Deliveries", () => setLog(log === h.id ? null : h.id)],
+      ["Delete", remove],
+    ];
+  };
+  const saved = (h: Webhook, newSecret?: string) => {
+    setEditing(null);
+    if (newSecret) showSecret(hookName(h), newSecret);
+    hooks.reload();
+  };
+  return (
+    <Section
+      title="Webhooks"
+      count={hooks.data?.length || undefined}
+      action={
+        !editing && (
+          <button className="btn btn-sm" onClick={() => setEditing("new")}>
+            <PlusIcon />
+            Add webhook
+          </button>
+        )
+      }
+    >
+      <p className="settings-hint">
+        Docket POSTs changes to your endpoint as they happen: issues, comments, docs, and your agents' notifications, so an agent can start when it's
+        delegated an issue or mentioned.
+      </p>
+      {secret}
+      {editing && <WebhookForm workspace={workspace} webhook={editing === "new" ? null : editing} onCancel={() => setEditing(null)} onSaved={saved} />}
+      {!!hooks.data?.length && (
+        <div className="settings-list">
+          {hooks.data.map((h) => (
+            <Fragment key={h.id}>
+              <Row
+                dim={!h.enabled}
+                title={<span dir="auto">{hookName(h)}</span>}
+                meta={
+                  <>
+                    <span className="mono">{h.url}</span>
+                    <span className="webhook-tags">
+                      <span className="webhook-tag">{hookState(h)}</span>
+                      {RESOURCES.filter(([r]) => h.resourceTypes.includes(r)).map(([r, label]) => (
+                        <span key={r} className="webhook-tag">
+                          {label}
+                        </span>
+                      ))}
+                    </span>
+                  </>
+                }
+              >
+                <RowMenu label={`Manage ${hookName(h)}`} actions={actions(h)} />
+              </Row>
+              {log === h.id && <Deliveries workspace={workspace} id={h.id} />}
+            </Fragment>
+          ))}
+        </div>
+      )}
+    </Section>
+  );
+}
+
+function WebhookForm({
+  workspace,
+  webhook,
+  onCancel,
+  onSaved,
+}: {
+  workspace: string;
+  webhook: Webhook | null;
+  onCancel: () => void;
+  onSaved: (h: Webhook, secret?: string) => void;
+}) {
+  const [url, setUrl] = useState(webhook?.url ?? "");
+  const [label, setLabel] = useState(webhook?.label ?? "");
+  const [types, setTypes] = useState<WebhookResource[]>(webhook?.resourceTypes ?? RESOURCES.map(([r]) => r));
+  const [error, setError] = useState("");
+  const { busy, run } = useRun();
+  const ready = !!url.trim() && types.length > 0 && !busy;
+  const toggle = (r: WebhookResource) => setTypes((t) => (t.includes(r) ? t.filter((x) => x !== r) : [...t, r]));
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    if (!ready) return;
+    setError("");
+    const input = { url: url.trim(), label: label.trim(), resourceTypes: types };
+    run(
+      async () => {
+        if (webhook) onSaved(await auth.updateWebhook(workspace, webhook.id, input));
+        else {
+          const { webhook: created, secret } = await auth.createWebhook(workspace, input);
+          onSaved(created, secret);
+        }
+      },
+      (e) => setError(errorText(e)),
+    );
+  };
+  return (
+    <form className="settings-form settings-card" onSubmit={submit}>
+      <Field label="URL" hint="Public https. Docket answers any 2xx as delivered, retries anything else, and never follows redirects.">
+        <input
+          className="input"
+          autoFocus
+          type="url"
+          autoCapitalize="off"
+          spellCheck={false}
+          placeholder="https://agents.example.com/docket"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+        />
+      </Field>
+      <Field label="Label">
+        <input className="input" dir="auto" placeholder="Agent runner" value={label} onChange={(e) => setLabel(e.target.value)} />
+      </Field>
+      <div className="field">
+        <span>Events</span>
+        <div className="webhook-checks">
+          {RESOURCES.map(([r, text]) => (
+            <label key={r}>
+              <input type="checkbox" checked={types.includes(r)} onChange={() => toggle(r)} />
+              {text}
+            </label>
+          ))}
+        </div>
+      </div>
+      {error && (
+        <p className="settings-error" role="alert" dir="auto">
+          {error}
+        </p>
+      )}
+      <FormButtons label={webhook ? "Save" : "Add webhook"} disabled={!ready} onCancel={onCancel} />
+    </form>
+  );
+}
+
+/** The newest 50 deliveries of one webhook. */
+function Deliveries({ workspace, id }: { workspace: string; id: number }) {
+  const log = useFetch(() => auth.webhookDeliveries(workspace, id), [workspace, id]);
+  if (!log.data) return null;
+  if (!log.data.length) return <div className="webhook-log settings-row settings-row-meta">No deliveries yet.</div>;
+  return (
+    <div className="webhook-log">
+      {log.data.map((d) => (
+        <Row
+          key={d.id}
+          dim={d.status === "failed"}
+          title={
+            <>
+              {d.type} {d.action} <span className="mono">{d.entity}</span>
+            </>
+          }
+          meta={meta(ago(d.createdAt), deliveryState(d), `${d.attempts} ${d.attempts === 1 ? "attempt" : "attempts"}`)}
+        />
+      ))}
+    </div>
   );
 }

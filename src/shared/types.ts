@@ -358,6 +358,66 @@ export interface Inbox {
   unread: number;
 }
 
+// --- Webhooks: a workspace's changes, POSTed to an endpoint as they happen (admins manage them in a browser session) ---
+
+export const WEBHOOK_RESOURCES = ["Issue", "Comment", "Document", "Notification"] as const;
+export type WebhookResource = (typeof WEBHOOK_RESOURCES)[number];
+export type WebhookAction = "create" | "update" | "remove";
+
+/** Never carries the secret: it's shown once, by create and rotate. */
+export interface Webhook {
+  id: number;
+  url: string;
+  label: string;
+  resourceTypes: WebhookResource[];
+  enabled: boolean;
+  failures: number; // deliveries in a row that failed for good; 10 disables the webhook
+  createdBy: UserRef;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WebhookInput {
+  url: string; // https (http and private addresses only with DOCKET_WEBHOOK_ALLOW_PRIVATE=true)
+  label?: string;
+  resourceTypes?: WebhookResource[]; // default: all four
+}
+
+export type WebhookPatch = Partial<WebhookInput> & { enabled?: boolean }; // enabling resets failures
+
+export interface WebhookDelivery {
+  id: number;
+  uuid: string; // Docket-Delivery, the same on every attempt
+  type: WebhookResource;
+  action: WebhookAction;
+  entity: string; // issue identifier, doc slug, comment id or notification id
+  status: "pending" | "delivered" | "failed";
+  attempts: number;
+  responseStatus: number | null;
+  error: string | null; // "HTTP 500", "timeout after 5 s", "blocked: 10.0.0.5 is private"; never a response body
+  createdAt: string;
+  lastAttemptAt: string | null;
+  nextAttemptAt: string | null;
+}
+
+/**
+ * The JSON body of every delivery. `data` by type: Issue `IssueSummary & { description, creator }`; Comment
+ * `Comment & { issue, document }` (identifier or slug); Document `DocumentSummary`; Notification
+ * `Notification & { user }` (an agent's: `delegated`, `mentioned`, `commented`, `status`).
+ */
+export interface WebhookPayload<T = unknown> {
+  action: WebhookAction;
+  type: WebhookResource;
+  workspace: string;
+  actor: UserRef;
+  createdAt: string; // when the change happened
+  data: T;
+  updatedFrom?: Record<string, unknown>; // update: previous values of the fields that changed
+  url: string; // the entity in the web app
+  webhookId: number;
+  webhookTimestamp: number; // ms, this attempt
+}
+
 // Pushed over the WebSocket at /ws after every mutation, to the workspace's members. "inbox" events (and
 // subscription changes) go only to that one user's sockets in that workspace.
 export interface ServerEvent {

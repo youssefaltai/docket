@@ -297,15 +297,15 @@ export function requirePerson(a: Actor, message = "Only people can do that") {
 }
 
 /**
- * Managing access (keys, sessions, codes, invites, members, agents, your profile) takes a signed-in
+ * Managing access (keys, sessions, codes, invites, members, agents, webhooks, your profile) takes a signed-in
  * session: an API key that could mint credentials would outlive its own revocation.
  */
 function requireSession(a: Actor) {
   if (a.sessionId === null) throw new AppError("Sign in to the web app to manage access; API keys can't", 403);
 }
 
-/** Managing a workspace's members, invites and agents: an admin, signed in. */
-function requireAdminSession(a: Actor, workspace: unknown): string {
+/** Managing a workspace's members, invites, agents and webhooks: an admin, signed in. */
+export function requireAdminSession(a: Actor, workspace: unknown): string {
   requireSession(a);
   return requireAdmin(a, workspace);
 }

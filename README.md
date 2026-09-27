@@ -135,6 +135,7 @@ Serve it over HTTPS anywhere but localhost. Give each Docket its own hostname: b
 | `DOCKET_HOSTS` | unset — extra hostnames (comma-separated) allowed in the `Host` header, besides `localhost`, e.g. `docket.example.com,vps.tailnet.ts.net`. Needed when serving over Tailscale or another hostname. |
 | `CHAT_URL` | unset — the docket-chat assistant's address: `http://docket-chat:7110` in Docker (see Add the assistant). Set, the web app shows the assistant and proxies `/api/chat/*` to it; unset, both are off. |
 | `DOCKET_NETWORK` | `docket` — the Docker network docket-chat joins. Give a second Docket on the same host (a test instance) its own. |
+| `DOCKET_WEBHOOK_ALLOW_PRIVATE` | unset — `true` lets webhooks (Workspace settings) target private, loopback and link-local addresses and plain `http`, e.g. an agent runner on the same host or tailnet. Otherwise only public `https` endpoints. Set it only if every workspace admin may reach this server's network. |
 
 In Docker, set these in a `.env` file next to `docker-compose.yml` (see `.env.example`). `PORT` there only changes the host-side port mapping; the container always listens on `7100` internally.
 

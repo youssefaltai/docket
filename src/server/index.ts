@@ -8,6 +8,7 @@ import { proxyChat } from "./chat.ts";
 import { onChange } from "./db.ts";
 import { HARD_MAX_BODY, http, publicFile, secure, webApp } from "./http.ts";
 import { handleMcp } from "./mcp.ts";
+import { startWebhooks } from "./webhooks.ts";
 
 /** Whose credentials each socket rides on, so signing out, revoking or suspending closes it. */
 interface SocketData {
@@ -94,7 +95,8 @@ onRevoke(({ userId, sessionId, keyId }) => {
   }
 });
 
-console.log(`Docket running at ${server.url}`);
 // Behind a proxy the listening address isn't where people open Docket; DOCKET_URL is (as for sign-in-link).
 const publicUrl = (process.env.DOCKET_URL || server.url.href).replace(/\/+$/, "");
+startWebhooks(publicUrl); // payload URLs point there too
+console.log(`Docket running at ${server.url}`);
 if (needsSetup()) console.log(`Setup code: ${formatCode(setupCode)} (open ${publicUrl}/setup to create the first account)`);

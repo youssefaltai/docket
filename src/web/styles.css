@@ -2686,6 +2686,37 @@ textarea.input {
 .settings-row.dim .avatar {
   opacity: 0.45;
 }
+.webhook-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+.webhook-tag {
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 18px;
+}
+.webhook-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+}
+.webhook-checks label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.webhook-log {
+  border-top: 1px solid var(--line);
+  background: var(--bg-subtle);
+}
+.webhook-log .settings-row {
+  min-height: 40px;
+  padding-left: 24px;
+}
 .secret {
   display: flex;
   flex-direction: column;
