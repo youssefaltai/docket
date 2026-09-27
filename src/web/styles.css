@@ -2347,6 +2347,37 @@ img.ProseMirror-separator {
   gap: 6px;
   padding: 8px 16px 16px;
 }
+.shortcuts-body {
+  max-height: 70vh;
+  overflow-y: auto;
+}
+.shortcuts-group + .shortcuts-group {
+  margin-top: 18px;
+}
+.shortcuts-group h3 {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.shortcuts-group table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.shortcuts-group td {
+  padding: 5px 0;
+  font-size: 13px;
+  vertical-align: top;
+}
+.shortcuts-group td:first-child {
+  width: 40%;
+  padding-right: 14px;
+}
+.shortcuts-group kbd {
+  margin: 0 1px;
+}
 .modal-foot {
   display: flex;
   align-items: center;

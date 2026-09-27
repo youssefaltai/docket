@@ -30,17 +30,54 @@ import {
   fullDate,
   nav,
   toPatch,
+  trashToast,
   type IssueChange,
   sortIssues,
   timeAgo,
   useApp,
   useDebounced,
   useFetch,
+  useIssueShortcuts,
   useResolved,
 } from "./ui";
 
 type View = "list" | "board";
 type Patch = (id: string, change: IssueChange) => void;
+
+/**
+ * `I` (claim) and `⌘⌫`/`Ctrl⌫` (delete to trash) on a focused row/card: the same API calls the issue page's
+ * own buttons make, applied to this list's state like any other row edit (see `useIssueShortcuts` for
+ * `S`/`P`/`A`, which click the row's own picker triggers instead). Shared by `IssuesView` and `MyIssuesView`.
+ */
+export function useListShortcuts(
+  setIssues: (fn: (list: IssueSummary[] | null) => IssueSummary[] | null) => void,
+  invalidate: () => number,
+  reload: () => void,
+) {
+  const claim = (id: string) => {
+    invalidate();
+    api.claimIssue(id).then((fresh) => setIssues((list) => list?.map((i) => (i.id === id ? fresh : i)) ?? null), errorToast);
+  };
+  const del = (id: string) => {
+    const at = [...document.querySelectorAll<HTMLElement>("[data-nav]")].findIndex((el) => el.closest<HTMLElement>("[data-issue-id]")?.dataset.issueId === id);
+    invalidate();
+    api.deleteIssue(id).then(() => {
+      setIssues((list) => list?.filter((i) => i.id !== id) ?? null);
+      trashToast(id, () => api.restoreIssue(id).then(reload, errorToast), `/issue/${id}`);
+      requestAnimationFrame(() => {
+        const items = document.querySelectorAll<HTMLElement>("[data-nav]");
+        items[Math.min(at, items.length - 1)]?.focus();
+      });
+    }, errorToast);
+  };
+  useIssueShortcuts(() => {
+    // data-issue-id is on the row/card itself, so this still resolves once a trigger inside it (a sibling of
+    // the title link) has focus — e.g. right after S/P/A closes and refocuses its own button.
+    const root = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>("[data-issue-id]");
+    const id = root?.dataset.issueId;
+    return root && id ? { root, id } : null;
+  }, { claim, delete: del });
+}
 
 export function IssuesView({ teamKey }: { teamKey: string | null }) {
   const app = useApp();
@@ -69,6 +106,8 @@ export function IssuesView({ teamKey }: { teamKey: string | null }) {
     () => api.issues({ team: teamKey ?? undefined, q, label, assignee, delegate, due: due || undefined }),
     [teamKey, q, label, assignee, delegate, due],
   );
+
+  useListShortcuts(setIssues, invalidate, reload);
 
   const patch: Patch = (id, p) => {
     invalidate(); // drop any in-flight fetch that predates this change
@@ -349,10 +388,12 @@ function StatusIconLabel({ status }: { status: Status }) {
 function IssueRow({ issue, onPatch }: { issue: IssueSummary; onPatch: Patch }) {
   const set = (p: IssueChange) => onPatch(issue.id, p);
   return (
-    <div className="row">
-      <PriorityPicker value={issue.priority} onChange={(priority) => set({ priority })} className="row-btn" />
+    // data-issue-id on the row itself (not just the title link) so it still resolves once a picker's trigger
+    // (a sibling) has focus, e.g. right after S/P/A closes and refocuses its own button.
+    <div className="row" data-issue-id={issue.id}>
+      <PriorityPicker value={issue.priority} onChange={(priority) => set({ priority })} className="row-btn" cmd="priority" />
       <span className="row-id">{issue.id}</span>
-      <StatusPicker value={issue.status} onChange={(status) => set({ status })} className="row-btn" />
+      <StatusPicker value={issue.status} onChange={(status) => set({ status })} className="row-btn" cmd="status" />
       <Link to={`/issue/${issue.id}`} className="row-title" data-nav dir="auto">
         {issue.title}
       </Link>
@@ -360,7 +401,7 @@ function IssueRow({ issue, onPatch }: { issue: IssueSummary; onPatch: Patch }) {
       <span className="grow" />
       <DueChip issue={issue} />
       <Labels labels={issue.labels} max={3} />
-      <AssigneePicker value={issue.assignee} onChange={(assignee) => set({ assignee })} className="row-btn" align="end" />
+      <AssigneePicker value={issue.assignee} onChange={(assignee) => set({ assignee })} className="row-btn" align="end" cmd="assignee" />
       <time className="row-time" dateTime={issue.updatedAt} title={`Updated ${fullDate(issue.updatedAt)}`}>
         {timeAgo(issue.updatedAt)}
       </time>
@@ -468,6 +509,7 @@ function Card({
   return (
     <div
       className={cls("card", dragging && "card-dragging")}
+      data-issue-id={issue.id}
       draggable
       onDragStart={(e) => {
         e.dataTransfer.setData("text/plain", issue.id);
@@ -477,16 +519,16 @@ function Card({
       onDragEnd={onDragEnd}
     >
       <div className="card-head">
-        <StatusPicker value={issue.status} onChange={(status) => set({ status })} className="row-btn" />
+        <StatusPicker value={issue.status} onChange={(status) => set({ status })} className="row-btn" cmd="status" />
         <span className="row-id">{issue.id}</span>
         <span className="grow" />
-        <AssigneePicker value={issue.assignee} onChange={(assignee) => set({ assignee })} className="row-btn" align="end" />
+        <AssigneePicker value={issue.assignee} onChange={(assignee) => set({ assignee })} className="row-btn" align="end" cmd="assignee" />
       </div>
       <Link to={`/issue/${issue.id}`} className="card-title" data-nav dir="auto" draggable={false}>
         {issue.title}
       </Link>
       <div className="card-meta">
-        <PriorityPicker value={issue.priority} onChange={(priority) => set({ priority })} className="row-btn chip-icon" />
+        <PriorityPicker value={issue.priority} onChange={(priority) => set({ priority })} className="row-btn chip-icon" cmd="priority" />
         <Blocked by={issue.blockedBy} />
         <DueChip issue={issue} />
         <Labels labels={issue.labels} max={2} />

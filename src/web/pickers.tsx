@@ -48,12 +48,14 @@ interface PickerProps {
   valueText?: string;
   className?: string;
   align?: "start" | "end";
+  /** `data-cmd` on the trigger button: the command menu and single-key shortcuts click it to open this picker. */
+  cmd?: string;
   children: ReactNode;
 }
 
 const coarse = matchMedia("(pointer: coarse)");
 
-export function Picker({ label, options, selected, onPick, multi, create, onOpen, valueText, className, align, children }: PickerProps) {
+export function Picker({ label, options, selected, onPick, multi, create, onOpen, valueText, className, align, cmd, children }: PickerProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
@@ -134,6 +136,7 @@ export function Picker({ label, options, selected, onPick, multi, create, onOpen
         ref={trigger}
         type="button"
         className={className}
+        data-cmd={cmd}
         aria-label={valueText ? `${label}: ${valueText}` : label}
         title={label}
         aria-haspopup="listbox"
@@ -216,7 +219,7 @@ export function Picker({ label, options, selected, onPick, multi, create, onOpen
   );
 }
 
-type Trigger = { className?: string; children?: ReactNode; align?: "start" | "end" };
+type Trigger = { className?: string; children?: ReactNode; align?: "start" | "end"; cmd?: string };
 const uniq = (xs: string[]) => [...new Set(xs)];
 
 /** A user as a picker option (value: username), marking the viewer. */
