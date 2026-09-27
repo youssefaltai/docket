@@ -7,11 +7,11 @@ beforeAll(async () => {
   s = await startServer();
   // /mcp is bearer-only, so MCP tests run as an agent, the real way it's used.
   claude = await s.agent("claude");
+  await s.api("POST", "/api/teams", { key: "MCP", workspace: s.workspace, name: "Agents" });
 });
 afterAll(() => s.stop());
 
 test("an agent can work through an issue", async () => {
-  await claude.tool("create_team", { key: "MCP", workspace: s.workspace, name: "Agents" });
   expect(await claude.tool("list_teams")).toContain("MCP");
 
   expect(await claude.tool("create_issue", { team: "MCP", title: "Wire it up", priority: 2 })).toContain("MCP-1");
@@ -42,4 +42,13 @@ test("MCP writes show up over REST", async () => {
 
 test("tool errors come back as errors", async () => {
   await expect(claude.tool("get_issue", { id: "MCP-999" })).rejects.toThrow();
+});
+
+test("agents can't create or change teams", async () => {
+  await expect(claude.tool("create_team", { key: "BOT", name: "Bot" })).rejects.toThrow();
+  expect((await claude.api("POST", "/api/teams", { key: "BOT", workspace: s.workspace, name: "Bot" })).status).toBe(403);
+  expect((await claude.api("PATCH", "/api/teams/MCP", { name: "x" })).status).toBe(403);
+  const teams = (await s.api("GET", "/api/teams")).body;
+  expect(teams.map((t: any) => t.key)).not.toContain("BOT");
+  expect(teams.find((t: any) => t.key === "MCP").name).toBe("Agents");
 });

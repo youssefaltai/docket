@@ -235,8 +235,8 @@ function requireAdmin(a: Actor, workspace: unknown): string {
   return key;
 }
 
-function requirePerson(a: Actor) {
-  if (a.kind !== "person") throw new AppError("Only people can do that", 403);
+export function requirePerson(a: Actor, message = "Only people can do that") {
+  if (a.kind !== "person") throw new AppError(message, 403);
 }
 
 /**

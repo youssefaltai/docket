@@ -41,7 +41,7 @@ export interface User extends UserRef {
   createdAt: string;
 }
 
-// Workspace roles. Agents are members with role "agent": they work in teams but manage nothing.
+// Workspace roles. Agents are members with role "agent": they work in teams but manage nothing (no teams, members or access).
 export type Role = "admin" | "member" | "agent";
 
 export interface Workspace {
