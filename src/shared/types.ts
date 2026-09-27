@@ -330,6 +330,7 @@ export interface IssueFilter {
   label?: string;
   assignee?: string; // username or "me"
   delegate?: string; // username or "me"
+  creator?: string; // username or "me" -- who filed it
   parent?: string;
   q?: string; // matches identifier, title, description
   subscribed?: boolean; // true: only issues you're subscribed to

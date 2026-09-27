@@ -10,6 +10,7 @@ import { InboxView } from "./inbox";
 import { IssuePage } from "./issue";
 import { IssuesView } from "./issues";
 import { Login, Setup } from "./login";
+import { MyIssuesView } from "./myissues";
 import { NewDocModal, NewIssueModal, NewTeamModal, NewWorkspaceModal, TeamSettingsModal } from "./modals";
 import { Picker } from "./pickers";
 import { SettingsPage } from "./settings";
@@ -182,8 +183,17 @@ function App() {
   }, [currentKey]);
   useEffect(loadDirectory, [loadDirectory, live]);
 
-  // Switching keeps you on the same kind of page: settings, docs, the inbox, or issues.
-  const same = route.view === "settings" ? `/settings/${route.section}` : route.view === "docs" || route.view === "doc" ? "/docs" : route.view === "inbox" ? "/inbox" : "";
+  // Switching keeps you on the same kind of page: settings, docs, the inbox, my issues, or issues.
+  const same =
+    route.view === "settings"
+      ? `/settings/${route.section}`
+      : route.view === "docs" || route.view === "doc"
+        ? "/docs"
+        : route.view === "inbox"
+          ? "/inbox"
+          : route.view === "my"
+            ? `/my/${route.tab}`
+            : "";
   const switchWorkspace = (key: string) => navigate(`/${key}${same}`);
 
   // Access changed under us (the socket closed with 4401): ask who we are now. A 401 goes to the sign-in
@@ -255,7 +265,7 @@ function App() {
       else if (route.view === "issue") navigate(nav.lastList);
       else if (route.view === "doc") navigate(nav.lastDocs);
       else (document.activeElement as HTMLElement | null)?.blur?.();
-    } else if (["issues", "docs", "inbox"].includes(route.view) && (key === "j" || key === "k" || key === "ArrowDown" || key === "ArrowUp")) {
+    } else if (["issues", "docs", "inbox", "my"].includes(route.view) && (key === "j" || key === "k" || key === "ArrowDown" || key === "ArrowUp")) {
       if (moveFocus(key === "j" || key === "ArrowDown" ? 1 : -1)) e.preventDefault();
     }
   });
@@ -283,6 +293,8 @@ function App() {
     <SettingsPage section={route.section} />
   ) : route.view === "inbox" ? (
     <InboxView />
+  ) : route.view === "my" ? (
+    <MyIssuesView key={route.tab} tab={route.tab} />
   ) : route.view === "issue" ? (
     <IssuePage key={route.id} id={route.id} />
   ) : route.view === "doc" ? (
@@ -375,6 +387,10 @@ function Sidebar({ route, active, onSwitch }: { route: Route; active: string | n
               {inbox.unread}
             </span>
           )}
+        </Link>
+        <Link to="/my" className={cls("nav-item", on("my") && "active")}>
+          <Avatar user={getYou()} />
+          <span className="nav-label">My Issues</span>
         </Link>
         <Link to="/" className={cls("nav-item", on("issues") && "active")}>
           <IssuesIcon />

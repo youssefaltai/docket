@@ -248,7 +248,7 @@ function Filters(props: {
 
 // ---------- List ----------
 
-function IssueList({ issues, onPatch }: { issues: IssueSummary[]; onPatch: Patch }) {
+export function IssueList({ issues, onPatch }: { issues: IssueSummary[]; onPatch: Patch }) {
   const [collapsed, setCollapsed] = useState(() => new Set(CLOSED_STATUSES));
   const sorted = useMemo(() => sortIssues(issues), [issues]);
   const toggle = (s: Status) =>
@@ -359,7 +359,7 @@ function Labels({ labels, max }: { labels: string[]; max: number }) {
 
 const BOARD_STATUSES = STATUSES.filter((s) => s !== "canceled");
 
-function Board({ issues, onPatch }: { issues: IssueSummary[]; onPatch: Patch }) {
+export function Board({ issues, onPatch }: { issues: IssueSummary[]; onPatch: Patch }) {
   const [dragging, setDragging] = useState<string | null>(null);
   const [over, setOver] = useState<Status | null>(null);
   const sorted = useMemo(() => sortIssues(issues), [issues]);

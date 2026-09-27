@@ -58,6 +58,7 @@ const issueFilter = (req: Request): IssueFilter => ({
   label: param(req, "label"),
   assignee: param(req, "assignee"),
   delegate: param(req, "delegate"),
+  creator: param(req, "creator"),
   parent: param(req, "parent"),
   q: param(req, "q"),
   subscribed: param(req, "subscribed") === "true" || undefined,

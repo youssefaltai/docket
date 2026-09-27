@@ -351,7 +351,7 @@ function createServer(a: Actor, origin: string): McpServer {
     "list_issues",
     {
       description:
-        "List issues, one line each: identifier · status · priority · title · @assignee · →@delegate · #labels. Sorted by status, then priority (urgent first, none last), then most recently updated. Only open issues (backlog, todo, in_progress, in_review) unless you pass `status`; there is no 'open' status, so for open issues leave `status` out. Pages of `limit` (default 50): when there are more, the output ends with a cursor to pass as `after` for the next page. Unknown team, assignee, delegate or parent is an error, not an empty list. Use get_issue for the description, comments, sub-issues and blockers.",
+        "List issues, one line each: identifier · status · priority · title · @assignee · →@delegate · #labels. Sorted by status, then priority (urgent first, none last), then most recently updated. Only open issues (backlog, todo, in_progress, in_review) unless you pass `status`; there is no 'open' status, so for open issues leave `status` out. Pages of `limit` (default 50): when there are more, the output ends with a cursor to pass as `after` for the next page. Unknown team, assignee, delegate, creator or parent is an error, not an empty list. Use get_issue for the description, comments, sub-issues and blockers.",
       inputSchema: {
         team: teamKey.optional(),
         status: z
@@ -363,6 +363,7 @@ function createServer(a: Actor, origin: string): McpServer {
         label: z.string().optional(),
         assignee: assignee.optional(),
         delegate: delegate.optional(),
+        creator: assignee.optional().describe('Who filed it: a username, or "me"'),
         parent: identifier.optional().describe("Only sub-issues of this issue, e.g. BRD-12"),
         query: z.string().optional().describe("Text to find in identifier, title or description"),
         subscribed: z.boolean().optional().describe("true: only issues you're subscribed to"),
