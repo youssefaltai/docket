@@ -1103,11 +1103,19 @@ fieldset.plain {
 }
 .event {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
   padding-left: 14px;
   font-size: 12.5px;
+  line-height: 18px;
   color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.event-icon {
+  display: flex;
+  flex: none;
+  align-items: center;
+  height: 18px;
 }
 .event-dot {
   width: 6px;
@@ -1115,6 +1123,24 @@ fieldset.plain {
   margin: 0 3px;
   border-radius: 50%;
   background: var(--border-strong);
+}
+.event-name {
+  font-weight: 600; /* as .comment-author: Arabic fallback fonts have no medium weight */
+  color: var(--text-2);
+}
+.event a {
+  color: var(--text-2);
+}
+.event-more {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--muted);
+  cursor: pointer;
+}
+.event-more:hover {
+  color: var(--text);
 }
 .comment {
   padding: 12px 14px;
@@ -2281,6 +2307,7 @@ textarea.input {
   .group-toggle,
   .inline-input,
   .desc-empty,
+  .event-more,
   .search {
     min-height: 44px;
   }

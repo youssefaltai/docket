@@ -195,12 +195,46 @@ export interface LabelCount {
   open: number; // open issues carrying it
 }
 
+export const ACTIVITY_KINDS = [
+  "created",
+  "title",
+  "description",
+  "status",
+  "priority",
+  "assignee",
+  "delegate",
+  "labels",
+  "parent",
+  "blockedBy",
+  "claimed",
+  "trashed",
+  "restored",
+] as const;
+export type ActivityKind = (typeof ACTIVITY_KINDS)[number];
+
+/**
+ * One change to an issue. from/to by kind: title, parent (identifier), status and claimed (Status) are strings;
+ * priority a number; assignee, delegate a UserRef; labels, blockedBy string arrays; null when unset, and both
+ * null for created, description, trashed, restored.
+ */
+export type ActivityValue = string | number | string[] | UserRef | null;
+
+export interface Activity {
+  id: number;
+  kind: ActivityKind;
+  actor: UserRef;
+  from: ActivityValue;
+  to: ActivityValue;
+  createdAt: string; // the same for every change one mutation made
+}
+
 export interface Issue extends IssueSummary {
   description: string; // markdown
   creator: UserRef;
   children: IssueSummary[];
   blocks: string[]; // identifiers this issue blocks
   comments: Comment[];
+  activity: Activity[]; // its history, oldest first
   docs: DocumentSummary[]; // documents whose content mentions this issue
 }
 

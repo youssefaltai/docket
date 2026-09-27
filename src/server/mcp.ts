@@ -8,11 +8,13 @@ import {
   PRIORITIES,
   PRIORITY_LABELS,
   STATUSES,
+  type Activity,
   type Comment,
   type Document,
   type DocumentSummary,
   type Issue,
   type IssueSummary,
+  type Priority,
   type UserRef,
 } from "../shared/types.ts";
 import * as access from "./access.ts";
@@ -86,8 +88,63 @@ function details(issue: Issue): string {
   if (issue.deletedAt) parts.unshift(`**In the trash** since ${issue.deletedAt}: read-only until someone restores it.`);
   if (issue.children.length) parts.push(`## Sub-issues\n${issue.children.map(line).join("\n")}`);
   if (issue.docs.length) parts.push(`## Docs\n${issue.docs.map(docLine).join("\n")}`);
+  if (issue.activity.length) parts.push(historySection(issue.activity));
   if (issue.comments.length) parts.push(commentsSection(issue.comments));
   return parts.join("\n\n");
+}
+
+/** One change, compactly: `status todo → in_progress`, `labels +bug −ui`. */
+function change({ kind, from, to }: Activity): string {
+  const show = (v: Activity["from"]) => {
+    if (v === null || v === 0) return "none"; // 0: no priority
+    if (typeof v === "object") return at(v as UserRef);
+    return kind === "priority" ? PRIORITY_LABELS[v as Priority].toLowerCase() : String(v);
+  };
+  const diff = () => {
+    const [was, now] = [(from ?? []) as string[], (to ?? []) as string[]];
+    return [...now.filter((v) => !was.includes(v)).map((v) => `+${v}`), ...was.filter((v) => !now.includes(v)).map((v) => `−${v}`)].join(" ");
+  };
+  switch (kind) {
+    case "created":
+      return "created";
+    case "title":
+      return `title ${JSON.stringify(from)} → ${JSON.stringify(to)}`;
+    case "description":
+      return "edited the description";
+    case "labels":
+      return `labels ${diff()}`;
+    case "blockedBy":
+      return `blocked by ${diff()}`;
+    case "claimed":
+      return `claimed (${from} → ${to})`;
+    case "trashed":
+      return "moved to trash";
+    case "restored":
+      return "restored";
+    default:
+      return `${kind} ${show(from)} → ${show(to)}`;
+  }
+}
+
+const HISTORY_LINES = 30;
+
+/**
+ * One line per mutation, the latest 30: `time · @who · change, change`. A mutation's rows are consecutive,
+ * with one actor and time, and never repeat a kind (that starts the next mutation, made in the same millisecond).
+ */
+function historySection(activity: Activity[]): string {
+  const lines: { key: string; kinds: string[]; text: string[] }[] = [];
+  for (const row of activity) {
+    const key = `${row.createdAt} · ${at(row.actor)}`;
+    const last = lines.at(-1);
+    if (last?.key === key && !last.kinds.includes(row.kind)) {
+      last.kinds.push(row.kind);
+      last.text.push(change(row));
+    } else lines.push({ key, kinds: [row.kind], text: [change(row)] });
+  }
+  const cut = lines.length - HISTORY_LINES;
+  const shown = lines.slice(-HISTORY_LINES).map((l) => `${l.key} · ${l.text.join(", ")}`);
+  return `## History\n${cut > 0 ? `(${cut} earlier changes)\n` : ""}${shown.join("\n")}`;
 }
 
 function commentsSection(comments: Comment[]): string {
@@ -311,7 +368,7 @@ function createServer(a: Actor, origin: string): McpServer {
     "get_issue",
     {
       description:
-        "Get one issue by identifier (e.g. BRD-12): markdown description, status, priority, labels, assignee, delegate, parent, sub-issues, blocked-by/blocks, and comments. Read it before starting work on an issue.",
+        "Get one issue by identifier (e.g. BRD-12): markdown description, status, priority, labels, assignee, delegate, parent, sub-issues, blocked-by/blocks, and comments, plus its history: who changed what and when (latest 30). Read it before starting work on an issue.",
       inputSchema: { id: identifier },
       annotations: { readOnlyHint: true },
     },

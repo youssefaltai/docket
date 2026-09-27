@@ -292,6 +292,23 @@ const MIGRATIONS = [
   CREATE INDEX documents_team ON documents(team_id, position);
   CREATE INDEX documents_deleted ON documents(deleted_at) WHERE deleted_at IS NOT NULL;
   `,
+  // Issue history: one row per change, written in the same transaction as the change. kind has no CHECK, so
+  // later kinds need no rebuild (the app validates it); values are JSON. on_behalf_of_id: for changes Docket
+  // makes on its own, whose change set it off. History starts now: existing issues get their creation.
+  `
+  CREATE TABLE issue_activity (
+    id INTEGER PRIMARY KEY,
+    issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+    actor_id INTEGER NOT NULL REFERENCES users(id),
+    on_behalf_of_id INTEGER REFERENCES users(id),
+    kind TEXT NOT NULL,
+    from_value TEXT,
+    to_value TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX issue_activity_issue ON issue_activity(issue_id, id);
+  INSERT INTO issue_activity (issue_id, actor_id, kind, created_at) SELECT id, creator_id, 'created', created_at FROM issues ORDER BY id;
+  `,
 ];
 
 db.run("PRAGMA foreign_keys = OFF"); // a migration may rebuild a table (SQLite's 12-step ALTER); checked before each commit

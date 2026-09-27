@@ -439,21 +439,7 @@ function Docs({ issue }: { issue: Issue }) {
 }
 
 function Activity({ issue, actions }: { issue: Issue; actions: CommentActions }) {
-  return (
-    <Comments title="Activity" comments={issue.comments} actions={actions}>
-      <li className="event">
-        <span className="event-dot" />
-        Created <time title={fullDate(issue.createdAt)}>{ago(issue.createdAt)}</time>
-      </li>
-      {issue.completedAt && (
-        <li className="event">
-          <StatusIcon status={issue.status} size={12} />
-          Marked {STATUS_LABELS[issue.status].toLowerCase()}{" "}
-          <time title={fullDate(issue.completedAt)}>{ago(issue.completedAt)}</time>
-        </li>
-      )}
-    </Comments>
-  );
+  return <Comments title="Activity" comments={issue.comments} activity={issue.activity} actions={actions} />;
 }
 
 function Prop({ label, children }: { label: string; children: ReactNode }) {
