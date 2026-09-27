@@ -5,6 +5,9 @@ import { useSyncExternalStore } from "react";
 import { RESERVED_WORKSPACE_KEYS } from "../shared/types";
 import { getCurrentWorkspace } from "./api";
 
+export const MY_TABS = ["assigned", "created", "delegated", "subscribed"] as const;
+export type MyTab = (typeof MY_TABS)[number];
+
 type Page =
   | { view: "issues"; team: string | null }
   | { view: "docs"; team: string | null }
@@ -12,7 +15,8 @@ type Page =
   | { view: "issue"; id: string }
   | { view: "doc"; slug: string }
   | { view: "settings"; section: "account" | "workspace" }
-  | { view: "inbox" };
+  | { view: "inbox" }
+  | { view: "my"; tab: MyTab };
 
 /** A page, and the workspace in the URL's first segment: null for a path from before URLs carried one (or "/"). */
 export type Route = Page & { workspace: string | null };
@@ -27,6 +31,11 @@ function parsePage(path: string): Page {
   const settings = /^\/settings\/(account|workspace)\/?$/.exec(path);
   if (settings) return { view: "settings", section: settings[1] as "account" | "workspace" };
   if (/^\/inbox\/?$/.test(path)) return { view: "inbox" };
+  const my = /^\/my(?:\/([^/]+))?\/?$/.exec(path);
+  if (my) {
+    const tab = my[1] as MyTab | undefined;
+    return { view: "my", tab: tab && (MY_TABS as readonly string[]).includes(tab) ? tab : "assigned" };
+  }
   const issue = /^\/issue\/([^/]+)/.exec(path);
   if (issue) return { view: "issue", id: decodeURIComponent(issue[1]!).toUpperCase() };
   const doc = /^\/doc\/([^/]+)/.exec(path);
@@ -44,8 +53,8 @@ window.addEventListener("popstate", emitRoute);
 /** Where Esc / breadcrumbs go back to from an issue or doc page; a new doc opens in edit mode. */
 export const nav = { lastList: "/", lastDocs: "/docs", editDoc: "" };
 
-// App pages written without a workspace: /, /issue/…, /doc/…, /docs, /t/…, /settings/…, /inbox
-const PAGE = /^\/(?:$|(?:issue|doc|docs|t|settings|inbox)(?:[/?#]|$))/;
+// App pages written without a workspace: /, /issue/…, /doc/…, /docs, /t/…, /settings/…, /inbox, /my
+const PAGE = /^\/(?:$|(?:issue|doc|docs|t|settings|inbox|my)(?:[/?#]|$))/;
 
 /** An app path in the current workspace: "/issue/BRD-1" → "/acme/issue/BRD-1". Anything else stays as it is. */
 export function wsPath(path: string): string {

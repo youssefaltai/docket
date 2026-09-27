@@ -530,7 +530,7 @@ function queryIssues(a: Actor, filter: IssueFilter, after?: [number, number, str
     where.push("EXISTS (SELECT 1 FROM json_each(i.labels) WHERE value = ? COLLATE NOCASE)");
     params.push(filter.label);
   }
-  for (const field of ["assignee", "delegate"] as const) {
+  for (const field of ["assignee", "delegate", "creator"] as const) {
     if (!filter[field]) continue;
     const [condition, param] = userFilter(a, filter[field], workspace, field, `i.${field}_id`);
     where.push(condition);

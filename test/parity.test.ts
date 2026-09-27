@@ -88,7 +88,7 @@ test("new issues start in backlog, over REST and MCP", async () => {
 });
 
 test("a filter naming something unknown is 400, not an empty list", async () => {
-  for (const query of ["assignee=nobody", "delegate=nobody", "team=ZZZ", "parent=PAR-9999", "parent=garbage"]) {
+  for (const query of ["assignee=nobody", "delegate=nobody", "creator=nobody", "team=ZZZ", "parent=PAR-9999", "parent=garbage"]) {
     const res = await s.api("GET", `/api/issues?${query}`);
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/Unknown/);
@@ -101,6 +101,28 @@ test("a filter naming something unknown is 400, not an empty list", async () => 
   expect((await s.api("GET", "/api/issues?label=never-used")).body).toEqual([]);
   expect((await s.api("GET", "/api/issues?assignee=ana")).status).toBe(200);
   await expect(s.as("bot").tool("list_issues", { assignee: "nobody" })).rejects.toThrow("Unknown assignee");
+  await expect(s.as("bot").tool("list_issues", { creator: "nobody" })).rejects.toThrow("Unknown creator");
+});
+
+test("?creator= filters by who filed it, same semantics as assignee/delegate ('me', REST + MCP parity)", async () => {
+  const byAdmin = await create("Filed by admin");
+  const byAna = (await s.as("ana").api("POST", "/api/issues", { team: "PAR", title: "Filed by ana" })).body;
+
+  const admins = await s.api("GET", "/api/issues?creator=admin");
+  expect(ids(admins.body)).toContain(byAdmin.id);
+  expect(ids(admins.body)).not.toContain(byAna.id);
+
+  const anas = await s.api("GET", "/api/issues?creator=ana");
+  expect(ids(anas.body)).toEqual([byAna.id]);
+
+  // "me" is the caller.
+  expect(ids((await s.as("ana").api("GET", "/api/issues?creator=me")).body)).toEqual([byAna.id]);
+  expect(ids((await s.api("GET", "/api/issues?creator=me")).body)).toContain(byAdmin.id);
+
+  // MCP: same filter, same results.
+  expect(await s.as("ana").tool("list_issues", { creator: "me" })).toContain(byAna.id);
+  expect(await s.as("ana").tool("list_issues", { creator: "me" })).not.toContain(byAdmin.id);
+  expect(await s.tool("list_issues", { creator: "ana" })).toContain(byAna.id);
 });
 
 test("PATCH refuses fields it can't change, naming them", async () => {
