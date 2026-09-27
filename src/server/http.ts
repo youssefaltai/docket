@@ -91,7 +91,8 @@ export function http<T>(route: T, { api = true } = {}): T {
 
 /** The built app: the page (for every app URL) and its hashed files, all served with the headers. */
 export async function webApp(entry: string) {
-  const build = await Bun.build({ entrypoints: [entry], minify: true, publicPath: "/" });
+  // Split: the rich text editor is its own chunk, fetched on first edit.
+  const build = await Bun.build({ entrypoints: [entry], minify: true, splitting: true, publicPath: "/" });
   if (!build.success) throw new AggregateError(build.logs, "Building the web app failed");
   let page: Blob | undefined;
   const files: Record<string, (req: Request) => Response> = {};

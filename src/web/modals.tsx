@@ -1,8 +1,8 @@
 // New issue, doc, team and workspace dialogs.
-import { useRef, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { PRIORITY_LABELS, STATUS_LABELS, type IssueInput, type UserRef, type Workspace } from "../shared/types";
 import { api } from "./api";
-import { useMentionMenu } from "./editor";
+import { RichEditor } from "./editor";
 import { AssigneePicker, LabelsPicker, ParentPicker, PriorityPicker, TeamPicker, StatusPicker } from "./pickers";
 import {
   Avatar,
@@ -22,7 +22,6 @@ import {
   navigate,
   toast,
   useApp,
-  useAutosize,
   useRun,
 } from "./ui";
 
@@ -68,9 +67,8 @@ export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueIn
   }));
   const set = <K extends keyof Draft>(key: K) => (value: Draft[K]) => setDraft((d) => ({ ...d, [key]: value }));
   const { team, title, description, status, priority, labels, assignee, parent } = draft;
-  const desc = useRef<HTMLTextAreaElement>(null);
-  useAutosize(desc, description);
-  const mention = useMentionMenu(desc, description, set("description"));
+  // The description's editor loads on first use (focused then), or at once for a given description.
+  const [describing, setDescribing] = useState<false | "open" | "focus">(defaults.description ? "open" : false);
 
   const { busy, run } = useRun();
   const submit = () => {
@@ -109,23 +107,27 @@ export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueIn
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.metaKey && !e.ctrlKey) {
               e.preventDefault();
-              desc.current?.focus();
+              if (describing) document.querySelector<HTMLElement>(".modal .new-desc")?.focus();
+              else setDescribing("focus");
             }
           }}
         />
-        <textarea
-          ref={desc}
-          className="new-desc"
-          dir="auto"
-          rows={3}
-          placeholder="Add description… (Markdown)"
-          aria-label="Description"
-          value={description}
-          onChange={(e) => set("description")(e.target.value)}
-          {...mention.props}
-          onKeyDown={mention.onKeyDown}
-        />
-        {mention.menu}
+        {describing ? (
+          <RichEditor
+            className="new-desc"
+            label="Description"
+            placeholder="Add description…"
+            value={description}
+            onChange={set("description")}
+            autoFocus={describing === "focus"}
+            onSubmit={submit}
+            onCancel={onClose}
+          />
+        ) : (
+          <button className="new-desc new-desc-idle" onClick={() => setDescribing("focus")} onFocus={() => setDescribing("focus")}>
+            Add description…
+          </button>
+        )}
       </div>
       <div className="modal-chips">
         <StatusPicker value={status} onChange={set("status")} className="chip">

@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { CLOSED_STATUSES, PRIORITY_LABELS, STATUS_LABELS, type Issue } from "../shared/types";
 import { HttpError, api } from "./api";
-import { useMentionMenu } from "./editor";
+import { RichEditor } from "./editor";
 import { SubscribeButton } from "./inbox";
 import { AssigneePicker, BlockedByPicker, DelegatePicker, LabelsPicker, ParentPicker, PriorityPicker, StatusPicker } from "./pickers";
 import {
@@ -39,7 +39,6 @@ import {
   nav,
   sortIssues,
   useApp,
-  useAutosize,
   useFetch,
   type CommentActions,
   useResolved,
@@ -269,17 +268,6 @@ function Description({
   const [conflict, setConflict] = useState(false);
   const inFlight = useRef(false); // guards double ⌘↵ presses before `saving` re-renders
   const started = useRef<Edit>({ value, base: updatedAt });
-  const ref = useRef<HTMLTextAreaElement>(null);
-  useAutosize(ref, editing ? draft : "");
-  const mention = useMentionMenu(ref, draft, setDraft);
-
-  useEffect(() => {
-    const el = ref.current;
-    if (editing && el) {
-      el.focus();
-      el.setSelectionRange(el.value.length, el.value.length);
-    }
-  }, [editing]);
 
   const start = () => {
     started.current = { value, base: updatedAt };
@@ -319,53 +307,45 @@ function Description({
   if (editing)
     return (
       <div className="editor">
-        <textarea
-          ref={ref}
+        <RichEditor
           className="editor-input"
-          dir="auto"
-          value={draft}
+          label="Description"
           placeholder="Add a description…"
-          onChange={(e) => setDraft(e.target.value)}
-          {...mention.props}
-          onKeyDown={(e) => {
-            if (mention.onKeyDown(e)) return;
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-              e.preventDefault();
-              save();
-            } else if (e.key === "Escape") {
-              e.preventDefault();
-              close();
-            }
-          }}
-        />
-        {mention.menu}
-        {conflict && (
-          <div className="editor-conflict" role="alert">
-            <div className="editor-conflict-head">
-              <span>Someone changed this description while you were editing. Theirs:</span>
-              <span className="grow" />
-              <button className="btn btn-sm" onClick={takeTheirs}>
-                Use theirs
+          value={draft}
+          onChange={setDraft}
+          autoFocus
+          onSubmit={save}
+          onCancel={close}
+          footClass="editor-foot"
+          foot={
+            <>
+              <button className="btn btn-ghost btn-sm" onClick={close}>
+                Cancel
               </button>
-              <button className="btn btn-sm" onClick={rebase}>
-                Keep mine
+              <button className="btn btn-primary btn-sm" onClick={save} disabled={saving || conflict}>
+                {saving ? "Saving…" : "Save"} <Kbd>{MOD}↵</Kbd>
               </button>
+            </>
+          }
+        >
+          {conflict && (
+            <div className="editor-conflict" role="alert">
+              <div className="editor-conflict-head">
+                <span>Someone changed this description while you were editing. Theirs:</span>
+                <span className="grow" />
+                <button className="btn btn-sm" onClick={takeTheirs}>
+                  Use theirs
+                </button>
+                <button className="btn btn-sm" onClick={rebase}>
+                  Keep mine
+                </button>
+              </div>
+              <pre className="editor-theirs" dir="auto">
+                {value || "(empty)"}
+              </pre>
             </div>
-            <pre className="editor-theirs" dir="auto">
-              {value || "(empty)"}
-            </pre>
-          </div>
-        )}
-        <div className="editor-foot">
-          <span className="hint">Markdown supported</span>
-          <span className="grow" />
-          <button className="btn btn-ghost btn-sm" onClick={close}>
-            Cancel
-          </button>
-          <button className="btn btn-primary btn-sm" onClick={save} disabled={saving || conflict}>
-            {saving ? "Saving…" : "Save"} <Kbd>{MOD}↵</Kbd>
-          </button>
-        </div>
+          )}
+        </RichEditor>
       </div>
     );
 

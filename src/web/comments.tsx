@@ -1,11 +1,11 @@
 // A comment thread with composer, shared by issues and docs; an issue's history interleaves with it.
-import { Fragment, useRef, useState, type ReactNode } from "react";
+import { Fragment, useState, type ReactNode } from "react";
 import { PRIORITY_LABELS, STATUS_LABELS, type Activity, type Comment, type Priority, type Status, type UserRef } from "../shared/types";
 import { Avatar, isMe, Kbd, Section } from "./components";
-import { useMentionMenu } from "./editor";
+import { RichEditor } from "./editor";
 import { PencilIcon, StatusIcon, TrashIcon } from "./icons";
 import { Link } from "./routing";
-import { useAutosize, useRun } from "./hooks";
+import { useRun } from "./hooks";
 import { Markdown } from "./markdown";
 import { ask, errorToast } from "./toast";
 import { ago, fullDate, MOD } from "./util";
@@ -236,10 +236,8 @@ function Composer({
   onCancel?: () => void;
 }) {
   const [body, setBody] = useState(initial);
+  const [open, setOpen] = useState(!!onCancel); // the editor loads on first use
   const { busy, run } = useRun();
-  const ref = useRef<HTMLTextAreaElement>(null);
-  useAutosize(ref, body);
-  const mention = useMentionMenu(ref, body, setBody);
   const send = () => {
     const text = body.trim();
     if (text)
@@ -248,41 +246,37 @@ function Composer({
         setBody("");
       });
   };
+  if (!open)
+    return (
+      <button className="composer composer-idle" onClick={() => setOpen(true)} onFocus={() => setOpen(true)}>
+        Leave a comment…
+      </button>
+    );
   return (
     <div className="composer">
-      <textarea
-        ref={ref}
-        rows={2}
-        dir="auto"
+      <RichEditor
+        className="composer-input"
+        label="Comment"
         placeholder="Leave a comment…"
-        aria-label="Comment"
-        autoFocus={!!onCancel}
         value={body}
-        onChange={(e) => setBody(e.target.value)}
-        {...mention.props}
-        onKeyDown={(e) => {
-          if (mention.onKeyDown(e)) return;
-          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-            e.preventDefault();
-            send();
-          } else if (e.key === "Escape") {
-            e.preventDefault();
-            if (onCancel) onCancel();
-            else e.currentTarget.blur();
-          }
-        }}
+        onChange={setBody}
+        autoFocus
+        onSubmit={send}
+        onCancel={onCancel ?? (() => (document.activeElement as HTMLElement | null)?.blur())}
+        footClass="composer-foot"
+        foot={
+          <>
+            {onCancel && (
+              <button className="btn btn-ghost btn-sm" onClick={onCancel}>
+                Cancel
+              </button>
+            )}
+            <button className="btn btn-primary btn-sm" disabled={!body.trim() || busy} onClick={send}>
+              {action} <Kbd>{MOD}↵</Kbd>
+            </button>
+          </>
+        }
       />
-      {mention.menu}
-      <div className="composer-foot">
-        {onCancel && (
-          <button className="btn btn-ghost btn-sm" onClick={onCancel}>
-            Cancel
-          </button>
-        )}
-        <button className="btn btn-primary btn-sm" disabled={!body.trim() || busy} onClick={send}>
-          {action} <Kbd>{MOD}↵</Kbd>
-        </button>
-      </div>
     </div>
   );
 }
