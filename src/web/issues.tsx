@@ -47,8 +47,9 @@ export function IssuesView({ teamKey }: { teamKey: string | null }) {
   const [search, setSearch] = useState("");
   const [label, setLabel] = useState("");
   const [assignee, setAssignee] = useState("");
+  const [delegate, setDelegate] = useState("");
   const q = useDebounced(search.trim(), 150);
-  const filtered = !!(q || label || assignee);
+  const filtered = !!(q || label || assignee || delegate);
 
   useEffect(() => {
     nav.lastList = location.pathname;
@@ -64,8 +65,8 @@ export function IssuesView({ teamKey }: { teamKey: string | null }) {
     reload,
     invalidate,
   } = useFetch(
-    teamKey || workspace ? () => api.issues({ team: teamKey ?? undefined, workspace, q, label, assignee }) : null,
-    [teamKey, workspace, q, label, assignee],
+    teamKey || workspace ? () => api.issues({ team: teamKey ?? undefined, workspace, q, label, assignee, delegate }) : null,
+    [teamKey, workspace, q, label, assignee, delegate],
   );
 
   const patch: Patch = (id, p) => {
@@ -86,6 +87,7 @@ export function IssuesView({ teamKey }: { teamKey: string | null }) {
     setSearch("");
     setLabel("");
     setAssignee("");
+    setDelegate("");
   };
 
   let body;
@@ -150,7 +152,14 @@ export function IssuesView({ teamKey }: { teamKey: string | null }) {
         search={search}
         onSearch={setSearch}
       >
-        <Filters label={label} setLabel={setLabel} assignee={assignee} setAssignee={setAssignee} />
+        <Filters
+          label={label}
+          setLabel={setLabel}
+          assignee={assignee}
+          setAssignee={setAssignee}
+          delegate={delegate}
+          setDelegate={setDelegate}
+        />
         {filtered && (
           <button className="btn btn-ghost btn-sm" onClick={clearFilters}>
             Clear
@@ -170,14 +179,23 @@ export function IssuesView({ teamKey }: { teamKey: string | null }) {
   );
 }
 
-/** `assignee` is a username. */
-function Filters(props: { label: string; setLabel: (v: string) => void; assignee: string; setAssignee: (v: string) => void }) {
+/** `assignee` and `delegate` are usernames. */
+function Filters(props: {
+  label: string;
+  setLabel: (v: string) => void;
+  assignee: string;
+  setAssignee: (v: string) => void;
+  delegate: string;
+  setDelegate: (v: string) => void;
+}) {
   const { labels, loadDirectory } = useApp();
   const people = useMembers("person");
+  const agents = useMembers("agent");
   const me = getMe().user;
   const any = (label: string, icon: ReactNode) => ({ value: "", label, icon });
   const mine = props.assignee === me.username;
   const selected = people.find((u) => u.username === props.assignee) ?? null;
+  const selectedDelegate = agents.find((u) => u.username === props.delegate) ?? null;
   return (
     <>
       <button className={cls("chip", mine && "chip-on")} aria-pressed={mine} onClick={() => props.setAssignee(mine ? "" : me.username)}>
@@ -209,6 +227,20 @@ function Filters(props: { label: string; setLabel: (v: string) => void; assignee
         <Avatar user={selected} />
         <span className="chip-text" dir="auto">
           {selected?.name ?? (props.assignee || "Assignee")}
+        </span>
+        <ChevronDownIcon className="chip-caret" />
+      </Picker>
+      <Picker
+        label="Filter by delegate"
+        options={[any("Anyone", <Avatar user={null} />), ...agents.map(userOption)]}
+        selected={[props.delegate]}
+        onPick={props.setDelegate}
+        onOpen={loadDirectory}
+        className={cls("chip", props.delegate && "chip-on")}
+      >
+        <Avatar user={selectedDelegate} />
+        <span className="chip-text" dir="auto">
+          {selectedDelegate?.name ?? (props.delegate || "Delegate")}
         </span>
         <ChevronDownIcon className="chip-caret" />
       </Picker>
