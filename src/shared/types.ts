@@ -251,6 +251,7 @@ export interface Issue extends IssueSummary {
   comments: Comment[];
   activity: Activity[]; // its history, oldest first
   docs: DocumentSummary[]; // documents whose content mentions this issue
+  subscribed: boolean; // you (the caller) get its new comments and status changes in your inbox
 }
 
 export interface DocumentSummary {
@@ -269,6 +270,7 @@ export interface Document extends DocumentSummary {
   issues: IssueSummary[]; // issues mentioned in the content, in order of first mention
   comments: Comment[];
   versionCount: number;
+  subscribed: boolean; // you (the caller) get its new comments in your inbox
 }
 
 export interface DocumentVersionSummary {
@@ -330,14 +332,39 @@ export interface IssueFilter {
   delegate?: string; // username or "me"
   parent?: string;
   q?: string; // matches identifier, title, description
+  subscribed?: boolean; // true: only issues you're subscribed to
 }
 
-// Pushed over the WebSocket at /ws after every mutation, to the workspace's members.
+export const NOTIFICATION_KINDS = ["assigned", "delegated", "mentioned", "commented", "status"] as const;
+export type NotificationKind = (typeof NOTIFICATION_KINDS)[number];
+
+/** Something in your inbox: one event on an issue or doc, by someone else. */
+export interface Notification {
+  id: number;
+  kind: NotificationKind;
+  workspace: string;
+  actor: UserRef;
+  issue: { id: string; title: string; status: Status } | null; // id: identifier
+  document: { slug: string; title: string } | null;
+  comment: { id: number; excerpt: string } | null; // first 200 characters, newlines as spaces; null once deleted
+  status: Status | null; // kind "status": what it moved to
+  createdAt: string;
+  readAt: string | null;
+}
+
+/** GET /api/notifications: yours in the request's workspace, newest first, at most 500; `unread` counts them all. */
+export interface Inbox {
+  notifications: Notification[];
+  unread: number;
+}
+
+// Pushed over the WebSocket at /ws after every mutation, to the workspace's members. "inbox" events (and
+// subscription changes) go only to that one user's sockets in that workspace.
 export interface ServerEvent {
   type: "changed";
-  entity: "workspace" | "member" | "team" | "issue" | "document";
+  entity: "workspace" | "member" | "team" | "issue" | "document" | "inbox";
   workspace: string;
-  id: string; // workspace key, username, team key, issue identifier or document slug
+  id: string; // workspace key, username, team key, issue identifier or document slug; inbox: the recipient's username
 }
 
 export interface ApiError {

@@ -14,6 +14,7 @@ import {
   type DocumentSummary,
   type Issue,
   type IssueSummary,
+  type Notification,
   type Priority,
   type UserRef,
 } from "../shared/types.ts";
@@ -22,6 +23,7 @@ import type { Actor } from "./access.ts";
 import { actorOf } from "./auth.ts";
 import { AppError } from "./db.ts";
 import { originOf } from "./http.ts";
+import * as inbox from "./inbox.ts";
 import * as tracker from "./tracker.ts";
 
 /** Where this connection is and who it acts as. `username`: yours in `workspace`. */
@@ -40,7 +42,8 @@ ${
     : "- Working on an issue: get_issue, then claim_issue (an agent becomes its delegate, a person its assignee, and it moves to in_progress; if someone else holds it, pick another), post progress notes with comment_issue, then set in_review or done. There is no delete: set status canceled instead."
 }
 - Documents (specs, plans, notes) live in teams and are identified by a slug, e.g. "architecture". They are markdown: mention issues by identifier (BRD-2) and they auto-link; link other docs with [Title](/doc/slug). Change a long doc with update_document's \`edits\` rather than rewriting it.
-- Mention people or agents as @username (see list_members) in descriptions, comments and docs.`;
+- Mention people or agents as @username (see list_members) in descriptions, comments and docs.
+- Your inbox (list_notifications) is what needs you: issues delegated or assigned to you, @mentions of you, and new comments or status changes on issues and docs you're subscribed to (you're subscribed to what you create, claim, are assigned, delegated, mentioned in, or comment on). Check it when you start; mark items read once handled.`;
 
 const identifier = z.string().describe('Issue identifier: team key + number, e.g. "BRD-12" (case-insensitive)');
 const teamKey = z.string().describe('Team key, e.g. "BRD" (see list_teams)');
@@ -191,6 +194,14 @@ function docDetails(doc: Document): string {
   if (doc.issues.length) parts.push(`## Mentioned issues\n${doc.issues.map(line).join("\n")}`);
   if (doc.comments.length) parts.push(commentsSection(doc.comments));
   return parts.filter(Boolean).join("\n\n");
+}
+
+/** One line per notification: `#41 · unread · delegated · BRD-12 Fix login · by @ana · 5m ago · "excerpt"`. */
+function notificationLine(n: Notification): string {
+  const target = n.issue ? `${n.issue.id} ${n.issue.title}` : n.document ? `doc ${n.document.slug} (${n.document.title})` : "";
+  const kind = n.kind === "status" ? `status → ${n.status}` : n.kind;
+  const excerpt = n.comment && `"${n.comment.excerpt}"`;
+  return [`#${n.id}`, n.readAt ? "read" : "unread", kind, target, `by ${at(n.actor)}`, ago(n.createdAt), excerpt].filter(Boolean).join(" · ");
 }
 
 /** Mutations echo metadata only, so a long document isn't sent back on every edit. */
@@ -354,6 +365,7 @@ function createServer(a: Actor, origin: string): McpServer {
         delegate: delegate.optional(),
         parent: identifier.optional().describe("Only sub-issues of this issue, e.g. BRD-12"),
         query: z.string().optional().describe("Text to find in identifier, title or description"),
+        subscribed: z.boolean().optional().describe("true: only issues you're subscribed to"),
         limit: z.number().int().min(1).max(500).optional().describe("Page size (default 50)"),
         after: z.string().optional().describe("The cursor from the end of the previous page"),
       },
@@ -616,6 +628,67 @@ function createServer(a: Actor, origin: string): McpServer {
       tracker.deleteDocument(a, slug);
       return result(`Moved document ${slug} to the trash`, { ok: true });
     }),
+  );
+
+  register(
+    "list_notifications",
+    {
+      description:
+        'Your notifications, newest first, one line each: #id · unread · kind · target · by @actor · time · "excerpt". Kinds: delegated (an issue was delegated to you: start with get_issue and claim_issue), assigned, mentioned, commented, status (an issue you follow moved to in_review, done or canceled). Mark them read with mark_notifications_read when handled.',
+      inputSchema: {
+        unread: z.boolean().optional().describe("Only unread ones (default true); false lists read ones too"),
+        limit: z.number().int().min(1).max(200).optional().describe("How many (default 50)"),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    ({ unread = true, limit = 50 }) => {
+      const found = inbox.listInbox(a, { unread, limit });
+      const empty = unread ? "No unread notifications." : "Your inbox is empty.";
+      return result(found.notifications.map(notificationLine).join("\n") || empty, { ...found });
+    },
+  );
+
+  register(
+    "mark_notifications_read",
+    {
+      description: "Mark notifications read once you've handled them (or unread again): pass ids (from list_notifications, without the #) or all: true.",
+      inputSchema: {
+        ids: z.array(z.number().int()).optional().describe("Notification ids, e.g. [41, 42]"),
+        all: z.boolean().optional().describe("true: all of yours"),
+        read: z.boolean().optional().describe("Default true; false marks them unread"),
+      },
+    },
+    writes(({ ids, all, read = true }) => {
+      if ((ids === undefined) === (all !== true)) throw new AppError("Pass exactly one of ids or all: true");
+      const found = inbox.markRead(a, { ids, read });
+      return result(`Marked ${all ? "all" : ids!.map((id) => `#${id}`).join(", ")} ${read ? "read" : "unread"} · ${found.unread} unread left`, { ...found });
+    }),
+  );
+
+  register(
+    "subscribe",
+    {
+      description:
+        "Follow or unfollow an issue or doc: subscribers get its new comments and status changes in their inbox. You're subscribed automatically to what you create, claim, comment on, or are assigned, delegated or mentioned in.",
+      inputSchema: {
+        issue: identifier.optional().describe("The issue; pass this or document"),
+        document: slug.optional().describe("The document; pass this or issue"),
+        subscribed: z.boolean().optional().describe("Default true; false unsubscribes"),
+      },
+    },
+    writes(({ subscribed = true, ...target }) =>
+      commentOn(
+        target,
+        (id) => {
+          const issue = tracker.subscribeIssue(a, id, subscribed);
+          return result(`${subscribed ? "Subscribed to" : "Unsubscribed from"} ${issue.id}`, { issue });
+        },
+        (slug) => {
+          const document = tracker.subscribeDocument(a, slug, subscribed);
+          return result(`${subscribed ? "Subscribed to" : "Unsubscribed from"} document ${document.slug}`, docMeta(document));
+        },
+      ),
+    ),
   );
 
   return server;

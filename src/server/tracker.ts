@@ -2,10 +2,8 @@
 // workspace (requestWorkspace): team keys, identifiers and slugs resolve there, and anything elsewhere is
 // 404, as if it didn't exist.
 import type { SQLQueryBindings } from "bun:sqlite";
-import { marked, type Token } from "marked";
 import {
   CLOSED_STATUSES,
-  MENTION_PATTERN,
   PRIORITIES,
   STATUSES,
   type Activity,
@@ -33,7 +31,6 @@ import {
   type Trash,
   type UserKind,
   type UserRef,
-  mentionOf,
 } from "../shared/types.ts";
 import { type Actor, activeMemberId, requestWorkspace, requirePerson } from "./access.ts";
 import {
@@ -44,11 +41,13 @@ import {
   changed,
   checkOneOf,
   db,
+  mentionedIn,
   now,
   optionalText,
   pickSlug,
   requireText,
 } from "./db.ts";
+import * as inbox from "./inbox.ts";
 
 const checkStatus = (value: unknown) => checkOneOf(value, STATUSES, "status");
 const checkPriority = (value: unknown) => checkOneOf(value as Priority, PRIORITIES, "priority (0 none, 1 urgent, 2 high, 3 medium, 4 low)");
@@ -80,51 +79,30 @@ const userCols = (alias: string, p: string) =>
 
 // --- Mentions ---
 
-/** The @username candidates in markdown, as the renderer sees them: in prose, never in code or link text. */
-function mentionCandidates(text: string): string[] {
-  if (!text.includes("@")) return [];
-  const found: string[] = [];
-  const pattern = new RegExp(MENTION_PATTERN, "giu");
-  const inLinks = new Set<Token>(); // walkTokens visits a parent before its children
-  marked.walkTokens(marked.lexer(text), (t) => {
-    const children = "tokens" in t ? (t.tokens as Token[] | undefined) : undefined;
-    if (t.type === "link" || inLinks.has(t)) for (const child of children ?? []) inLinks.add(child);
-    else if (t.type === "text" && !children) for (const m of t.raw.matchAll(pattern)) found.push(m[1]!);
-  });
-  return found;
-}
-
 /**
- * Rebuilds who a text mentions: active members of its workspace named as @username (see MENTION_PATTERN). Call it
+ * Rebuilds who a text mentions: active members of its workspace named as @username (see `mentionedIn`). Call it
  * in the transaction that saves the text. `source` names the text ('issue:<id>' for a description, 'comment:<id>',
  * 'document:<id>', 'document_comment:<id>'); `owner` is the issue or doc it's in or on. Mentions the text still has
- * stay as they were; new ones are recorded by the actor at `time` (never the actor themselves) and returned, for
- * whoever notifies. `typing`: a doc autosaves mid-word, so a mention at the very end of the text doesn't count yet.
+ * stay as they were; new ones are recorded by the actor at `time` (never the actor themselves), subscribed to the
+ * owner, notified (with `commentId` when the text is a comment) and returned. `typing`: see `mentionedIn`.
  */
 function saveMentions(
   a: Actor,
   workspace: string,
   source: string,
-  owner: { issueId?: number; documentId?: number },
+  owner: inbox.Target,
   text: string,
   time: string,
-  { typing = false } = {},
+  { typing = false, commentId }: { typing?: boolean; commentId?: number } = {},
 ): number[] {
-  const candidates = mentionCandidates(typing ? text.replace(/@[a-z0-9._-]*$/i, "") : text);
-  const members = new Map(
-    (candidates.length
-      ? db
-          .query<{ username: string; user_id: number }, [string]>("SELECT username, user_id FROM workspace_members WHERE workspace = ? AND suspended_at IS NULL")
-          .all(workspace)
-      : []
-    ).map((m) => [m.username, m.user_id]),
-  );
-  const ids = new Set(candidates.map((c) => members.get(mentionOf(c, (u) => members.has(u)) ?? "")).filter((id) => id !== undefined));
+  const ids = mentionedIn(workspace, text, typing);
   const had = db.query<{ user_id: number }, [string]>("SELECT user_id FROM mentions WHERE source = ?").all(source).map((r) => r.user_id);
   for (const id of had) if (!ids.has(id)) db.query("DELETE FROM mentions WHERE source = ? AND user_id = ?").run(source, id);
   const fresh = [...ids].filter((id) => !had.includes(id) && id !== a.id);
   const insert = db.query("INSERT INTO mentions (source, user_id, issue_id, document_id, author_id, created_at) VALUES (?, ?, ?, ?, ?, ?)");
-  for (const id of fresh) insert.run(source, id, owner.issueId ?? null, owner.documentId ?? null, a.id, time);
+  const [issueId, documentId] = "issueId" in owner ? [owner.issueId, null] : [null, owner.documentId];
+  for (const id of fresh) insert.run(source, id, issueId, documentId, a.id, time);
+  inbox.mentioned(fresh, { actorId: a.id, workspace, target: owner, commentId }, time);
   return fresh;
 }
 
@@ -156,15 +134,22 @@ function listComments(owner: CommentOwner, ownerId: number, workspace: string): 
     }));
 }
 
+const targetOf = (owner: CommentOwner, ownerId: number): inbox.Target => (owner === "issue" ? { issueId: ownerId } : { documentId: ownerId });
+
 /** Rebuilds a comment's mentions (see saveMentions). */
 const commentMentions = (a: Actor, owner: CommentOwner, ownerId: number, workspace: string, id: number, body: string, time: string) =>
-  saveMentions(a, workspace, `${COMMENTS[owner].source}:${id}`, owner === "issue" ? { issueId: ownerId } : { documentId: ownerId }, body, time);
+  saveMentions(a, workspace, `${COMMENTS[owner].source}:${id}`, targetOf(owner, ownerId), body, time, { commentId: id });
 
+/** Adds a comment: its author follows the issue or doc, and its other subscribers hear of it (unless it mentions them). */
 function insertComment(a: Actor, owner: CommentOwner, ownerId: number, workspace: string, body: unknown, time: string): number {
   const { table, column } = COMMENTS[owner];
   const text = requireText(body, "body");
   const id = Number(db.query(`INSERT INTO ${table} (${column}, author_id, body, created_at) VALUES (?, ?, ?, ?)`).run(ownerId, a.id, text, time).lastInsertRowid);
-  commentMentions(a, owner, ownerId, workspace, id, text, time);
+  const mentioned = commentMentions(a, owner, ownerId, workspace, id, text, time);
+  const target = targetOf(owner, ownerId);
+  inbox.subscribe(a.id, target, time);
+  const others = inbox.subscribers(target).filter((u) => !mentioned.includes(u));
+  inbox.notify(others, { kind: "commented", actorId: a.id, workspace, target, commentId: id }, time);
   return id;
 }
 
@@ -196,6 +181,7 @@ function deleteComment(a: Actor, owner: CommentOwner, ownerId: number, workspace
   const id = ownComment(a, owner, ownerId, workspace, commentId);
   db.query(`DELETE FROM ${COMMENTS[owner].table} WHERE id = ?`).run(id);
   db.query("DELETE FROM mentions WHERE source = ?").run(`${COMMENTS[owner].source}:${id}`);
+  inbox.commentDeleted(targetOf(owner, ownerId), id);
 }
 
 // --- Teams ---
@@ -527,6 +513,10 @@ function queryIssues(a: Actor, filter: IssueFilter, after?: [number, number, str
     where.push("i.parent_id = ?");
     params.push(parent);
   }
+  if (filter.subscribed) {
+    where.push("EXISTS (SELECT 1 FROM subscriptions s WHERE s.issue_id = i.id AND s.user_id = ?)");
+    params.push(a.id);
+  }
   if (after) {
     const [s, p, u, id] = after;
     where.push(`(${STATUS_RANK} > ? OR (${STATUS_RANK} = ? AND (${PRIORITY_RANK} > ? OR (${PRIORITY_RANK} = ? AND (i.updated_at < ? OR (i.updated_at = ? AND i.id < ?))))))`);
@@ -544,15 +534,31 @@ type Change = { kind: ActivityKind; from?: unknown; to?: unknown };
 // Kinds whose values aren't stored: `created` and the trash have none, and descriptions aren't diffed.
 const NO_VALUES: ActivityKind[] = ["created", "description", "trashed", "restored"];
 
+// Moving into these tells an issue's subscribers: work handed back for review, finished or dropped.
+const ANNOUNCED: Status[] = ["in_review", "done", "canceled"];
+
 /**
  * Records a mutation's changes, one row each, at its `time`. Call it once per mutation, as the last statement
  * of its transaction, so whatever runs here later sees the final state and rolls back with the change.
  * Values as they are in memory (users by id, parent and blockers by identifier), stored as JSON.
+ * Then the inbox: creating or claiming subscribes the actor; a new assignee or delegate is subscribed and told;
+ * a move into in_review, done or canceled tells the subscribers.
  */
-function logActivity(a: Actor, issueId: number, changes: Change[], time: string) {
+function logActivity(a: Actor, issueId: number, workspace: string, changes: Change[], time: string) {
   const insert = db.query("INSERT INTO issue_activity (issue_id, actor_id, kind, from_value, to_value, created_at) VALUES (?, ?, ?, ?, ?, ?)");
   const json = (kind: ActivityKind, value: unknown) => (NO_VALUES.includes(kind) || value == null ? null : JSON.stringify(value));
   for (const { kind, from, to } of changes) insert.run(issueId, a.id, kind, json(kind, from), json(kind, to), time);
+  const target = { issueId };
+  const event = { actorId: a.id, workspace, target };
+  for (const { kind, to } of changes) {
+    if (kind === "created" || kind === "claimed") inbox.subscribe(a.id, target, time);
+    else if ((kind === "assignee" || kind === "delegate") && typeof to === "number") {
+      inbox.subscribe(to, target, time);
+      inbox.notify([to], { ...event, kind: kind === "assignee" ? "assigned" : "delegated" }, time);
+    } else if (kind === "status" && ANNOUNCED.includes(to as Status)) {
+      inbox.notify(inbox.subscribers(target), { ...event, kind: "status", status: to as Status }, time);
+    }
+  }
 }
 
 // The fields of an issue's history, from an ISSUE_SELECT row, in the order a mutation lists them.
@@ -628,6 +634,7 @@ export function getIssue(a: Actor, identifier: string): Issue {
     comments: listComments("issue", id, row.workspace),
     activity: listActivity(id, row.workspace),
     docs,
+    subscribed: inbox.isSubscribed(a.id, { issueId: id }),
   };
 }
 
@@ -686,7 +693,7 @@ export function createIssue(a: Actor, input: IssueInput): Issue {
     for (const doc of docs) saveRefs(doc.id, doc.content, team.workspace);
     saveMentions(a, team.workspace, `issue:${id}`, { issueId: id }, cols.description as string, time);
     const people = (["assignee", "delegate"] as const).filter((f) => cols[`${f}_id`] !== null);
-    logActivity(a, id, [{ kind: "created" }, ...people.map((kind) => ({ kind, from: null, to: cols[`${kind}_id`] }))], time);
+    logActivity(a, id, team.workspace, [{ kind: "created" }, ...people.map((kind) => ({ kind, from: null, to: cols[`${kind}_id`] }))], time);
     return { identifier, docs, refs };
   })();
   changed("issue", team.workspace, identifier);
@@ -736,7 +743,7 @@ export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Is
     if (blockers) setBlockers(id, blockers);
     const refs = bumpIssues(related, time);
     if (cols.description !== undefined) saveMentions(a, workspace, `issue:${id}`, { issueId: id }, cols.description as string, time);
-    logActivity(a, id, changes(before, read.get(id)!), time);
+    logActivity(a, id, workspace, changes(before, read.get(id)!), time);
     return refs;
   }).immediate();
   const issue = getIssue(a, identifier);
@@ -773,7 +780,7 @@ function trashIssue(a: Actor, identifier: string, trash: boolean): Issue {
   const refs = db.transaction(() => {
     db.query(`UPDATE issues SET deleted_at = ?, ${BUMPED_AT} WHERE id = ?`).run(trash ? time : null, time, time, issue.id);
     const refs = bumpIssues(relatives(issue.id), time);
-    logActivity(a, issue.id, [{ kind: trash ? "trashed" : "restored" }], time);
+    logActivity(a, issue.id, issue.workspace, [{ kind: trash ? "trashed" : "restored" }], time);
     return refs;
   })();
   changed("issue", issue.workspace, issue.ref);
@@ -848,7 +855,7 @@ export function claimIssue(a: Actor, identifier: string): Issue {
     if (row.holder === a.id && started) return false;
     const status = started ? row.status : "in_progress";
     db.query(`UPDATE issues SET ${slot} = ?, status = ?, ${BUMPED_AT} WHERE id = ?`).run(a.id, status, time, time, id);
-    logActivity(a, id, [{ kind: "claimed", from: row.status, to: status }], time);
+    logActivity(a, id, workspace, [{ kind: "claimed", from: row.status, to: status }], time);
     return true;
   }).immediate();
   const issue = getIssue(a, identifier);
@@ -877,6 +884,15 @@ export const updateIssueComment = (a: Actor, identifier: string, commentId: unkn
 
 export const deleteIssueComment = (a: Actor, identifier: string, commentId: unknown) =>
   changeIssueComments(a, identifier, (id, _, workspace) => deleteComment(a, "issue", id, workspace, commentId));
+
+/** Follows or unfollows an issue; it sticks until you create, claim, comment on or are assigned, delegated or mentioned in it. */
+export function subscribeIssue(a: Actor, identifier: string, on: boolean): Issue {
+  const issue = liveIssue(a, identifier);
+  if (on) inbox.subscribe(a.id, { issueId: issue.id }, now());
+  else inbox.unsubscribe(a.id, { issueId: issue.id });
+  changed("issue", issue.workspace, issue.ref, a.id);
+  return getIssue(a, identifier);
+}
 
 /** Labels in use in the request's workspace, each with how many open issues carry it. */
 export function listLabels(a: Actor): LabelCount[] {
@@ -1037,7 +1053,8 @@ export function getDocument(a: Actor, slug: string): Document {
     .all(row.id)
     .map(toSummary);
   const { n: versionCount } = db.query<{ n: number }, [number]>("SELECT COUNT(*) AS n FROM document_versions WHERE document_id = ?").get(row.id)!;
-  return { ...toDocSummary(row), content: row.content, issues, comments: listComments("document", row.id, row.workspace), versionCount };
+  const comments = listComments("document", row.id, row.workspace);
+  return { ...toDocSummary(row), content: row.content, issues, comments, versionCount, subscribed: inbox.isSubscribed(a.id, { documentId: row.id }) };
 }
 
 export function createDocument(a: Actor, input: DocumentInput): Document {
@@ -1057,6 +1074,7 @@ export function createDocument(a: Actor, input: DocumentInput): Document {
       .get(team.workspace, team.id, slug, title, content, position ?? nextPosition(team.id), time, time, a.id)!;
     saveVersion(id, title, content, a.id, time);
     saveRefs(id, content, team.workspace);
+    inbox.subscribe(a.id, { documentId: id }, time);
     saveMentions(a, team.workspace, `document:${id}`, { documentId: id }, content, time, { typing: true });
     return slug;
   })();
@@ -1131,6 +1149,15 @@ export const updateDocumentComment = (a: Actor, slug: string, commentId: unknown
 
 export const deleteDocumentComment = (a: Actor, slug: string, commentId: unknown) =>
   changeDocumentComments(a, slug, (id, _, workspace) => deleteComment(a, "document", id, workspace, commentId));
+
+/** Follows or unfollows a doc (see subscribeIssue). */
+export function subscribeDocument(a: Actor, slug: string, on: boolean): Document {
+  const row = liveDocument(a, slug);
+  if (on) inbox.subscribe(a.id, { documentId: row.id }, now());
+  else inbox.unsubscribe(a.id, { documentId: row.id });
+  changed("document", row.workspace, row.slug, a.id);
+  return getDocument(a, row.slug);
+}
 
 const VERSION_FROM = `FROM document_versions v JOIN documents d ON d.id = v.document_id ${userJoin("u", "v.author_id", "d.workspace")}`;
 

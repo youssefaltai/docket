@@ -18,6 +18,8 @@ interface SocketData {
 }
 const sockets = new Map<number, Set<Bun.ServerWebSocket<SocketData>>>();
 const topic = (workspace: string) => `workspace:${workspace}`;
+// Events for one user (their inbox, their subscriptions), per workspace: a key's socket hears only its own.
+const userTopic = (userId: number, workspace: string) => `user:${userId}:${workspace}`;
 
 const publicDir = join(import.meta.dir, "..", "..", "public");
 const iconsDir = join(publicDir, "icons");
@@ -64,7 +66,10 @@ const server = Bun.serve({
   websocket: {
     data: {} as SocketData,
     open(ws) {
-      for (const workspace of ws.data.workspaces) ws.subscribe(topic(workspace));
+      for (const workspace of ws.data.workspaces) {
+        ws.subscribe(topic(workspace));
+        ws.subscribe(userTopic(ws.data.userId, workspace));
+      }
       sockets.set(ws.data.userId, (sockets.get(ws.data.userId) ?? new Set()).add(ws));
     },
     close(ws) {
@@ -76,7 +81,9 @@ const server = Bun.serve({
 
 setInterval(purgeExpiredKeys, 60 * 60 * 1000);
 
-onChange((event) => server.publish(topic(event.workspace), JSON.stringify(event)));
+onChange((event, userId) =>
+  server.publish(userId === undefined ? topic(event.workspace) : userTopic(userId, event.workspace), JSON.stringify(event)),
+);
 
 // A socket only hears its workspaces as of when it opened, so any change to a user's access closes
 // theirs (or just the one riding on a revoked session or key); clients reconnect with what's current.
