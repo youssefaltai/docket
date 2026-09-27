@@ -27,7 +27,8 @@ const development = process.env.NODE_ENV !== "production";
 const web = development
   ? { page: (await import("../web/index.html")).default, files: {} }
   : await webApp(join(import.meta.dir, "..", "web", "index.html"));
-const APP_PATHS = ["/", "/login", "/setup", "/settings/*", "/t/*", "/issue/*", "/docs", "/doc/*"];
+// App URLs carry the workspace (/acme/issue/BRD-1). The older paths stay so the app can redirect links made before.
+const APP_PATHS = ["/", "/login", "/setup", "/settings/*", "/t/*", "/issue/*", "/docs", "/doc/*", "/:ws", "/:ws/*"];
 
 const server = Bun.serve({
   port: Number(process.env.PORT ?? 7100),
@@ -44,6 +45,7 @@ const server = Bun.serve({
         .filter((entry) => entry.isFile())
         .map(({ name }) => [`/icons/${name}`, publicFile(iconsDir, name, { "Cache-Control": "public, max-age=31536000, immutable" })]),
     ),
+    "/icons/*": (req: Request) => secure(req, new Response("Not found", { status: 404 })), // not the app shell of a workspace "icons"
     ...(Object.fromEntries(Object.entries(authRoutes).map(([path, route]) => [path, http(route)])) as typeof authRoutes),
     ...(Object.fromEntries(Object.entries(apiRoutes).map(([path, route]) => [path, http(guard(route))])) as typeof apiRoutes),
     "/mcp": http(guard(handleMcp, { mcp: true })),

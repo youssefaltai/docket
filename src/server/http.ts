@@ -22,7 +22,10 @@ const CSP = [
 
 const https = (req: Request) => new URL(req.url).protocol === "https:" || req.headers.get("x-forwarded-proto") === "https";
 
-/** Adds the security headers to a response (and no-store for API answers, which are per user). */
+/**
+ * Adds the security headers to a response. API answers are per user and per workspace: no-store, and
+ * Vary on the workspace header, so a cache (the service worker's offline fallback) never mixes workspaces.
+ */
 export function secure(req: Request, res: Response, { api = false } = {}): Response {
   const h = res.headers;
   h.set("Content-Security-Policy", CSP);
@@ -30,7 +33,10 @@ export function secure(req: Request, res: Response, { api = false } = {}): Respo
   h.set("X-Frame-Options", "DENY");
   h.set("Referrer-Policy", "no-referrer");
   if (https(req)) h.set("Strict-Transport-Security", "max-age=31536000");
-  if (api) h.set("Cache-Control", "no-store");
+  if (api) {
+    h.set("Cache-Control", "no-store");
+    h.append("Vary", "X-Docket-Workspace");
+  }
   return res;
 }
 

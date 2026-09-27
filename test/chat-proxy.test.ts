@@ -353,7 +353,7 @@ describe("with CHAT_URL", () => {
       { key: "acme", name: "Acme", role: "admin", you: { username: "admin", name: "Admin", kind: "person" } },
     ]);
 
-    const none = await s.api("POST", "/api/chat/echo", {});
+    const none = await s.as("admin", "cookie").api("POST", "/api/chat/echo", {}); // no X-Docket-Workspace
     expect([none.status, none.body.code]).toEqual([400, "invalid"]);
     const elsewhere = await echo("nope");
     expect([elsewhere.status, elsewhere.body.code]).toEqual([404, "not_found"]);

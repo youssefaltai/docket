@@ -296,7 +296,6 @@ export function NewTeamModal({ onClose }: { onClose: () => void }) {
       onSubmit={async () => {
         const team = await api.createTeam({
           key,
-          workspace: workspace!.key,
           name: name.trim(),
           description: description.trim() || undefined,
         });

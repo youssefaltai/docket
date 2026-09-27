@@ -1,8 +1,11 @@
 // Client-side routing: the URL <-> Route mapping, history, and the <Link> that keeps clicks in the app.
+// App URLs start with the workspace (/acme/issue/BRD-1), as in Linear.
 import type { AnchorHTMLAttributes, MouseEvent as ReactMouseEvent } from "react";
 import { useSyncExternalStore } from "react";
+import { RESERVED_WORKSPACE_KEYS } from "../shared/types";
+import { getCurrentWorkspace } from "./api";
 
-export type Route =
+type Page =
   | { view: "issues"; team: string | null }
   | { view: "docs"; team: string | null }
   | { view: "trash"; team: string }
@@ -10,7 +13,16 @@ export type Route =
   | { view: "doc"; slug: string }
   | { view: "settings"; section: "account" | "workspace" };
 
+/** A page, and the workspace in the URL's first segment: null for a path from before URLs carried one (or "/"). */
+export type Route = Page & { workspace: string | null };
+
 export function parseRoute(path: string): Route {
+  const first = /^\/([^/]+)/.exec(path)?.[1];
+  const workspace = first && !RESERVED_WORKSPACE_KEYS.includes(first) ? decodeURIComponent(first).toLowerCase() : null;
+  return { ...parsePage(workspace ? path.slice(first!.length + 1) || "/" : path), workspace };
+}
+
+function parsePage(path: string): Page {
   const settings = /^\/settings\/(account|workspace)\/?$/.exec(path);
   if (settings) return { view: "settings", section: settings[1] as "account" | "workspace" };
   const issue = /^\/issue\/([^/]+)/.exec(path);
@@ -30,7 +42,18 @@ window.addEventListener("popstate", emitRoute);
 /** Where Esc / breadcrumbs go back to from an issue or doc page; a new doc opens in edit mode. */
 export const nav = { lastList: "/", lastDocs: "/docs", editDoc: "" };
 
-export function navigate(to: string, replace = false) {
+// App pages written without a workspace: /, /issue/…, /doc/…, /docs, /t/…, /settings/…
+const PAGE = /^\/(?:$|(?:issue|doc|docs|t|settings)(?:[/?#]|$))/;
+
+/** An app path in the current workspace: "/issue/BRD-1" → "/acme/issue/BRD-1". Anything else stays as it is. */
+export function wsPath(path: string): string {
+  const workspace = getCurrentWorkspace();
+  return workspace && PAGE.test(path) ? `/${workspace}${path === "/" ? "" : path}` : path;
+}
+
+/** Goes to an app path; one written without a workspace goes there in the current one. */
+export function navigate(path: string, replace = false) {
+  const to = wsPath(path);
   if (to !== location.pathname + location.search) history[replace ? "replaceState" : "pushState"](null, "", to);
   emitRoute();
 }
@@ -49,10 +72,11 @@ export function usePath() {
 export const isPlainClick = (e: ReactMouseEvent) =>
   !e.defaultPrevented && e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey;
 
+/** A link to an app path; one written without a workspace (`/issue/BRD-1`) points into the current one. */
 export function Link({ to, onClick, ...rest }: { to: string } & AnchorHTMLAttributes<HTMLAnchorElement>) {
   return (
     <a
-      href={to}
+      href={wsPath(to)}
       {...rest}
       onClick={(e) => {
         onClick?.(e);

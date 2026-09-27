@@ -4,6 +4,7 @@
 import { createHash, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import {
   API_KEY_SCOPES,
+  RESERVED_WORKSPACE_KEYS,
   type ApiKey,
   type ApiKeyScope,
   type CodeInfo,
@@ -706,7 +707,11 @@ export function listWorkspaces(a: Actor): Workspace[] {
 /** A new workspace with its first admin, known there as `profile`. */
 function insertWorkspace(input: WorkspaceInput, adminId: number, profile: { username?: unknown; name?: unknown }): string {
   const name = requireText(input.name, "workspace name");
-  const key = pickSlug(input.key, name, (k) => exists("workspaces", "key", k), { label: "workspace key", fallback: "workspace" });
+  // Keys are the first segment of app URLs (/acme/issue/BRD-1), so the app's own paths can't be one.
+  const given = typeof input.key === "string" ? input.key.trim().toLowerCase() : undefined;
+  if (given && RESERVED_WORKSPACE_KEYS.includes(given)) throw new AppError(`Workspace key "${given}" is reserved`);
+  const taken = (k: string) => RESERVED_WORKSPACE_KEYS.includes(k) || exists("workspaces", "key", k);
+  const key = pickSlug(input.key, name, taken, { label: "workspace key", fallback: "workspace" });
   const time = now();
   db.query("INSERT INTO workspaces (key, name, created_at, updated_at) VALUES (?, ?, ?, ?)").run(key, name, time, time);
   addMember(key, adminId, "admin", profile, time);

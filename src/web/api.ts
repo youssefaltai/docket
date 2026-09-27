@@ -85,7 +85,7 @@ let signedInAs: string | null = null;
 export const setSignedInAs = (id: number) => (signedInAs = String(id));
 export const signedInHeader = (): Record<string, string> => (signedInAs ? { "x-docket-user": signedInAs } : {});
 
-/** The workspace this tab is in, sent as X-Docket-Workspace (the chat panel and new API keys act there). */
+/** The workspace this tab shows (the URL's), sent as X-Docket-Workspace: every data request acts there. */
 let currentWorkspace: string | null = null;
 export const setCurrentWorkspace = (key: string | null) => (currentWorkspace = key);
 export const getCurrentWorkspace = () => currentWorkspace;
@@ -155,7 +155,10 @@ export const api = {
   deleteComment: (id: string, cid: number) =>
     request<Issue>("DELETE", `/api/issues/${enc(id)}/comments/${cid}`),
 
-  labels: (workspace?: string) => request<string[]>("GET", `/api/labels${query({ workspace })}`),
+  labels: () => request<string[]>("GET", "/api/labels"),
+  /** Which of your workspaces a link made before URLs carried one points into (404 if none). */
+  locate: (what: { issue: string } | { doc: string } | { team: string }) =>
+    request<{ workspace: string }>("GET", `/api/locate?${new URLSearchParams(what)}`),
 
   documents: (filter: DocumentFilter = {}) =>
     request<DocumentSummary[]>("GET", `/api/documents${query(filter)}`),

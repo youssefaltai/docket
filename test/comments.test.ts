@@ -8,7 +8,7 @@ beforeAll(async () => {
   s = await startServer();
   await s.api("POST", "/api/workspaces", { key: "side", name: "Side" });
   await s.api("POST", "/api/teams", { key: "COM", workspace: s.workspace, name: "Comments" });
-  await s.api("POST", "/api/teams", { key: "SID", workspace: "side", name: "Side" });
+  await s.as("admin", "cookie", "side").api("POST", "/api/teams", { key: "SID", name: "Side" });
   await s.api("POST", "/api/issues", { team: "COM", title: "One" });
   await s.api("POST", "/api/documents", { team: "COM", title: "Notes", content: "x" });
   ana = await s.user("ana");
@@ -83,10 +83,13 @@ test("MCP: an agent edits and deletes its own comments, not other people's", asy
 test("labels: counts of open issues, scoped by workspace", async () => {
   await s.api("POST", "/api/issues", { team: "COM", title: "A", labels: ["bug", "ui"] });
   await s.api("POST", "/api/issues", { team: "COM", title: "B", labels: ["bug"], status: "done" });
-  await s.api("POST", "/api/issues", { team: "SID", title: "C", labels: ["infra"] });
+  const inSide = s.as("admin", "cookie", "side");
+  await inSide.api("POST", "/api/issues", { team: "SID", title: "C", labels: ["infra"] });
 
-  expect((await s.api("GET", "/api/labels")).body).toEqual(["bug", "infra", "ui"]);
-  expect((await s.api("GET", `/api/labels?workspace=${s.workspace}`)).body).toEqual(["bug", "ui"]);
+  // Each workspace's own: the request's (X-Docket-Workspace); ?workspace= is no longer read.
+  expect((await s.api("GET", "/api/labels")).body).toEqual(["bug", "ui"]);
+  expect((await s.api("GET", "/api/labels?workspace=side")).body).toEqual(["bug", "ui"]);
+  expect((await inSide.api("GET", "/api/labels")).body).toEqual(["infra"]);
   // A key lists its own workspace's labels.
   expect(await s.tool("list_labels")).toBe("bug · 1 open\nui · 1 open");
   const side = (await s.api("POST", "/api/api-keys", { name: "side", workspace: "side" })).body.token;

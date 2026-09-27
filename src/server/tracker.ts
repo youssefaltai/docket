@@ -1,5 +1,6 @@
-// Teams, issues, comments, labels and documents. Every function acts for an Actor and sees only the
-// workspaces it's an active member of: anything elsewhere is 404, as if it didn't exist.
+// Teams, issues, comments, labels and documents. Every function acts for an Actor in the request's one
+// workspace (requestWorkspace): team keys, identifiers and slugs resolve there, and anything elsewhere is
+// 404, as if it didn't exist.
 import type { SQLQueryBindings } from "bun:sqlite";
 import {
   CLOSED_STATUSES,
@@ -29,7 +30,7 @@ import {
   type UserKind,
   type UserRef,
 } from "../shared/types.ts";
-import { type Actor, activeMemberId, requestWorkspace, requireMember, requirePerson } from "./access.ts";
+import { type Actor, activeMemberId, requestWorkspace, requirePerson } from "./access.ts";
 import {
   AppError,
   BUMPED_AT,
@@ -38,7 +39,6 @@ import {
   changed,
   checkOneOf,
   db,
-  exists,
   now,
   optionalText,
   pickSlug,
@@ -55,16 +55,6 @@ function checkLabels(value: unknown): string[] {
   return [...new Set(value.map((l) => l.trim()).filter(Boolean))];
 }
 
-/**
- * The one workspace a filter asks for, else all of the actor's. A filter naming something unknown (or
- * outside your workspaces) is 400, not an empty list, so a typo can't pass for "nothing here".
- */
-function scopeWorkspaces(a: Actor, workspace?: string): string[] {
-  if (!workspace) return [...a.workspaces.keys()];
-  const key = workspace.trim().toLowerCase();
-  if (!a.workspaces.has(key)) throw new AppError(`Unknown workspace "${workspace}"`);
-  return [key];
-}
 /** Placeholders for `IN (…)`; never empty, so the SQL stays valid. */
 const inList = (values: unknown[]) => (values.length ? values.map(() => "?").join(", ") : "NULL");
 
@@ -151,6 +141,7 @@ function deleteComment(a: Actor, owner: CommentOwner, ownerId: number, workspace
 // --- Teams ---
 
 interface TeamRow {
+  id: number; // internal: issues and docs point to it; the API names teams by key
   key: string;
   workspace: string;
   name: string;
@@ -164,9 +155,9 @@ interface TeamRow {
 const TEAM_SELECT = `
   SELECT t.*,
     (SELECT json_group_object(status, n) FROM (
-      SELECT status, COUNT(*) AS n FROM issues WHERE team_key = t.key AND deleted_at IS NULL GROUP BY status
+      SELECT status, COUNT(*) AS n FROM issues WHERE team_id = t.id AND deleted_at IS NULL GROUP BY status
     )) AS counts,
-    (SELECT COUNT(*) FROM documents WHERE team_key = t.key AND deleted_at IS NULL) AS doc_count
+    (SELECT COUNT(*) FROM documents WHERE team_id = t.id AND deleted_at IS NULL) AS doc_count
   FROM teams t`;
 
 const toTeam = (row: TeamRow): Team => ({
@@ -180,19 +171,19 @@ const toTeam = (row: TeamRow): Team => ({
   updatedAt: row.updated_at,
 });
 
+/** A team of the request's workspace, by key. */
 function teamRow(a: Actor, key: unknown): TeamRow {
+  const workspace = requestWorkspace(a);
   const row =
-    typeof key === "string" ? db.query<TeamRow, [string]>(`${TEAM_SELECT} WHERE t.key = ?`).get(key.trim().toUpperCase()) : null;
-  if (!row || !a.workspaces.has(row.workspace)) throw new AppError(`Team ${key} not found`, 404);
+    typeof key === "string"
+      ? db.query<TeamRow, [string, string]>(`${TEAM_SELECT} WHERE t.workspace = ? AND t.key = ?`).get(workspace, key.trim().toUpperCase())
+      : null;
+  if (!row) throw new AppError(`Team ${key} not found`, 404);
   return row;
 }
 
-export function listTeams(a: Actor, filter: { workspace?: string } = {}): Team[] {
-  const workspaces = scopeWorkspaces(a, filter.workspace);
-  return db
-    .query<TeamRow, string[]>(`${TEAM_SELECT} WHERE t.workspace IN (${inList(workspaces)}) ORDER BY t.key`)
-    .all(...workspaces)
-    .map(toTeam);
+export function listTeams(a: Actor): Team[] {
+  return db.query<TeamRow, [string]>(`${TEAM_SELECT} WHERE t.workspace = ? ORDER BY t.key`).all(requestWorkspace(a)).map(toTeam);
 }
 
 const NO_AGENT_TEAMS = "Agents can't create or change teams; ask a person";
@@ -201,10 +192,16 @@ export function createTeam(a: Actor, input: TeamInput): Team {
   requirePerson(a, NO_AGENT_TEAMS);
   const key = typeof input.key === "string" ? input.key.trim().toUpperCase() : "";
   if (!/^[A-Z]{2,5}$/.test(key)) throw new AppError("Team key must be 2–5 letters, e.g. BRD");
-  const workspace = input.workspace === undefined ? requestWorkspace(a) : requireMember(a, requireText(input.workspace, "workspace"));
+  const workspace = requestWorkspace(a);
+  // Old scripts still send it: fine, as long as it's where the request acts.
+  if (input.workspace !== undefined && String(input.workspace).trim().toLowerCase() !== workspace) {
+    throw new AppError("Teams are created in the workspace you're in");
+  }
   const name = requireText(input.name, "name");
   const description = optionalText(input.description, "description");
-  if (exists("teams", "key", key)) throw new AppError(`Team key ${key} is taken`, 409);
+  if (db.query("SELECT 1 FROM teams WHERE workspace = ? AND key = ?").get(workspace, key)) {
+    throw new AppError(`Team key ${key} is taken in this workspace`, 409);
+  }
   const time = now();
   db.query("INSERT INTO teams (key, workspace, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)").run(
     key,
@@ -225,7 +222,7 @@ export function updateTeam(a: Actor, key: string, patch: TeamPatch & { workspace
   if (patch.workspace !== undefined && patch.workspace !== row.workspace) throw new AppError("Teams can't move between workspaces");
   const name = patch.name === undefined ? row.name : requireText(patch.name, "name");
   const description = patch.description === undefined ? row.description : optionalText(patch.description, "description");
-  db.query("UPDATE teams SET name = ?, description = ?, updated_at = ? WHERE key = ?").run(name, description, now(), row.key);
+  db.query("UPDATE teams SET name = ?, description = ?, updated_at = ? WHERE id = ?").run(name, description, now(), row.id);
   changed("team", row.workspace, row.key);
   return toTeam(teamRow(a, row.key));
 }
@@ -234,6 +231,7 @@ export function updateTeam(a: Actor, key: string, patch: TeamPatch & { workspace
 
 type IssueRow = Record<string, unknown> & {
   id: number;
+  team_id: number;
   team_key: string;
   workspace: string;
   number: number;
@@ -250,21 +248,23 @@ type IssueRow = Record<string, unknown> & {
   deleted_at: string | null;
 };
 
-const ident = (alias: string) => `${alias}.team_key || '-' || ${alias}.number`;
+/** An issue's identifier in SQL, from its team's alias and its own: BRD-12. */
+const ident = (team: string, issue: string) => `${team}.key || '-' || ${issue}.number`;
 
 const ISSUE_SELECT = `
-  SELECT i.*, t.workspace, ${ident("p")} AS parent,
+  SELECT i.*, t.key AS team_key, t.workspace, ${ident("pt", "p")} AS parent,
     ${userCols("ua", "assignee")}, ${userCols("ud", "delegate")}, ${userCols("uc", "creator")},
     (SELECT json_group_array(ref) FROM (
-      SELECT ${ident("b")} AS ref FROM issue_blocks x JOIN issues b ON b.id = x.blocker_id
-      WHERE x.blocked_id = i.id AND b.deleted_at IS NULL ORDER BY b.team_key, b.number
+      SELECT ${ident("bt", "b")} AS ref FROM issue_blocks x JOIN issues b ON b.id = x.blocker_id JOIN teams bt ON bt.id = b.team_id
+      WHERE x.blocked_id = i.id AND b.deleted_at IS NULL ORDER BY bt.key, b.number
     )) AS blocked_by
   FROM issues i
-  JOIN teams t ON t.key = i.team_key
+  JOIN teams t ON t.id = i.team_id
   ${userJoin("uc", "i.creator_id", "t.workspace")}
   ${userJoin("ua", "i.assignee_id", "t.workspace")}
   ${userJoin("ud", "i.delegate_id", "t.workspace")}
-  LEFT JOIN issues p ON p.id = i.parent_id`;
+  LEFT JOIN issues p ON p.id = i.parent_id
+  LEFT JOIN teams pt ON pt.id = p.team_id`;
 
 // Status order, then priority 1→4 with 0 (none) last, then most recently updated. The first two keys are
 // also what a page cursor records (with updated_at and id), so pages resume exactly where they stopped.
@@ -292,7 +292,7 @@ const toSummary = (row: IssueRow): IssueSummary => ({
 });
 
 /**
- * Resolves an identifier like "brd-12" to the issue's row id and workspace; 404 outside the actor's.
+ * Resolves an identifier like "brd-12" in the request's workspace to the issue's row id; 404 if it isn't there.
  * Trashed issues resolve too (to read or restore them); `liveIssue` is for everything that changes one.
  */
 function issueRef(a: Actor, identifier: unknown): { id: number; workspace: string; deleted_at: string | null; ref: string } {
@@ -301,11 +301,11 @@ function issueRef(a: Actor, identifier: unknown): { id: number; workspace: strin
   const key = match[1]!.toUpperCase();
   const number = Number(match[2]);
   const row = db
-    .query<{ id: number; workspace: string; deleted_at: string | null }, [string, number]>(
-      "SELECT i.id, t.workspace, i.deleted_at FROM issues i JOIN teams t ON t.key = i.team_key WHERE i.team_key = ? AND i.number = ?",
+    .query<{ id: number; workspace: string; deleted_at: string | null }, [string, string, number]>(
+      "SELECT i.id, t.workspace, i.deleted_at FROM issues i JOIN teams t ON t.id = i.team_id WHERE t.workspace = ? AND t.key = ? AND i.number = ?",
     )
-    .get(key, number);
-  if (!row || !a.workspaces.has(row.workspace)) throw new AppError(`Issue ${key}-${number} not found`, 404);
+    .get(requestWorkspace(a), key, number);
+  if (!row) throw new AppError(`Issue ${key}-${number} not found`, 404);
   return { ...row, ref: `${key}-${number}` };
 }
 
@@ -316,17 +316,16 @@ function liveIssue(a: Actor, identifier: unknown) {
   return issue;
 }
 
-/** An issue in `workspace`: relations never cross workspaces, where their members couldn't see both ends. */
-function relatedId(a: Actor, identifier: unknown, workspace: string, field: string): number {
+/** A live issue to relate to. It resolves in the request's workspace, so relations never cross workspaces. */
+function relatedId(a: Actor, identifier: unknown, field: string): number {
   const other = issueRef(a, identifier);
-  if (other.workspace !== workspace) throw new AppError(`${field}: ${identifier} is in another workspace`);
   if (other.deleted_at) throw new AppError(`${field}: ${other.ref} is in the trash`);
   return other.id;
 }
 
-function blockerIds(a: Actor, identifiers: unknown, workspace: string, self?: number): number[] {
+function blockerIds(a: Actor, identifiers: unknown, self?: number): number[] {
   if (!Array.isArray(identifiers)) throw new AppError("blockedBy must be an array of issue identifiers");
-  const ids = [...new Set(identifiers.map((i) => relatedId(a, i, workspace, "blockedBy")))];
+  const ids = [...new Set(identifiers.map((i) => relatedId(a, i, "blockedBy")))];
   if (self === undefined) return ids; // a new issue blocks nothing yet, so it can't close a cycle
   if (ids.includes(self)) throw new AppError("An issue can't block itself");
   if (ids.length === 0) return ids;
@@ -337,7 +336,7 @@ function blockerIds(a: Actor, identifiers: unknown, workspace: string, self?: nu
          SELECT blocked_id FROM issue_blocks WHERE blocker_id = ?
          UNION SELECT x.blocked_id FROM issue_blocks x JOIN downstream d ON x.blocker_id = d.id
        )
-       SELECT ${ident("i")} AS ref FROM issues i JOIN downstream d ON d.id = i.id
+       SELECT ${ident("t", "i")} AS ref FROM issues i JOIN teams t ON t.id = i.team_id JOIN downstream d ON d.id = i.id
        WHERE i.id IN (${ids.join(", ")})`,
     )
     .get(self);
@@ -365,51 +364,46 @@ function issueColumns(a: Actor, workspace: string, patch: IssuePatch): Record<st
     if (value !== null && typeof value !== "string") throw new AppError(`${field} must be a username or null`);
     cols[`${field}_id`] = value?.trim() ? activeMemberId(a, workspace, value, kind, field) : null;
   }
-  if (patch.parent !== undefined) cols.parent_id = patch.parent === null ? null : relatedId(a, patch.parent, workspace, "parent");
+  if (patch.parent !== undefined) cols.parent_id = patch.parent === null ? null : relatedId(a, patch.parent, "parent");
   return cols;
 }
 
 const isClosed = (status: Status) => CLOSED_STATUSES.includes(status);
 
 /**
- * WHERE conditions shared by the issue and doc lists: the actor's workspaces (or one of them), a team,
- * and a substring search over `searched` (the query's own %, _ and \ match literally).
+ * WHERE conditions shared by the issue and doc lists (both join their team as `t`): the request's workspace,
+ * a team, and a substring search over `searched` (the query's own %, _ and \ match literally).
  */
-function listScope(a: Actor, alias: string, filter: { workspace?: string; team?: string; q?: string }, searched: string[]) {
-  const where: string[] = [];
-  const params: SQLQueryBindings[] = [];
-  const workspaces = scopeWorkspaces(a, filter.workspace);
-  where.push(`${alias}.team_key IN (SELECT key FROM teams WHERE workspace IN (${inList(workspaces)}))`);
-  params.push(...workspaces);
-  where.push(`${alias}.deleted_at IS NULL`);
+function listScope(a: Actor, alias: string, filter: { team?: string; q?: string }, searched: string[]) {
+  const workspace = requestWorkspace(a);
+  const where = ["t.workspace = ?", `${alias}.deleted_at IS NULL`];
+  const params: SQLQueryBindings[] = [workspace];
   if (filter.team) {
-    const key = filter.team.trim().toUpperCase();
-    const team = db.query<{ workspace: string }, [string]>("SELECT workspace FROM teams WHERE key = ?").get(key);
-    if (!team || !workspaces.includes(team.workspace)) throw new AppError(`Unknown team "${filter.team}"`);
-    where.push(`${alias}.team_key = ?`);
-    params.push(key);
+    const team = db
+      .query<{ id: number }, [string, string]>("SELECT id FROM teams WHERE workspace = ? AND key = ?")
+      .get(workspace, filter.team.trim().toUpperCase());
+    if (!team) throw new AppError(`Unknown team "${filter.team}"`);
+    where.push(`${alias}.team_id = ?`);
+    params.push(team.id);
   }
   if (filter.q) {
     where.push(`(${searched.map((column) => `${column} LIKE ? ESCAPE '\\'`).join(" OR ")})`);
     params.push(...searched.map(() => `%${filter.q!.trim().replace(/[\\%_]/g, "\\$&")}%`));
   }
-  return { where, params, workspaces };
+  return { where, params, workspace };
 }
 
 /** `listScope` always adds the workspace condition, so there's always a WHERE. */
 const whereClause = (where: string[]) => `WHERE ${where.join(" AND ")}`;
 
 /**
- * A username filter on `column` ("me" is the actor): whoever holds that username in each issue's workspace.
- * It must name someone who is or was in one of the workspaces searched; anyone else is 400 (a typo
- * shouldn't look like "no issues").
+ * A username filter on `column` ("me" is the actor): whoever holds that username in the workspace. It must
+ * name someone who is or was there; anyone else is 400 (a typo shouldn't look like "no issues").
  */
-function userFilter(a: Actor, value: string, workspaces: string[], field: string, column: string): [string, SQLQueryBindings] {
+function userFilter(a: Actor, value: string, workspace: string, field: string, column: string): [string, SQLQueryBindings] {
   const username = value.trim().toLowerCase();
   if (username === "me") return [`${column} = ?`, a.id];
-  const known = db
-    .query(`SELECT 1 FROM workspace_members WHERE username = ? AND workspace IN (${inList(workspaces)})`)
-    .get(username, ...workspaces);
+  const known = db.query("SELECT 1 FROM workspace_members WHERE username = ? AND workspace = ?").get(username, workspace);
   if (!known) throw new AppError(`Unknown ${field} "${value}"`);
   return [`EXISTS (SELECT 1 FROM workspace_members m WHERE m.user_id = ${column} AND m.workspace = t.workspace AND m.username = ?)`, username];
 }
@@ -448,7 +442,7 @@ export function listIssuesPage(a: Actor, filter: IssueFilter, page: { first?: un
 }
 
 function queryIssues(a: Actor, filter: IssueFilter, after?: [number, number, string, number], limit?: number): IssueRow[] {
-  const { where, params, workspaces } = listScope(a, "i", filter, ["i.title", "i.description", ident("i")]);
+  const { where, params, workspace } = listScope(a, "i", filter, ["i.title", "i.description", ident("t", "i")]);
   if (filter.status?.length) {
     where.push(`i.status IN (${inList(filter.status)})`);
     params.push(...filter.status.map(checkStatus));
@@ -459,7 +453,7 @@ function queryIssues(a: Actor, filter: IssueFilter, after?: [number, number, str
   }
   for (const field of ["assignee", "delegate"] as const) {
     if (!filter[field]) continue;
-    const [condition, param] = userFilter(a, filter[field], workspaces, field, `i.${field}_id`);
+    const [condition, param] = userFilter(a, filter[field], workspace, field, `i.${field}_id`);
     where.push(condition);
     params.push(param);
   }
@@ -489,14 +483,14 @@ export function getIssue(a: Actor, identifier: string): Issue {
   const children = db.query<IssueRow, [number]>(`${ISSUE_SELECT} WHERE i.parent_id = ? AND ${LIVE} ${ISSUE_ORDER}`).all(id).map(toSummary);
   const blocks = db
     .query<{ ref: string }, [number]>(
-      `SELECT ${ident("b")} AS ref FROM issue_blocks x JOIN issues b ON b.id = x.blocked_id
-       WHERE x.blocker_id = ? AND b.deleted_at IS NULL ORDER BY b.team_key, b.number`,
+      `SELECT ${ident("bt", "b")} AS ref FROM issue_blocks x JOIN issues b ON b.id = x.blocked_id JOIN teams bt ON bt.id = b.team_id
+       WHERE x.blocker_id = ? AND b.deleted_at IS NULL ORDER BY bt.key, b.number`,
     )
     .all(id)
     .map((r) => r.ref);
   const docs = db
     .query<DocumentRow, [number]>(
-      `${DOC_SELECT} JOIN document_refs r ON r.document_id = d.id WHERE r.issue_id = ? AND d.deleted_at IS NULL ORDER BY d.team_key, d.position, d.id`,
+      `${DOC_SELECT} JOIN document_refs r ON r.document_id = d.id WHERE r.issue_id = ? AND d.deleted_at IS NULL ORDER BY t.key, d.position, d.id`,
     )
     .all(id)
     .map(toDocSummary);
@@ -513,7 +507,9 @@ export function getIssue(a: Actor, identifier: string): Issue {
 
 /** Bumps issues in SQL and returns their identifiers, for change events. */
 function bumpIssues(ids: Iterable<number>, time: string): string[] {
-  const bump = db.query<{ ref: string }, [string, string, number]>(`UPDATE issues SET ${BUMPED_AT} WHERE id = ? RETURNING ${ident("issues")} AS ref`);
+  const bump = db.query<{ ref: string }, [string, string, number]>(
+    `UPDATE issues SET ${BUMPED_AT} WHERE id = ? RETURNING (SELECT key FROM teams WHERE id = issues.team_id) || '-' || number AS ref`,
+  );
   return [...ids].map((id) => bump.get(time, time, id)!.ref);
 }
 
@@ -530,15 +526,15 @@ export function createIssue(a: Actor, input: IssueInput): Issue {
     ...issueColumns(a, team.workspace, input),
     title: requireText(input.title, "title"),
   };
-  const blockers = input.blockedBy === undefined ? [] : blockerIds(a, input.blockedBy, team.workspace);
+  const blockers = input.blockedBy === undefined ? [] : blockerIds(a, input.blockedBy);
   const time = now();
   const { identifier, docs, refs } = db.transaction(() => {
     const { number } = db
-      .query<{ number: number }, [string]>("UPDATE teams SET next_number = next_number + 1 WHERE key = ? RETURNING next_number - 1 AS number")
-      .get(team.key)!;
+      .query<{ number: number }, [number]>("UPDATE teams SET next_number = next_number + 1 WHERE id = ? RETURNING next_number - 1 AS number")
+      .get(team.id)!;
     const row: Record<string, SQLQueryBindings> = {
       ...cols,
-      team_key: team.key,
+      team_id: team.id,
       number,
       creator_id: a.id,
       created_at: time,
@@ -557,7 +553,7 @@ export function createIssue(a: Actor, input: IssueInput): Issue {
     const mention = new RegExp(`\\b${identifier}\\b`);
     const docs = db
       .query<{ id: number; slug: string; content: string }, [string, string]>(
-        "SELECT d.id, d.slug, d.content FROM documents d JOIN teams t ON t.key = d.team_key WHERE t.workspace = ? AND d.content LIKE ?",
+        "SELECT id, slug, content FROM documents WHERE workspace = ? AND content LIKE ?",
       )
       .all(team.workspace, `%${identifier}%`)
       .filter((doc) => mention.test(doc.content));
@@ -579,7 +575,7 @@ export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Is
     if (p === id) throw new AppError("An issue can't be its own parent or ancestor");
     p = db.query<{ parent_id: number | null }, [number]>("SELECT parent_id FROM issues WHERE id = ?").get(p)!.parent_id;
   }
-  const blockers = patch.blockedBy === undefined ? undefined : blockerIds(a, patch.blockedBy, workspace, id);
+  const blockers = patch.blockedBy === undefined ? undefined : blockerIds(a, patch.blockedBy, id);
   const time = now();
   if (cols.status !== undefined) {
     const closing = isClosed(cols.status as Status);
@@ -663,7 +659,7 @@ function purgeTrash() {
   const orphans = db.transaction(() => {
     const orphans = db
       .query<{ id: number; workspace: string }, [string]>(
-        `SELECT c.id, t.workspace FROM issues c JOIN teams t ON t.key = c.team_key
+        `SELECT c.id, t.workspace FROM issues c JOIN teams t ON t.id = c.team_id
          WHERE c.deleted_at IS NULL AND c.parent_id IN (SELECT id FROM issues WHERE deleted_at IS NOT NULL AND deleted_at < ?)`,
       )
       .all(cutoff);
@@ -677,15 +673,15 @@ function purgeTrash() {
 
 /** A team's trash, newest first. */
 export function listTrash(a: Actor, team: string): Trash {
-  const key = teamRow(a, team).key;
+  const { id } = teamRow(a, team);
   purgeTrash();
   const issues = db
-    .query<IssueRow, [string]>(`${ISSUE_SELECT} WHERE i.team_key = ? AND i.deleted_at IS NOT NULL ORDER BY i.deleted_at DESC, i.id DESC`)
-    .all(key)
+    .query<IssueRow, [number]>(`${ISSUE_SELECT} WHERE i.team_id = ? AND i.deleted_at IS NOT NULL ORDER BY i.deleted_at DESC, i.id DESC`)
+    .all(id)
     .map(toSummary);
   const documents = db
-    .query<DocumentRow, [string]>(`${DOC_SELECT} WHERE d.team_key = ? AND d.deleted_at IS NOT NULL ORDER BY d.deleted_at DESC, d.id DESC`)
-    .all(key)
+    .query<DocumentRow, [number]>(`${DOC_SELECT} WHERE d.team_id = ? AND d.deleted_at IS NOT NULL ORDER BY d.deleted_at DESC, d.id DESC`)
+    .all(id)
     .map(toDocSummary);
   return { issues, documents };
 }
@@ -704,8 +700,9 @@ export function claimIssue(a: Actor, identifier: string): Issue {
   const claimed = db.transaction(() => {
     const row = db
       .query<{ status: Status; holder: number | null; username: string | null; active: number; ref: string }, [string, number]>(
-        `SELECT i.status, i.${slot} AS holder, m.username, ${ident("i")} AS ref, (m.user_id IS NOT NULL AND m.suspended_at IS NULL) AS active
-         FROM issues i LEFT JOIN workspace_members m ON m.user_id = i.${slot} AND m.workspace = ? WHERE i.id = ?`,
+        `SELECT i.status, i.${slot} AS holder, m.username, ${ident("t", "i")} AS ref, (m.user_id IS NOT NULL AND m.suspended_at IS NULL) AS active
+         FROM issues i JOIN teams t ON t.id = i.team_id
+         LEFT JOIN workspace_members m ON m.user_id = i.${slot} AND m.workspace = ? WHERE i.id = ?`,
       )
       .get(workspace, id)!;
     if (isClosed(row.status)) throw new AppError(`${row.ref} is ${row.status}`, 409);
@@ -744,13 +741,13 @@ export const updateIssueComment = (a: Actor, identifier: string, commentId: unkn
 export const deleteIssueComment = (a: Actor, identifier: string, commentId: unknown) =>
   changeIssueComments(a, identifier, (id, _, workspace) => deleteComment(a, "issue", id, workspace, commentId));
 
-/** Labels in use in the actor's workspaces (or one), each with how many open issues carry it. */
-export function listLabels(a: Actor, filter: { workspace?: string } = {}): LabelCount[] {
-  const { where, params } = listScope(a, "i", filter, []);
+/** Labels in use in the request's workspace, each with how many open issues carry it. */
+export function listLabels(a: Actor): LabelCount[] {
+  const { where, params } = listScope(a, "i", {}, []);
   return db
     .query<LabelCount, SQLQueryBindings[]>(
       `SELECT l.value AS label, SUM(i.status NOT IN (${inList(CLOSED_STATUSES)})) AS open
-       FROM issues i, json_each(i.labels) l ${whereClause(where)}
+       FROM issues i JOIN teams t ON t.id = i.team_id, json_each(i.labels) l ${whereClause(where)}
        GROUP BY l.value ORDER BY l.value COLLATE NOCASE`,
     )
     .all(...CLOSED_STATUSES, ...params);
@@ -761,6 +758,7 @@ export function listLabels(a: Actor, filter: { workspace?: string } = {}): Label
 type DocumentRow = Record<string, unknown> & {
   id: number;
   slug: string;
+  team_id: number;
   team_key: string;
   workspace: string;
   title: string;
@@ -771,8 +769,8 @@ type DocumentRow = Record<string, unknown> & {
   deleted_at: string | null;
 };
 
-const DOC_COLUMNS = `d.id, d.slug, d.team_key, t.workspace, d.title, d.position, d.created_at, d.updated_at, d.deleted_at, ${userCols("u", "by")}`;
-const DOC_FROM = `FROM documents d JOIN teams t ON t.key = d.team_key ${userJoin("u", "d.updated_by_id", "t.workspace")}`;
+const DOC_COLUMNS = `d.id, d.slug, d.team_id, t.key AS team_key, d.workspace, d.title, d.position, d.created_at, d.updated_at, d.deleted_at, ${userCols("u", "by")}`;
+const DOC_FROM = `FROM documents d JOIN teams t ON t.id = d.team_id ${userJoin("u", "d.updated_by_id", "d.workspace")}`;
 const DOC_SELECT = `SELECT ${DOC_COLUMNS} ${DOC_FROM}`; // lists leave out the content
 
 // Saves by the same author within this window of a version's first save update that version (autosave-friendly).
@@ -789,14 +787,16 @@ const toDocSummary = (row: DocumentRow): DocumentSummary => ({
   deletedAt: row.deleted_at,
 });
 
+/** A doc of the request's workspace, by slug. */
 function documentRow(a: Actor, slug: unknown): DocumentRow {
+  const workspace = requestWorkspace(a);
   const row =
     typeof slug === "string"
       ? db
-          .query<DocumentRow, [string]>(`SELECT d.content, ${DOC_COLUMNS} ${DOC_FROM} WHERE d.slug = ?`)
-          .get(slug.trim().toLowerCase())
+          .query<DocumentRow, [string, string]>(`SELECT d.content, ${DOC_COLUMNS} ${DOC_FROM} WHERE d.workspace = ? AND d.slug = ?`)
+          .get(workspace, slug.trim().toLowerCase())
       : null;
-  if (!row || !a.workspaces.has(row.workspace)) throw new AppError(`Document ${slug} not found`, 404);
+  if (!row) throw new AppError(`Document ${slug} not found`, 404);
   return row;
 }
 
@@ -817,8 +817,8 @@ function checkPosition(value: unknown): number {
   return value;
 }
 
-const nextPosition = (team: string) =>
-  db.query<{ n: number }, [string]>("SELECT COALESCE(MAX(position), 0) + 1 AS n FROM documents WHERE team_key = ?").get(team)!.n;
+const nextPosition = (teamId: number) =>
+  db.query<{ n: number }, [number]>("SELECT COALESCE(MAX(position), 0) + 1 AS n FROM documents WHERE team_id = ?").get(teamId)!.n;
 
 /** Applies exact-text replacements in order; throws (applying nothing) unless each matches exactly once. */
 function applyEdits(content: string, edits: unknown): string {
@@ -872,12 +872,12 @@ function saveVersion(documentId: number, title: string, content: string, authorI
 /** Rebuilds the issues a document mentions: identifiers of real issues in its workspace, first-mention order. */
 function saveRefs(documentId: number, content: string, workspace: string) {
   db.query("DELETE FROM document_refs WHERE document_id = ?").run(documentId);
-  const find = db.query<{ id: number }, [string, number, string]>(
-    "SELECT i.id FROM issues i JOIN teams t ON t.key = i.team_key WHERE i.team_key = ? AND i.number = ? AND t.workspace = ?",
+  const find = db.query<{ id: number }, [string, string, number]>(
+    "SELECT i.id FROM issues i JOIN teams t ON t.id = i.team_id WHERE t.workspace = ? AND t.key = ? AND i.number = ?",
   );
   const ids = new Set<number>();
   for (const [, key, number] of content.matchAll(/\b([A-Z]{2,5})-(\d+)\b/g)) {
-    const row = find.get(key!, Number(number), workspace);
+    const row = find.get(workspace, key!, Number(number));
     if (row) ids.add(row.id);
   }
   [...ids].forEach((issueId, ord) => {
@@ -888,7 +888,7 @@ function saveRefs(documentId: number, content: string, workspace: string) {
 export function listDocuments(a: Actor, filter: DocumentFilter): DocumentSummary[] {
   const { where, params } = listScope(a, "d", filter, ["d.title", "d.content"]);
   return db
-    .query<DocumentRow, SQLQueryBindings[]>(`${DOC_SELECT} ${whereClause(where)} ORDER BY d.team_key, d.position, d.id`)
+    .query<DocumentRow, SQLQueryBindings[]>(`${DOC_SELECT} ${whereClause(where)} ORDER BY t.key, d.position, d.id`)
     .all(...params)
     .map(toDocSummary);
 }
@@ -910,13 +910,14 @@ export function createDocument(a: Actor, input: DocumentInput): Document {
   const position = input.position === undefined ? undefined : checkPosition(input.position);
   const time = now();
   const slug = db.transaction(() => {
-    const slug = pickSlug(input.slug, title, (s) => exists("documents", "slug", s), { label: "slug", fallback: "doc" });
+    const taken = (s: string) => db.query("SELECT 1 FROM documents WHERE workspace = ? AND slug = ?").get(team.workspace, s) !== null;
+    const slug = pickSlug(input.slug, title, taken, { label: "slug", fallback: "doc" });
     const { id } = db
       .query<{ id: number }, SQLQueryBindings[]>(
-        `INSERT INTO documents (slug, team_key, title, content, position, created_at, updated_at, updated_by_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+        `INSERT INTO documents (workspace, team_id, slug, title, content, position, created_at, updated_at, updated_by_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
       )
-      .get(slug, team.key, title, content, position ?? nextPosition(team.key), time, time, a.id)!;
+      .get(team.workspace, team.id, slug, title, content, position ?? nextPosition(team.id), time, time, a.id)!;
     saveVersion(id, title, content, a.id, time);
     saveRefs(id, content, team.workspace);
     return slug;
@@ -938,10 +939,9 @@ export function updateDocument(a: Actor, slug: string, patch: DocumentPatch): Do
   if (patch.content !== undefined) cols.content = checkContent(patch.content);
   if (patch.edits !== undefined) cols.content = capLength(applyEdits(row.content, patch.edits), "content");
   if (patch.team !== undefined) {
-    const team = teamRow(a, patch.team);
-    if (team.workspace !== row.workspace) throw new AppError("A doc can only move to a team in the same workspace");
-    cols.team_key = team.key;
-    if (team.key !== row.team_key && patch.position === undefined) cols.position = nextPosition(team.key);
+    const team = teamRow(a, patch.team); // in the doc's workspace: docs never move between workspaces
+    cols.team_id = team.id;
+    if (team.id !== row.team_id && patch.position === undefined) cols.position = nextPosition(team.id);
   }
   if (patch.position !== undefined) cols.position = checkPosition(patch.position);
   for (const [name, value] of Object.entries(cols)) if (row[name] === value) delete cols[name];
@@ -990,8 +990,7 @@ export const updateDocumentComment = (a: Actor, slug: string, commentId: unknown
 export const deleteDocumentComment = (a: Actor, slug: string, commentId: unknown) =>
   changeDocumentComments(a, slug, (id, workspace) => deleteComment(a, "document", id, workspace, commentId));
 
-const VERSION_FROM = `FROM document_versions v JOIN documents d ON d.id = v.document_id JOIN teams t ON t.key = d.team_key
-  ${userJoin("u", "v.author_id", "t.workspace")}`;
+const VERSION_FROM = `FROM document_versions v JOIN documents d ON d.id = v.document_id ${userJoin("u", "v.author_id", "d.workspace")}`;
 
 export function listDocumentVersions(a: Actor, slug: string): DocumentVersionSummary[] {
   return db
@@ -1010,6 +1009,40 @@ export function getDocumentVersion(a: Actor, slug: string, id: unknown): Documen
     .get(documentRow(a, slug).id, Number(id));
   if (!r) throw new AppError(`Version ${id} of ${slug} not found`, 404);
   return { id: r.id as number, author: ref(r, "a")!, title: r.title as string, content: r.content as string, createdAt: r.created_at as string };
+}
+
+// --- Links made before URLs carried the workspace ---
+
+/**
+ * Which of your workspaces an issue, doc or team (exactly one) is in, ignoring the request's. When several
+ * match, the oldest team or doc wins: keys and slugs were unique across workspaces before, so old links meant it.
+ */
+export function locate(a: Actor, query: { issue?: string; doc?: string; team?: string }): { workspace: string } {
+  const given = Object.entries(query).filter(([, value]) => value !== undefined);
+  if (given.length !== 1) throw new AppError("Pass exactly one of issue, doc or team");
+  const [kind, value] = given[0]! as [string, string];
+  const mine = [...a.workspaces.keys()];
+  const within = `IN (${inList(mine)})`;
+  const issue = /^([a-z]{2,5})-(\d+)$/i.exec(value.trim());
+  const row =
+    kind === "doc"
+      ? db
+          .query<{ workspace: string }, SQLQueryBindings[]>(`SELECT workspace FROM documents WHERE slug = ? AND workspace ${within} ORDER BY created_at, id`)
+          .get(value.trim().toLowerCase(), ...mine)
+      : kind === "team"
+        ? db
+            .query<{ workspace: string }, SQLQueryBindings[]>(`SELECT workspace FROM teams WHERE key = ? AND workspace ${within} ORDER BY created_at, id`)
+            .get(value.trim().toUpperCase(), ...mine)
+        : issue
+          ? db
+              .query<{ workspace: string }, SQLQueryBindings[]>(
+                `SELECT t.workspace FROM issues i JOIN teams t ON t.id = i.team_id
+                 WHERE t.key = ? AND i.number = ? AND t.workspace ${within} ORDER BY t.created_at, t.id`,
+              )
+              .get(issue[1]!.toUpperCase(), Number(issue[2]), ...mine)
+          : null;
+  if (!row) throw new AppError("Not found", 404);
+  return row;
 }
 
 // Anything that expired while the server was down goes now; later deletes and trash views purge as they go.

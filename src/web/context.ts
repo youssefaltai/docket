@@ -4,12 +4,10 @@ import type { IssueInput, Team, Workspace, WorkspaceMember } from "../shared/typ
 
 export interface AppState {
   workspaces: Workspace[] | null;
-  /** The current workspace: remembered, following deep links, else the first. */
+  /** The current workspace: the URL's (/acme/…). */
   workspace: Workspace | null;
-  /** Every team, in any workspace (identifier chips, issue and doc pages). */
+  /** The current workspace's teams (sidebar, pickers, chips, new issue/doc defaults). */
   teams: Team[] | null;
-  /** Teams in the current workspace (sidebar, pickers, new issue/doc defaults). */
-  workspaceTeams: Team[] | null;
   labels: string[];
   /** The current workspace's members (assignee and delegate pickers). */
   members: WorkspaceMember[];

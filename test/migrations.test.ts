@@ -347,7 +347,7 @@ describe("migration 5", () => {
       { workspace: "side", user_id: 2, username: "bot", name: "Bot" },
     ]);
     expect(rows(v4, "PRAGMA foreign_key_check")).toEqual([]);
-    expect(rows(v4, "PRAGMA user_version")).toEqual([{ user_version: 5 }]);
+    expect((rows(v4, "PRAGMA user_version")[0] as { user_version: number }).user_version).toBeGreaterThanOrEqual(5); // later migrations run too
   });
 
   test("the old key and cookie still sign in, as the same people", async () => {
@@ -393,5 +393,224 @@ describe("migration 5", () => {
     expect(stderr).toContain("Migration 5 broke foreign keys");
     expect(rows(file, "PRAGMA user_version")).toEqual([{ user_version: 4 }]);
     expect(rows(file, "SELECT username FROM users ORDER BY id")).toEqual([{ username: "sam" }, { username: "bot" }, { username: "kim" }]);
+  });
+});
+
+// Migration 6 (team keys and doc slugs per workspace; teams get an id) on a database written under schema 5:
+// every id, identifier, slug, relation, ref, comment, version, trashed row and team counter survives.
+describe("migration 6", () => {
+  // Migrations 1–5 exactly as they shipped (src/server/db.ts): 1–3 above, then 4 and 5. Frozen: never edit this fixture.
+  const SCHEMA_V5 = [
+    ...SCHEMA_V3,
+    `
+  ALTER TABLE api_keys ADD COLUMN workspace TEXT REFERENCES workspaces(key) ON DELETE CASCADE;
+  DELETE FROM api_keys WHERE session_id IS NOT NULL; -- chat keys: short-lived, minted again per workspace
+  UPDATE api_keys SET workspace = (SELECT m.workspace FROM workspace_members m
+    WHERE m.user_id = api_keys.user_id AND m.suspended_at IS NULL ORDER BY m.created_at, m.workspace LIMIT 1);
+  DELETE FROM api_keys WHERE workspace IS NULL; -- the owner has no active workspace left
+  CREATE INDEX api_keys_workspace ON api_keys(user_id, workspace);
+  `,
+    `
+  CREATE TABLE members_new (
+    workspace TEXT NOT NULL REFERENCES workspaces(key) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    username TEXT NOT NULL,
+    name TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('admin', 'member', 'guest', 'agent')),
+    created_at TEXT NOT NULL,
+    suspended_at TEXT,
+    PRIMARY KEY (workspace, user_id),
+    UNIQUE (workspace, username)
+  );
+  INSERT INTO members_new SELECT m.workspace, m.user_id, u.username, u.name, m.role, m.created_at, m.suspended_at
+    FROM workspace_members m JOIN users u ON u.id = m.user_id;
+  DROP TABLE workspace_members;
+  ALTER TABLE members_new RENAME TO workspace_members;
+  CREATE INDEX workspace_members_user ON workspace_members(user_id);
+  CREATE TABLE users_new (
+    id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('person', 'agent')),
+    email TEXT,
+    created_at TEXT NOT NULL
+  );
+  INSERT INTO users_new SELECT id, kind, email, created_at FROM users;
+  DROP TABLE users;
+  ALTER TABLE users_new RENAME TO users;
+  CREATE UNIQUE INDEX users_email ON users(lower(email)) WHERE email IS NOT NULL;
+  `,
+  ];
+  const t = (minutes: number) => new Date(Date.UTC(2026, 0, 1, 0, minutes)).toISOString();
+  const trashedAt = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(); // a day ago: not purged yet
+
+  /**
+   * A schema-5 database: sam (admin) in acme and side, an agent in side. Acme has two teams (OPS made before ACM,
+   * so ids follow created_at, not the key), a parent and sub-issue, blockers across its teams, comments, a trashed
+   * issue and a gap in the numbers; docs with refs, versions and comments, one trashed. Side's doc mentions its own issues.
+   */
+  function writeV5(file: string) {
+    const db = new Database(file, { create: true });
+    for (const sql of SCHEMA_V5) db.run(sql);
+    db.run("PRAGMA user_version = 5");
+    db.run(`INSERT INTO users (id, kind, email, created_at) VALUES
+      (1, 'person', 'sam@example.com', '${t(0)}'), (2, 'agent', NULL, '${t(1)}')`);
+    db.run(`INSERT INTO workspaces (key, name, created_at, updated_at) VALUES
+      ('acme', 'Acme', '${t(0)}', '${t(0)}'), ('side', 'Side', '${t(3)}', '${t(3)}')`);
+    db.run(`INSERT INTO workspace_members (workspace, user_id, username, name, role, created_at) VALUES
+      ('acme', 1, 'sam', 'Sam', 'admin', '${t(0)}'), ('side', 1, 'sam', 'Sam', 'admin', '${t(3)}'),
+      ('side', 2, 'bot', 'Bot', 'agent', '${t(4)}')`);
+    db.run(`INSERT INTO sessions (id, user_id, token_hash, created_at, last_seen_at, user_agent, ip)
+      VALUES (7, 1, '${hash(SESSION)}', '${t(0)}', '${new Date().toISOString()}', 'test', '127.0.0.1')`);
+    db.run(`INSERT INTO api_keys (id, user_id, name, scope, token_hash, created_at, workspace) VALUES
+      (11, 1, 'laptop', 'write', '${hash(ADMIN_KEY)}', '${t(1)}', 'acme'),
+      (12, 2, 'agent token', 'write', '${hash(AGENT_KEY)}', '${t(4)}', 'side')`);
+    db.run(`INSERT INTO teams (key, workspace, name, description, created_at, updated_at, next_number) VALUES
+      ('SID', 'side', 'Side team', '', '${t(3)}', '${t(3)}', 3),
+      ('ACM', 'acme', 'Acme team', 'The main one', '${t(2)}', '${t(2)}', 6),
+      ('OPS', 'acme', 'Ops', '', '${t(1)}', '${t(1)}', 2)`);
+    db.run(`INSERT INTO issues (id, team_key, number, title, description, status, priority, labels, assignee_id, delegate_id,
+        creator_id, parent_id, created_at, updated_at, completed_at, deleted_at) VALUES
+      (101, 'ACM', 1, 'Parent', 'See the plan', 'in_progress', 2, '["bug"]', 1, NULL, 1, NULL, '${t(5)}', '${t(9)}', NULL, NULL),
+      (102, 'ACM', 2, 'Child', '', 'todo', 0, '[]', NULL, NULL, 1, 101, '${t(6)}', '${t(6)}', NULL, NULL),
+      (103, 'ACM', 4, 'Blocker', '', 'done', 1, '["infra","bug"]', 1, NULL, 1, NULL, '${t(7)}', '${t(8)}', '${t(8)}', NULL),
+      (104, 'ACM', 5, 'Trashed', '', 'backlog', 0, '[]', NULL, NULL, 1, 101, '${t(7)}', '${t(7)}', NULL, '${trashedAt}'),
+      (105, 'OPS', 1, 'Ops work', '', 'todo', 3, '[]', NULL, NULL, 1, NULL, '${t(8)}', '${t(8)}', NULL, NULL),
+      (201, 'SID', 1, 'Side one', '', 'in_progress', 0, '[]', 1, 2, 2, NULL, '${t(9)}', '${t(9)}', NULL, NULL),
+      (202, 'SID', 2, 'Side two', '', 'todo', 0, '[]', NULL, NULL, 2, 201, '${t(10)}', '${t(10)}', NULL, NULL)`);
+    db.run("INSERT INTO issue_blocks (blocker_id, blocked_id) VALUES (103, 101), (105, 102), (202, 201)");
+    db.run(`INSERT INTO comments (id, issue_id, author_id, body, created_at, edited_at) VALUES
+      (301, 101, 1, 'started', '${t(9)}', NULL), (302, 201, 2, 'on it', '${t(10)}', '${t(11)}'), (303, 104, 1, 'oops', '${t(7)}', NULL)`);
+    db.run(`INSERT INTO documents (id, slug, team_key, title, content, position, created_at, updated_at, updated_by_id, deleted_at) VALUES
+      (401, 'plan', 'ACM', 'Plan', 'Do ACM-1 then OPS-1', 1, '${t(5)}', '${t(9)}', 1, NULL),
+      (402, 'runbook', 'OPS', 'Runbook', 'ACM-2', 2.5, '${t(6)}', '${t(6)}', 1, NULL),
+      (403, 'old-idea', 'ACM', 'Old idea', '', 3, '${t(6)}', '${t(6)}', 1, '${trashedAt}'),
+      (404, 'side-notes', 'SID', 'Side notes', 'SID-2 and SID-1', 1, '${t(10)}', '${t(11)}', 2, NULL)`);
+    db.run("INSERT INTO document_refs (document_id, issue_id, ord) VALUES (401, 101, 0), (401, 105, 1), (402, 102, 0), (404, 202, 0), (404, 201, 1)");
+    db.run(`INSERT INTO document_versions (id, document_id, title, content, author_id, created_at) VALUES
+      (501, 401, 'Plan', 'v1', 1, '${t(5)}'), (502, 401, 'Plan', 'Do ACM-1 then OPS-1', 1, '${t(9)}'),
+      (503, 404, 'Side notes', 'SID-2 and SID-1', 2, '${t(10)}')`);
+    db.run(`INSERT INTO document_comments (id, document_id, author_id, body, created_at) VALUES
+      (601, 401, 1, 'lgtm', '${t(9)}'), (602, 404, 2, 'noted', '${t(11)}')`);
+    db.close();
+  }
+
+  const rows = (file: string, sql: string) => {
+    const db = new Database(file, { readonly: true });
+    try {
+      return db.query(sql).all();
+    } finally {
+      db.close();
+    }
+  };
+  const ISSUE_COLUMNS = `i.id, i.number, i.title, i.description, i.status, i.priority, i.labels, i.assignee_id, i.delegate_id,
+    i.creator_id, i.parent_id, i.created_at, i.updated_at, i.completed_at, i.deleted_at`;
+  const DOC_COLUMNS = "d.id, d.slug, d.title, d.content, d.position, d.created_at, d.updated_at, d.updated_by_id, d.deleted_at";
+  // The rebuilt tables, before (schema 5) and after (teams by id), joined back to their team key and workspace.
+  const BEFORE = [
+    "SELECT key, workspace, name, description, next_number, created_at, updated_at FROM teams ORDER BY key",
+    `SELECT ${ISSUE_COLUMNS}, i.team_key FROM issues i ORDER BY i.id`,
+    `SELECT ${DOC_COLUMNS}, d.team_key, t.workspace FROM documents d JOIN teams t ON t.key = d.team_key ORDER BY d.id`,
+  ];
+  const AFTER = [
+    "SELECT key, workspace, name, description, next_number, created_at, updated_at FROM teams ORDER BY key",
+    `SELECT ${ISSUE_COLUMNS}, t.key AS team_key FROM issues i JOIN teams t ON t.id = i.team_id ORDER BY i.id`,
+    `SELECT ${DOC_COLUMNS}, t.key AS team_key, d.workspace FROM documents d JOIN teams t ON t.id = d.team_id ORDER BY d.id`,
+  ];
+  // Tables that point at issues and docs by id, and everything else: untouched.
+  const UNCHANGED = [
+    "SELECT * FROM issue_blocks ORDER BY blocker_id, blocked_id",
+    "SELECT * FROM comments ORDER BY id",
+    "SELECT * FROM document_refs ORDER BY document_id, issue_id",
+    "SELECT * FROM document_versions ORDER BY id",
+    "SELECT * FROM document_comments ORDER BY id",
+    "SELECT * FROM users ORDER BY id",
+    "SELECT * FROM workspace_members ORDER BY workspace, user_id",
+    "SELECT id, user_id, token_hash, workspace FROM api_keys ORDER BY id",
+    "SELECT id, user_id, token_hash FROM sessions ORDER BY id",
+  ];
+
+  let v5: string;
+  let before: unknown[][];
+  let server: TestServer;
+  /** Sam's session, in one workspace (X-Docket-Workspace, as the web app sends). */
+  const sam = (workspace: string) => {
+    const session = server.with({ cookie: `docket_session=${SESSION}` }, "cookie");
+    return (method: string, path: string, body?: unknown) => session.api(method, path, body, { "X-Docket-Workspace": workspace });
+  };
+  beforeAll(async () => {
+    v5 = join(dir, "v5.db");
+    writeV5(v5);
+    before = [...BEFORE, ...UNCHANGED].map((sql) => rows(v5, sql));
+    server = await startServer({ setup: false, env: { DATABASE_PATH: v5 } });
+  });
+  afterAll(() => server.stop());
+
+  test("every row and id survives, joined back to the same team key; foreign keys hold", () => {
+    expect([...AFTER, ...UNCHANGED].map((sql) => rows(v5, sql))).toEqual(before);
+    expect(rows(v5, "SELECT key, id FROM teams ORDER BY id")).toEqual([
+      { key: "OPS", id: 1 }, // created first
+      { key: "ACM", id: 2 },
+      { key: "SID", id: 3 },
+    ]);
+    expect(rows(v5, "PRAGMA foreign_key_check")).toEqual([]);
+    expect(rows(v5, "PRAGMA integrity_check")).toEqual([{ integrity_check: "ok" }]);
+    expect(rows(v5, "PRAGMA user_version")).toEqual([{ user_version: 6 }]);
+  });
+
+  test("identifiers, relations, refs, comments and versions read the same over REST and MCP", async () => {
+    const acme = sam("acme");
+    const parent = (await acme("GET", "/api/issues/ACM-1")).body;
+    expect([parent.blockedBy, parent.children.map((c: any) => c.id), parent.docs.map((d: any) => d.slug)]).toEqual([["ACM-4"], ["ACM-2"], ["plan"]]);
+    expect([parent.assignee.username, parent.labels, parent.comments.map((c: any) => [c.id, c.author.username, c.body])]).toEqual([
+      "sam",
+      ["bug"],
+      [[301, "sam", "started"]],
+    ]);
+    const child = (await acme("GET", "/api/issues/ACM-2")).body;
+    expect([child.parent, child.blockedBy, child.docs.map((d: any) => d.slug)]).toEqual(["ACM-1", ["OPS-1"], ["runbook"]]);
+    expect((await acme("GET", "/api/issues/OPS-1")).body.blocks).toEqual(["ACM-2"]);
+    expect((await acme("GET", "/api/issues?label=infra")).body.map((i: any) => i.id)).toEqual(["ACM-4"]);
+    const plan = (await acme("GET", "/api/documents/plan")).body;
+    expect([plan.team, plan.issues.map((i: any) => i.id), plan.versionCount, plan.comments[0].body]).toEqual(["ACM", ["ACM-1", "OPS-1"], 2, "lgtm"]);
+    expect((await acme("GET", "/api/documents/plan/versions")).body.map((v: any) => v.id)).toEqual([502, 501]);
+    expect((await acme("GET", "/api/documents")).body.map((d: any) => [d.slug, d.team, d.position])).toEqual([["plan", "ACM", 1], ["runbook", "OPS", 2.5]]);
+
+    const bot = server.with({ token: AGENT_KEY });
+    const notes = (await bot.api("GET", "/api/documents/side-notes")).body;
+    expect([notes.team, notes.issues.map((i: any) => i.id), notes.comments[0].author.username]).toEqual(["SID", ["SID-2", "SID-1"], "bot"]);
+    const sideOne = (await bot.api("GET", "/api/issues/SID-1")).body;
+    expect([sideOne.children.map((c: any) => c.id), sideOne.blockedBy, sideOne.delegate.username, sideOne.comments[0].editedAt]).toEqual([
+      ["SID-2"],
+      ["SID-2"],
+      "bot",
+      t(11),
+    ]);
+    expect(await bot.tool("get_issue", { id: "SID-1" })).toContain("blocked by SID-2");
+    expect(await server.with({ token: ADMIN_KEY }).tool("list_documents")).toContain("runbook · Runbook · OPS");
+  });
+
+  test("the trash, team counts and each team's next number carry on", async () => {
+    const acme = sam("acme");
+    const trash = (await acme("GET", "/api/teams/ACM/trash")).body;
+    expect([trash.issues.map((i: any) => i.id), trash.documents.map((d: any) => d.slug)]).toEqual([["ACM-5"], ["old-idea"]]);
+    expect((await acme("GET", "/api/issues/ACM-5")).body.comments[0].body).toBe("oops");
+    const teams = (await acme("GET", "/api/teams")).body.map((t: any) => [t.key, t.counts, t.docCount]);
+    expect(teams).toEqual([
+      ["ACM", { backlog: 0, todo: 1, in_progress: 1, in_review: 0, done: 1, canceled: 0 }, 1],
+      ["OPS", { backlog: 0, todo: 1, in_progress: 0, in_review: 0, done: 0, canceled: 0 }, 1],
+    ]);
+    const next = async (workspace: string, team: string) => (await sam(workspace)("POST", "/api/issues", { team, title: "Next" })).body.id;
+    expect(await next("acme", "ACM")).toBe("ACM-6");
+    expect(await next("acme", "OPS")).toBe("OPS-2");
+    expect(await next("side", "SID")).toBe("SID-3");
+    expect((await acme("POST", "/api/issues/ACM-5/restore")).body).toMatchObject({ id: "ACM-5", parent: "ACM-1" });
+    expect((await acme("POST", "/api/documents/old-idea/restore")).body).toMatchObject({ team: "ACM", position: 3 });
+  });
+
+  test("keys and slugs are per workspace from now on", async () => {
+    const side = sam("side");
+    expect((await side("POST", "/api/teams", { key: "ACM", name: "Side's own ACM" })).status).toBe(201);
+    expect((await side("POST", "/api/documents", { team: "ACM", title: "Plan" })).body.slug).toBe("plan");
+    expect((await sam("acme")("GET", "/api/documents/plan")).body.issues.map((i: any) => i.id)).toEqual(["ACM-1", "OPS-1"]);
+    expect((await sam("acme")("GET", "/api/issues/ACM-1")).body.title).toBe("Parent");
   });
 });

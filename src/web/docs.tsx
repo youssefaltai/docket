@@ -54,11 +54,9 @@ export function DocsView({ teamKey }: { teamKey: string | null }) {
     document.title = `${team ? `${team.name} docs` : teamKey || "All docs"} · Docket`;
   }, [teamKey, team?.name]);
 
-  // "All docs" is the current workspace's; wait until it's known.
-  const workspace = teamKey ? undefined : app.workspace?.key;
   const { data: docs, failed, reload } = useFetch(
-    teamKey || workspace ? () => api.documents({ team: teamKey ?? undefined, workspace, q: q || undefined }) : null,
-    [teamKey, workspace, q],
+    () => api.documents({ team: teamKey ?? undefined, q: q || undefined }),
+    [teamKey, q],
   );
   const newDoc = () => app.newDoc(teamKey ?? undefined);
 

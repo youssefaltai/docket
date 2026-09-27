@@ -1,5 +1,5 @@
 // App shell: boot, sidebar, routing, live updates, global shortcuts.
-import { StrictMode, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { Fragment, StrictMode, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import type { IssueInput, Team, Workspace, WorkspaceMember } from "../shared/types";
 import { api, connectionStore, setCurrentWorkspace, setOnAccessLost, setOnUnauthorized, store, subscribe } from "./api";
@@ -57,9 +57,9 @@ function App() {
   const path = usePath();
   const route = parseRoute(path);
   const [live, setLive] = useState(0);
+  const [listTick, setListTick] = useState(0);
   const [workspaces, setWorkspaces] = useState<Workspace[] | null>(null);
-  const [workspaceKey, setWorkspaceKey] = useState(() => store.get("workspace"));
-  const [teams, setTeams] = useState<Team[] | null>(null);
+  const [teams, setTeams] = useState<{ workspace: string; list: Team[] } | null>(null);
   const [teamsTick, setTeamsTick] = useState(0);
   const [labels, setLabels] = useState<string[]>([]);
   const [members, setMembers] = useState<WorkspaceMember[]>([]);
@@ -67,69 +67,111 @@ function App() {
   const [navOpen, setNavOpen] = useState(false);
   const [docTeam, setDocTeam] = useState<string | null>(null);
 
-  // Live updates: coalesce bursts of server events into one refetch. The issue index
-  // (statuses for identifier chips) only changes with issue and team events.
+  // The URL says which workspace this is (/acme/…). Where it names none (/, or a link from before), it's the one
+  // you used last, else your first. Until the list loads, your workspaces as of boot.
+  const yours: { key: string }[] = workspaces ?? getMe().workspaces;
+  const stored = store.get("workspace");
+  const fallback = (yours.find((w) => w.key === stored) ?? yours[0])?.key ?? null;
+  const member = !!route.workspace && yours.some((w) => w.key === route.workspace);
+  const currentKey = member ? route.workspace : fallback;
+  // Every request acts there. Set while rendering, not in an effect: children's effects run first.
+  setCurrentWorkspace(currentKey);
+  const shown = useRef(currentKey);
+  shown.current = currentKey;
+
+  // Remember the workspace; send a path without one to the right one, replacing it in history.
+  useEffect(() => {
+    if (member) return store.set("workspace", route.workspace!);
+    if (route.workspace || !fallback) return; // not yours (the page says so), or you have none
+    const go = (workspace: string) => navigate(`/${workspace}${path === "/" ? "" : path}${location.search}${location.hash}`, true);
+    // A link from before (/issue/BRD-1, /doc/plan, /t/BRD…): find which workspace it meant. Not found: yours says so.
+    const what =
+      route.view === "issue" ? { issue: route.id } : route.view === "doc" ? { doc: route.slug } : "team" in route && route.team ? { team: route.team } : null;
+    if (!what) return go(fallback);
+    let stale = false;
+    api.locate(what).then(
+      (found) => !stale && go(found.workspace),
+      () => !stale && go(fallback),
+    );
+    return () => void (stale = true);
+  }, [path, member, fallback]);
+
+  // The issue index (statuses for identifier chips) of the workspace shown; a failure is surfaced once, not on every retry.
+  const warned = useRef(false);
+  const loadIndex = useCallback(() => {
+    const key = shown.current;
+    api.issues().then(
+      (list) => {
+        warned.current = false;
+        if (shown.current === key) setIssueIndex(list);
+      },
+      (e) => {
+        if (warned.current) return;
+        warned.current = true;
+        errorToast(e);
+      },
+    );
+  }, []);
+  useEffect(() => {
+    if (!currentKey) return;
+    setIssueIndex([]);
+    loadIndex();
+  }, [currentKey, loadIndex]);
+
+  // Live updates: coalesce bursts of server events into one refetch. The socket hears all your workspaces:
+  // only the shown one's events refetch its data (the index only for issue and team events); workspace and
+  // member events refetch the workspace list.
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
-    let stale = true;
-    let warned = false; // surface a failure once, not on every retry
-    const loadIndex = () =>
-      api.issues().then(
-        (list) => {
-          warned = false;
-          setIssueIndex(list);
-        },
-        (e) => {
-          if (warned) return;
-          warned = true;
-          errorToast(e);
-        },
-      );
-    loadIndex();
+    let data = false;
+    let index = false;
+    let list = false;
     const stop = subscribe((event) => {
-      if (event?.entity !== "document") stale = true;
+      const here = !event || event.workspace === shown.current; // null: reconnected, anything may have changed
+      if (!event || event.entity === "workspace" || event.entity === "member") list = true;
+      if (here) data = true;
+      if (here && event?.entity !== "document") index = true;
       clearTimeout(timer);
       timer = setTimeout(() => {
-        setLive((v) => v + 1);
-        if (stale) loadIndex();
-        stale = false;
+        if (data) setLive((v) => v + 1);
+        if (list) setListTick((v) => v + 1);
+        if (index) loadIndex();
+        data = index = list = false;
       }, 100);
     });
     return () => {
       stop();
       clearTimeout(timer);
     };
-  }, []);
+  }, [loadIndex]);
 
   useEffect(() => {
     api.workspaces().then(setWorkspaces, errorToast);
-    api.teams().then(setTeams, errorToast);
-  }, [live, teamsTick]);
+  }, [listTick, teamsTick]);
+
+  useEffect(() => {
+    if (!currentKey) return;
+    let stale = false;
+    api.teams().then((list) => !stale && setTeams({ workspace: currentKey, list }), errorToast);
+    return () => void (stale = true);
+  }, [currentKey, live, teamsTick]);
 
   useEffect(() => setNavOpen(false), [path]);
 
-  const workspace = workspaces?.find((w) => w.key === workspaceKey) ?? workspaces?.[0] ?? null;
-  // Every request says which workspace it's in. Set while rendering, not in an effect: children's effects run first.
-  setCurrentWorkspace(workspace?.key ?? null);
+  const workspace = workspaces?.find((w) => w.key === currentKey) ?? null;
+  const workspaceTeams = teams?.workspace === currentKey ? teams.list : null;
 
   // Labels and members (assignees are people, delegates agents) of the current workspace, for pickers and filters.
-  const currentKey = workspace?.key;
   const loadDirectory = useCallback(() => {
     if (!currentKey) return;
-    api.labels(currentKey).then(setLabels, () => {});
+    api.labels().then(setLabels, () => {});
     api.members(currentKey).then(setMembers, () => {});
   }, [currentKey]);
   useEffect(loadDirectory, [loadDirectory, live]);
 
-  const workspaceTeams = teams && workspace ? teams.filter((t) => t.workspace === workspace.key) : null;
-  const setWorkspace = useCallback((key: string) => {
-    setWorkspaceKey(key);
-    store.set("workspace", key);
-  }, []);
-  const switchWorkspace = (key: string) => {
-    setWorkspace(key);
-    navigate(route.view === "settings" ? path : route.view === "docs" || route.view === "doc" ? "/docs" : "/");
-  };
+  // Switching keeps you on the same kind of page: settings, docs, or issues.
+  const switchWorkspace = (key: string) =>
+    navigate(`/${key}${route.view === "settings" ? `/settings/${route.section}` : route.view === "docs" || route.view === "doc" ? "/docs" : ""}`);
 
   // Access changed under us (the socket closed with 4401): ask who we are now. A 401 goes to the sign-in
   // screen; losing just this workspace moves to another one and says why, instead of showing "not found".
@@ -141,23 +183,17 @@ function App() {
         const lost = current.current;
         if (lost && !me.workspaces.some((w) => w.key === lost.key)) {
           toast(`You no longer have access to ${lost.name}`);
-          if (me.workspaces[0]) setWorkspace(me.workspaces[0].key);
-          navigate("/");
+          navigate(me.workspaces[0] ? `/${me.workspaces[0].key}` : "/");
         }
         setLive((v) => v + 1);
+        setListTick((v) => v + 1);
       }, () => {}),
     );
-  }, [setWorkspace]);
+  }, []);
 
   const connection = useSyncExternalStore(connectionStore.subscribe, connectionStore.get);
 
   const currentTeam = routeTeam(route, docTeam);
-
-  // Opening a team, issue or doc from another workspace switches to that workspace.
-  const owner = teams?.find((t) => t.key === currentTeam)?.workspace;
-  useEffect(() => {
-    if (owner) setWorkspace(owner);
-  }, [owner, setWorkspace]);
 
   const known = (key: string | null | undefined) => (key && workspaceTeams?.some((t) => t.key === key) ? key : undefined);
   const pickTeam = (key?: string | null) => known(key) ?? known(currentTeam) ?? workspaceTeams?.[0]?.key;
@@ -165,8 +201,7 @@ function App() {
   const app: AppState = {
     workspaces,
     workspace,
-    teams,
-    workspaceTeams,
+    teams: workspaceTeams,
     labels,
     members,
     loadDirectory,
@@ -209,12 +244,27 @@ function App() {
     }
   });
 
-  const page = route.view === "settings" ? (
-    <SettingsPage section={route.section} />
-  ) : workspaces?.length === 0 ? (
-    <EmptyState title="No workspace yet" action={<button className="btn btn-primary" onClick={app.newWorkspace}>Create a workspace</button>}>
-      Create one to start, or ask an admin to invite you to theirs.
+  const page = !fallback ? (
+    route.view === "settings" ? (
+      <SettingsPage section={route.section} />
+    ) : (
+      <EmptyState title="No workspace yet" action={<button className="btn btn-primary" onClick={app.newWorkspace}>Create a workspace</button>}>
+        Create one to start, or ask an admin to invite you to theirs.
+      </EmptyState>
+    )
+  ) : !route.workspace ? null /* on its way to a workspace (see above) */ : !member ? (
+    <EmptyState
+      title={`No access to ${route.workspace}`}
+      action={
+        <Link className="btn btn-primary" to={`/${fallback}`}>
+          Go to {workspace?.name ?? fallback}
+        </Link>
+      }
+    >
+      There’s no such workspace, or you aren’t a member of it.
     </EmptyState>
+  ) : route.view === "settings" ? (
+    <SettingsPage section={route.section} />
   ) : route.view === "issue" ? (
     <IssuePage key={route.id} id={route.id} />
   ) : route.view === "doc" ? (
@@ -239,7 +289,7 @@ function App() {
                 {connection === "offline" ? "You’re offline. Changes won’t save until you reconnect." : "Reconnecting…"}
               </div>
             )}
-            {page}
+            <Fragment key={currentKey}>{page}</Fragment>
           </main>
           {getMe().chat && <ChatDock />}
         </div>
@@ -270,7 +320,7 @@ function routeTeam(route: Route, docTeam: string | null): string | null {
 }
 
 function Sidebar({ route, active, onSwitch }: { route: Route; active: string | null; onSwitch: (key: string) => void }) {
-  const { workspaces, workspace, workspaceTeams: teams, newIssue, newTeam, newWorkspace } = useApp();
+  const { workspaces, workspace, teams, newIssue, newTeam, newWorkspace } = useApp();
   const total = teams?.reduce((n, t) => n + openCount(t), 0) ?? 0;
   const docs = teams?.reduce((n, t) => n + t.docCount, 0) ?? 0;
   const options = [
