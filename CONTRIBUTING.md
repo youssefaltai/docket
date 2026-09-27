@@ -30,7 +30,7 @@ scripts/seed.ts       demo data, created over REST
 
 ## Tests
 
-Tests start a real server in a subprocess against a temp database, set it up with an admin, then talk to it over REST, MCP and `/ws` (`test/server.ts`). They never import `src/`, so refactors don't break them. Only behaviour changes do.
+Tests start a real server in a subprocess against a temp database, set it up with an admin, then talk to it over REST, MCP and `/ws` (`test/server.ts`). They never import `src/`, so refactors don't break them. Only behaviour changes do. The exception is `test/editor.test.ts`: it checks the rich editor's markdown round-trip (`src/web/tiptapKit.ts`) on a real corpus (`test/fixtures/editor`), under happy-dom.
 
 - A behaviour change or a bug fix comes with a test.
 - Tests sign in only through the harness: `s.api` (the admin), `s.user(name)`, `s.agent(name)`, `s.as(name)` and `s.anon`. A change to how auth works then touches `test/server.ts` alone.
@@ -41,7 +41,7 @@ Tests start a real server in a subprocess against a temp database, set it up wit
 Docket's one rule is **minimal, simple, clean, smooth**. In practice:
 
 - **Small and focused.** One change per PR. Open an issue first for anything big.
-- **No new dependencies** unless there's really no other way.
+- **No new dependencies** unless there's really no other way. The one exception: the rich text editor, Tiptap (DKT-29), pinned to exact versions.
 - **Keep SPEC.md in sync** when you change behaviour, the API or the data model.
 - **Migrations never lose data; rebuilds follow SQLite's 12-step procedure.** People have real data in their SQLite files.
 - **Match the UI.** Neutral, light, Linear-like. Check it on a phone width too.

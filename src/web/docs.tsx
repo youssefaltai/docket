@@ -2,7 +2,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import type { Document, DocumentPatch, DocumentSummary, DocumentVersion, DocumentVersionSummary } from "../shared/types";
 import { HttpError, api } from "./api";
-import { useMentionMenu } from "./editor";
+import { RichEditor } from "./editor";
 import { TeamPicker } from "./pickers";
 import {
   Avatar,
@@ -592,7 +592,7 @@ function History({
 // ---------- Editor ----------
 
 /**
- * Full-height markdown editor with autosave. It never overwrites the draft with a remote
+ * Full-height editor with autosave. It never overwrites the draft with a remote
  * change: that shows a banner instead, and saving pauses until the user picks a side.
  */
 function DocEditor({
@@ -619,7 +619,6 @@ function DocEditor({
 }) {
   const [draft, setDraft] = useState(doc.content);
   const [conflict, setConflict] = useState<string | null>(null);
-  const ref = useRef<HTMLTextAreaElement>(null);
   // base: what the server has from us; echo: how it came back; inflight: being saved now.
   const s = useRef({
     draft: doc.content,
@@ -685,7 +684,6 @@ function DocEditor({
     onStatus("saving");
     s.timer = setTimeout(save, 1000);
   };
-  const mention = useMentionMenu(ref, draft, change);
 
   const reload = () => {
     s.draft = s.base = s.echo = doc.content;
@@ -717,28 +715,6 @@ function DocEditor({
     };
   }, []);
 
-  // Grow with the content; the page scrolls, not the textarea. Keep the scroll position steady.
-  useLayoutEffect(() => {
-    const el = ref.current;
-    const sc = scroller.current;
-    if (!el) return;
-    const top = sc?.scrollTop ?? 0;
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight}px`;
-    if (sc) sc.scrollTop = top;
-  }, [draft, scroller]);
-
-  // Open at roughly the spot that was being read.
-  useLayoutEffect(() => {
-    const el = ref.current;
-    const sc = scroller.current;
-    if (!el) return;
-    const at = startAt > 0.02 ? el.value.lastIndexOf("\n", Math.floor(startAt * el.value.length)) + 1 : 0;
-    el.setSelectionRange(at, at);
-    el.focus({ preventScroll: true });
-    if (sc) sc.scrollTop = startAt * (sc.scrollHeight - sc.clientHeight);
-  }, []);
-
   return (
     <>
       {conflict && (
@@ -757,28 +733,21 @@ function DocEditor({
           </button>
         </div>
       )}
-      <textarea
-        ref={ref}
-        className="doc-editor"
-        dir="auto"
-        spellCheck
-        aria-label="Content (Markdown)"
-        placeholder="Write in Markdown… Mention issues like BRD-2, link docs with [Title](/doc/slug)."
+      <RichEditor
+        className="doc-editor doc-md"
+        footClass="doc-editor-foot"
+        label="Content"
+        placeholder="Write, or type / for headings, lists, tables… Mention issues like BRD-2, and people with @."
         value={draft}
-        onChange={(e) => change(e.target.value)}
-        {...mention.props}
-        onKeyDown={(e) => {
-          if (mention.onKeyDown(e)) return;
-          if (e.key === "s" && (e.metaKey || e.ctrlKey)) {
-            e.preventDefault();
-            save();
-          } else if (e.key === "Escape") {
-            e.preventDefault();
-            onExit();
-          }
+        onChange={change}
+        autoFocus={startAt}
+        onReady={() => {
+          const sc = scroller.current;
+          if (sc) sc.scrollTop = startAt * (sc.scrollHeight - sc.clientHeight);
         }}
+        onSave={save}
+        onCancel={onExit}
       />
-      {mention.menu}
     </>
   );
 }
