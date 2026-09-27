@@ -10,6 +10,10 @@ import type {
   SetupInput,
   User,
   UserRef,
+  Webhook,
+  WebhookDelivery,
+  WebhookInput,
+  WebhookPatch,
   WorkspaceMember,
 } from "../shared/types";
 import { enc, getCurrentWorkspace, request, setSignedInAs } from "./api";
@@ -65,4 +69,11 @@ export const auth = {
     request<{ agent: UserRef; token: string }>("POST", `${ws(workspace)}/agents`, { name, username }),
   rotateAgentToken: (workspace: string, username: string) => request<{ token: string }>("POST", `${ws(workspace)}/agents/${enc(username)}/token`),
   removeAgent: (workspace: string, username: string) => request<unknown>("DELETE", `${ws(workspace)}/agents/${enc(username)}`),
+
+  webhooks: (workspace: string) => request<Webhook[]>("GET", `${ws(workspace)}/webhooks`),
+  createWebhook: (workspace: string, input: WebhookInput) => request<{ webhook: Webhook; secret: string }>("POST", `${ws(workspace)}/webhooks`, input),
+  updateWebhook: (workspace: string, id: number, patch: WebhookPatch) => request<Webhook>("PATCH", `${ws(workspace)}/webhooks/${id}`, patch),
+  deleteWebhook: (workspace: string, id: number) => request<unknown>("DELETE", `${ws(workspace)}/webhooks/${id}`),
+  rotateWebhookSecret: (workspace: string, id: number) => request<{ secret: string }>("POST", `${ws(workspace)}/webhooks/${id}/secret`),
+  webhookDeliveries: (workspace: string, id: number) => request<WebhookDelivery[]>("GET", `${ws(workspace)}/webhooks/${id}/deliveries`),
 };

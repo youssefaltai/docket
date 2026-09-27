@@ -8,6 +8,7 @@ services:
       DOCKET_HOSTS: docket,${DOCKET_HOSTS:-}
       DOCKET_URL: ${DOCKET_URL:-}
       CHAT_URL: ${CHAT_URL:-}
+      DOCKET_WEBHOOK_ALLOW_PRIVATE: ${DOCKET_WEBHOOK_ALLOW_PRIVATE:-}
     volumes:
       - ./data:/app/data
     networks:

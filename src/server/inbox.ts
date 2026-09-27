@@ -5,6 +5,7 @@ import type { SQLQueryBindings } from "bun:sqlite";
 import type { Inbox, Notification, NotificationKind, Status, UserKind } from "../shared/types.ts";
 import { type Actor, requestWorkspace, usernameOf } from "./access.ts";
 import { AppError, changed, db, now } from "./db.ts";
+import { enqueue } from "./webhooks.ts";
 
 /** An issue or a doc, by row id. */
 export type Target = { issueId: number } | { documentId: number };
@@ -44,15 +45,16 @@ export interface Event {
 
 /**
  * One notification for each recipient who is an active member of the workspace, never the actor, and a live
- * `inbox` event to each. Runs in the mutation's transaction (bun:sqlite is synchronous: the event leaves in the
+ * `inbox` event to each; an agent's also goes to the workspace's webhooks (what starts an agent). Runs in the mutation's transaction (bun:sqlite is synchronous: the event leaves in the
  * same tick as the commit; after a rollback it only costs a refetch).
  */
 export function notify(recipients: Iterable<number>, e: Event, time: string) {
   const ids = [...new Set(recipients)].filter((id) => id !== e.actorId);
   if (!ids.length) return;
   const members = db
-    .query<{ user_id: number; username: string }, [string, string]>(
-      "SELECT user_id, username FROM workspace_members WHERE workspace = ? AND suspended_at IS NULL AND user_id IN (SELECT value FROM json_each(?))",
+    .query<{ user_id: number; username: string; name: string; kind: UserKind }, [string, string]>(
+      `SELECT m.user_id, m.username, m.name, u.kind FROM workspace_members m JOIN users u ON u.id = m.user_id
+       WHERE m.workspace = ? AND m.suspended_at IS NULL AND m.user_id IN (SELECT value FROM json_each(?))`,
     )
     .all(e.workspace, JSON.stringify(ids));
   const insert = db.query(
@@ -63,9 +65,13 @@ export function notify(recipients: Iterable<number>, e: Event, time: string) {
      AND id <= (SELECT id FROM notifications WHERE user_id = ?1 AND workspace = ?2 ORDER BY id DESC LIMIT 1 OFFSET ${KEEP})`,
   );
   for (const m of members) {
-    insert.run(m.user_id, e.workspace, e.kind, e.actorId, idOf(e.target), e.commentId ?? null, e.status ?? null, time);
+    const id = Number(insert.run(m.user_id, e.workspace, e.kind, e.actorId, idOf(e.target), e.commentId ?? null, e.status ?? null, time).lastInsertRowid);
     trim.run(m.user_id, e.workspace);
     changed("inbox", e.workspace, m.username, m.user_id);
+    if (m.kind !== "agent") continue;
+    const user = { username: m.username, name: m.name, kind: m.kind };
+    const data = () => ({ ...toNotification(db.query<Record<string, any>, [number, string, number]>(`${SELECT} AND n.id = ?`).get(m.user_id, e.workspace, id)!), user });
+    enqueue({ workspace: e.workspace, type: "Notification", action: "create", entity: String(id), actorId: e.actorId, time, data });
   }
 }
 

@@ -370,6 +370,42 @@ const MIGRATIONS: (string | (() => void))[] = [
       SELECT user_id, document_id, MIN(created_at) FROM mentions WHERE document_id IS NOT NULL GROUP BY user_id, document_id;
     `);
   },
+  // Webhooks, and their outbox: deliveries are written in the same transaction as the change and sent by a
+  // background loop. The secret signs deliveries, so it's kept in the clear (shown once).
+  `
+  CREATE TABLE webhooks (
+    id INTEGER PRIMARY KEY,
+    workspace TEXT NOT NULL REFERENCES workspaces(key) ON DELETE CASCADE,
+    url TEXT NOT NULL,
+    label TEXT NOT NULL DEFAULT '',
+    resource_types TEXT NOT NULL,         -- JSON array of Issue | Comment | Document | Notification
+    secret TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    failures INTEGER NOT NULL DEFAULT 0,  -- deliveries in a row that failed for good; 10 disables the webhook
+    created_by INTEGER NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX webhooks_workspace ON webhooks(workspace);
+  CREATE TABLE webhook_deliveries (
+    id INTEGER PRIMARY KEY,
+    webhook_id INTEGER NOT NULL REFERENCES webhooks(id) ON DELETE CASCADE,
+    uuid TEXT NOT NULL,                   -- Docket-Delivery, the same on every attempt
+    type TEXT NOT NULL,
+    action TEXT NOT NULL,
+    entity TEXT NOT NULL,                 -- identifier, slug, comment id or notification id
+    payload TEXT NOT NULL,                -- JSON without webhookTimestamp (set per attempt)
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'delivered', 'failed')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT,
+    response_status INTEGER,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    last_attempt_at TEXT
+  );
+  CREATE INDEX webhook_deliveries_due ON webhook_deliveries(next_attempt_at) WHERE status = 'pending';
+  CREATE INDEX webhook_deliveries_webhook ON webhook_deliveries(webhook_id, id);
+  `,
 ];
 
 db.run("PRAGMA foreign_keys = OFF"); // a migration may rebuild a table (SQLite's 12-step ALTER); checked before each commit
@@ -419,7 +455,7 @@ export const exists = (table: string, column: string, value: string) =>
   db.query(`SELECT 1 FROM ${table} WHERE ${column} = ?`).get(value) !== null;
 
 /** The longest text a field takes, in characters (a huge comment would freeze every viewer's page). */
-const MAX_LENGTH: Record<string, number> = { title: 500, name: 200, body: 100_000, description: 100_000, content: 500_000 };
+const MAX_LENGTH: Record<string, number> = { title: 500, name: 200, label: 200, body: 100_000, description: 100_000, content: 500_000 };
 
 export function capLength(text: string, field: string): string {
   const max = MAX_LENGTH[field];

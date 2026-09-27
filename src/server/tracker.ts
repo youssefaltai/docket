@@ -31,6 +31,7 @@ import {
   type Trash,
   type UserKind,
   type UserRef,
+  type WebhookAction,
 } from "../shared/types.ts";
 import { type Actor, activeMemberId, requestWorkspace, requirePerson } from "./access.ts";
 import {
@@ -48,6 +49,7 @@ import {
   requireText,
 } from "./db.ts";
 import * as inbox from "./inbox.ts";
+import { enqueue } from "./webhooks.ts";
 
 const checkStatus = (value: unknown) => checkOneOf(value, STATUSES, "status");
 const checkPriority = (value: unknown) => checkOneOf(value as Priority, PRIORITIES, "priority (0 none, 1 urgent, 2 high, 3 medium, 4 low)");
@@ -116,22 +118,48 @@ const COMMENTS = {
 
 type CommentOwner = keyof typeof COMMENTS;
 
+const commentSelect = (owner: CommentOwner) =>
+  `SELECT c.id, c.body, c.created_at, c.edited_at, ${userCols("u", "a")} FROM ${COMMENTS[owner].table} c ${userJoin("u", "c.author_id", "?")}`;
+
+const toComment = (r: Record<string, unknown>): Comment => ({
+  id: r.id as number,
+  author: ref(r, "a")!,
+  body: r.body as string,
+  createdAt: r.created_at as string,
+  editedAt: r.edited_at as string | null,
+});
+
 /** An issue's or doc's comments; authors as they're known in `workspace`, the owner's. */
 function listComments(owner: CommentOwner, ownerId: number, workspace: string): Comment[] {
-  const { table, column } = COMMENTS[owner];
   return db
-    .query<Record<string, unknown>, [string, number]>(
-      `SELECT c.id, c.body, c.created_at, c.edited_at, ${userCols("u", "a")}
-       FROM ${table} c ${userJoin("u", "c.author_id", "?")} WHERE c.${column} = ? ORDER BY c.id`,
-    )
+    .query<Record<string, unknown>, [string, number]>(`${commentSelect(owner)} WHERE c.${COMMENTS[owner].column} = ? ORDER BY c.id`)
     .all(workspace, ownerId)
-    .map((r) => ({
-      id: r.id as number,
-      author: ref(r, "a")!,
-      body: r.body as string,
-      createdAt: r.created_at as string,
-      editedAt: r.edited_at as string | null,
-    }));
+    .map(toComment);
+}
+
+/** An issue's identifier or a doc's slug, by row id. */
+const ownerRef = (owner: CommentOwner, id: number) =>
+  db
+    .query<{ ref: string }, [number]>(
+      owner === "issue" ? `SELECT ${ident("t", "i")} AS ref FROM issues i JOIN teams t ON t.id = i.team_id WHERE i.id = ?` : "SELECT slug AS ref FROM documents WHERE id = ?",
+    )
+    .get(id)!.ref;
+
+/** Queues a comment's webhook event (see webhooks.ts); call it while the comment is still there. */
+function commentEvent(
+  a: Actor,
+  owner: CommentOwner,
+  ownerId: number,
+  workspace: string,
+  id: number,
+  action: WebhookAction,
+  time: string,
+  updatedFrom?: Record<string, unknown>,
+) {
+  const on = ownerRef(owner, ownerId);
+  const comment = toComment(db.query<Record<string, unknown>, [string, number]>(`${commentSelect(owner)} WHERE c.id = ?`).get(workspace, id)!);
+  const data = { ...comment, issue: owner === "issue" ? on : null, document: owner === "document" ? on : null };
+  enqueue({ workspace, type: "Comment", action, entity: String(id), actorId: a.id, time, data: () => data, updatedFrom });
 }
 
 const targetOf = (owner: CommentOwner, ownerId: number): inbox.Target => (owner === "issue" ? { issueId: ownerId } : { documentId: ownerId });
@@ -145,6 +173,7 @@ function insertComment(a: Actor, owner: CommentOwner, ownerId: number, workspace
   const { table, column } = COMMENTS[owner];
   const text = requireText(body, "body");
   const id = Number(db.query(`INSERT INTO ${table} (${column}, author_id, body, created_at) VALUES (?, ?, ?, ?)`).run(ownerId, a.id, text, time).lastInsertRowid);
+  commentEvent(a, owner, ownerId, workspace, id, "create", time); // before the notifications it causes
   const mentioned = commentMentions(a, owner, ownerId, workspace, id, text, time);
   const target = targetOf(owner, ownerId);
   inbox.subscribe(a.id, target, time);
@@ -173,12 +202,16 @@ function ownComment(a: Actor, owner: CommentOwner, ownerId: number, workspace: s
 function updateComment(a: Actor, owner: CommentOwner, ownerId: number, workspace: string, commentId: unknown, body: unknown, time: string) {
   const id = ownComment(a, owner, ownerId, workspace, commentId);
   const text = requireText(body, "body");
-  db.query(`UPDATE ${COMMENTS[owner].table} SET body = ?, edited_at = ? WHERE id = ?`).run(text, time, id);
+  const { table } = COMMENTS[owner];
+  const before = db.query<{ body: string; edited_at: string | null }, [number]>(`SELECT body, edited_at FROM ${table} WHERE id = ?`).get(id)!;
+  db.query(`UPDATE ${table} SET body = ?, edited_at = ? WHERE id = ?`).run(text, time, id);
   commentMentions(a, owner, ownerId, workspace, id, text, time);
+  if (text !== before.body) commentEvent(a, owner, ownerId, workspace, id, "update", time, { body: before.body, editedAt: before.edited_at });
 }
 
-function deleteComment(a: Actor, owner: CommentOwner, ownerId: number, workspace: string, commentId: unknown) {
+function deleteComment(a: Actor, owner: CommentOwner, ownerId: number, workspace: string, commentId: unknown, time: string) {
   const id = ownComment(a, owner, ownerId, workspace, commentId);
+  commentEvent(a, owner, ownerId, workspace, id, "remove", time);
   db.query(`DELETE FROM ${COMMENTS[owner].table} WHERE id = ?`).run(id);
   db.query("DELETE FROM mentions WHERE source = ?").run(`${COMMENTS[owner].source}:${id}`);
   inbox.commentDeleted(targetOf(owner, ownerId), id);
@@ -542,12 +575,13 @@ const ANNOUNCED: Status[] = ["in_review", "done", "canceled"];
  * of its transaction, so whatever runs here later sees the final state and rolls back with the change.
  * Values as they are in memory (users by id, parent and blockers by identifier), stored as JSON.
  * Then the inbox: creating or claiming subscribes the actor; a new assignee or delegate is subscribed and told;
- * a move into in_review, done or canceled tells the subscribers.
+ * a move into in_review, done or canceled tells the subscribers. The webhook event goes first (`was`: see issueEvent).
  */
-function logActivity(a: Actor, issueId: number, workspace: string, changes: Change[], time: string) {
+function logActivity(a: Actor, issueId: number, workspace: string, changes: Change[], time: string, was: Record<string, unknown> = {}) {
   const insert = db.query("INSERT INTO issue_activity (issue_id, actor_id, kind, from_value, to_value, created_at) VALUES (?, ?, ?, ?, ?, ?)");
   const json = (kind: ActivityKind, value: unknown) => (NO_VALUES.includes(kind) || value == null ? null : JSON.stringify(value));
   for (const { kind, from, to } of changes) insert.run(issueId, a.id, kind, json(kind, from), json(kind, to), time);
+  if (changes.length) issueEvent(a, issueId, workspace, changes, time, was);
   const target = { issueId };
   const event = { actorId: a.id, workspace, target };
   for (const { kind, to } of changes) {
@@ -559,6 +593,35 @@ function logActivity(a: Actor, issueId: number, workspace: string, changes: Chan
       inbox.notify(inbox.subscribers(target), { ...event, kind: "status", status: to as Status }, time);
     }
   }
+}
+
+/** How someone is known in `workspace`, by id. */
+const userRef = (id: number, workspace: string) =>
+  ref(db.query<Record<string, unknown>, [number, string]>(`SELECT ${userCols("u", "u")} FROM (SELECT ? AS id) x ${userJoin("u", "x.id", "?")}`).get(id, workspace)!, "u");
+
+/**
+ * Queues a mutation's one Issue webhook event: created is `create`, trashed `remove`, anything else `update`, with
+ * `updatedFrom` the changed fields' values before (plus `was`: a claim's previous assignee or delegate).
+ */
+function issueEvent(a: Actor, issueId: number, workspace: string, changes: Change[], time: string, was: Record<string, unknown>) {
+  const kinds = changes.map((c) => c.kind);
+  const action = kinds.includes("created") ? "create" : kinds.includes("trashed") ? "remove" : "update";
+  let updatedFrom: Record<string, unknown> | undefined;
+  if (action === "update") {
+    updatedFrom = { ...was };
+    for (const { kind, from, to } of changes) {
+      if (kind === "claimed") {
+        if (from !== to) updatedFrom.status = from;
+      } else if (kind === "restored") updatedFrom.deletedAt = from;
+      else if (kind === "assignee" || kind === "delegate") updatedFrom[kind] = from == null ? null : userRef(from as number, workspace);
+      else updatedFrom[kind] = from;
+    }
+  }
+  const data = () => {
+    const row = db.query<IssueRow, [number]>(`${ISSUE_SELECT} WHERE i.id = ?`).get(issueId)!;
+    return { ...toSummary(row), description: row.description, creator: ref(row, "creator")! };
+  };
+  enqueue({ workspace, type: "Issue", action, entity: ownerRef("issue", issueId), actorId: a.id, time, data, updatedFrom });
 }
 
 // The fields of an issue's history, from an ISSUE_SELECT row, in the order a mutation lists them.
@@ -780,7 +843,7 @@ function trashIssue(a: Actor, identifier: string, trash: boolean): Issue {
   const refs = db.transaction(() => {
     db.query(`UPDATE issues SET deleted_at = ?, ${BUMPED_AT} WHERE id = ?`).run(trash ? time : null, time, time, issue.id);
     const refs = bumpIssues(relatives(issue.id), time);
-    logActivity(a, issue.id, issue.workspace, [{ kind: trash ? "trashed" : "restored" }], time);
+    logActivity(a, issue.id, issue.workspace, [trash ? { kind: "trashed" } : { kind: "restored", from: issue.deleted_at }], time);
     return refs;
   })();
   changed("issue", issue.workspace, issue.ref);
@@ -855,7 +918,8 @@ export function claimIssue(a: Actor, identifier: string): Issue {
     if (row.holder === a.id && started) return false;
     const status = started ? row.status : "in_progress";
     db.query(`UPDATE issues SET ${slot} = ?, status = ?, ${BUMPED_AT} WHERE id = ?`).run(a.id, status, time, time, id);
-    logActivity(a, id, workspace, [{ kind: "claimed", from: row.status, to: status }], time);
+    const was = row.holder === a.id ? {} : { [slot === "assignee_id" ? "assignee" : "delegate"]: row.holder === null ? null : userRef(row.holder, workspace) };
+    logActivity(a, id, workspace, [{ kind: "claimed", from: row.status, to: status }], time, was);
     return true;
   }).immediate();
   const issue = getIssue(a, identifier);
@@ -883,7 +947,7 @@ export const updateIssueComment = (a: Actor, identifier: string, commentId: unkn
   changeIssueComments(a, identifier, (id, time, workspace) => updateComment(a, "issue", id, workspace, commentId, body, time));
 
 export const deleteIssueComment = (a: Actor, identifier: string, commentId: unknown) =>
-  changeIssueComments(a, identifier, (id, _, workspace) => deleteComment(a, "issue", id, workspace, commentId));
+  changeIssueComments(a, identifier, (id, time, workspace) => deleteComment(a, "issue", id, workspace, commentId, time));
 
 /** Follows or unfollows an issue; it sticks until you create, claim, comment on or are assigned, delegated or mentioned in it. */
 export function subscribeIssue(a: Actor, identifier: string, on: boolean): Issue {
@@ -919,10 +983,11 @@ type DocumentRow = Record<string, unknown> & {
   position: number;
   created_at: string;
   updated_at: string;
+  updated_by_id: number;
   deleted_at: string | null;
 };
 
-const DOC_COLUMNS = `d.id, d.slug, d.team_id, t.key AS team_key, d.workspace, d.title, d.position, d.created_at, d.updated_at, d.deleted_at, ${userCols("u", "by")}`;
+const DOC_COLUMNS = `d.id, d.slug, d.team_id, t.key AS team_key, d.workspace, d.title, d.position, d.created_at, d.updated_at, d.updated_by_id, d.deleted_at, ${userCols("u", "by")}`;
 const DOC_FROM = `FROM documents d JOIN teams t ON t.id = d.team_id ${userJoin("u", "d.updated_by_id", "d.workspace")}`;
 const DOC_SELECT = `SELECT ${DOC_COLUMNS} ${DOC_FROM}`; // lists leave out the content
 
@@ -939,6 +1004,12 @@ const toDocSummary = (row: DocumentRow): DocumentSummary => ({
   updatedBy: ref(row, "by")!,
   deletedAt: row.deleted_at,
 });
+
+/** Queues a doc's webhook event (see webhooks.ts): its summary, never its content. */
+function documentEvent(a: Actor, doc: { id: number; slug: string; workspace: string }, action: WebhookAction, time: string, updatedFrom?: Record<string, unknown>) {
+  const data = () => toDocSummary(db.query<DocumentRow, [number]>(`${DOC_SELECT} WHERE d.id = ?`).get(doc.id)!);
+  enqueue({ workspace: doc.workspace, type: "Document", action, entity: doc.slug, actorId: a.id, time, data, updatedFrom });
+}
 
 /** A doc of the request's workspace, by slug. */
 function documentRow(a: Actor, slug: unknown): DocumentRow {
@@ -1076,6 +1147,7 @@ export function createDocument(a: Actor, input: DocumentInput): Document {
     saveRefs(id, content, team.workspace);
     inbox.subscribe(a.id, { documentId: id }, time);
     saveMentions(a, team.workspace, `document:${id}`, { documentId: id }, content, time, { typing: true });
+    documentEvent(a, { id, slug, workspace: team.workspace }, "create", time);
     return slug;
   })();
   changed("document", team.workspace, slug);
@@ -1114,6 +1186,13 @@ export function updateDocument(a: Actor, slug: string, patch: DocumentPatch): Do
       saveRefs(row.id, content, row.workspace);
       saveMentions(a, row.workspace, `document:${row.id}`, { documentId: row.id }, content, time, { typing: true });
     }
+    // Content isn't in the payload (it can be large): a content change shows as updatedAt alone.
+    const was: Record<string, unknown> = { updatedAt: row.updated_at };
+    if (cols.title !== undefined) was.title = row.title;
+    if (cols.team_id !== undefined) was.team = row.team_key;
+    if (cols.position !== undefined) was.position = row.position;
+    if (row.updated_by_id !== a.id) was.updatedBy = ref(row, "by");
+    documentEvent(a, row, "update", time, was);
   })();
   changed("document", row.workspace, row.slug);
   return getDocument(a, row.slug);
@@ -1124,7 +1203,11 @@ function trashDocument(a: Actor, slug: string, trash: boolean): Document {
   const row = documentRow(a, slug);
   if (!!row.deleted_at === trash) throw new AppError(trash ? `Document ${row.slug} is already in the trash` : `Document ${row.slug} isn't in the trash`, 409);
   purgeTrash();
-  db.query("UPDATE documents SET deleted_at = ? WHERE id = ?").run(trash ? now() : null, row.id);
+  const time = now();
+  db.transaction(() => {
+    db.query("UPDATE documents SET deleted_at = ? WHERE id = ?").run(trash ? time : null, row.id);
+    documentEvent(a, row, trash ? "remove" : "update", time, trash ? undefined : { deletedAt: row.deleted_at });
+  })();
   changed("document", row.workspace, row.slug);
   return getDocument(a, row.slug);
 }
@@ -1148,7 +1231,7 @@ export const updateDocumentComment = (a: Actor, slug: string, commentId: unknown
   changeDocumentComments(a, slug, (id, time, workspace) => updateComment(a, "document", id, workspace, commentId, body, time));
 
 export const deleteDocumentComment = (a: Actor, slug: string, commentId: unknown) =>
-  changeDocumentComments(a, slug, (id, _, workspace) => deleteComment(a, "document", id, workspace, commentId));
+  changeDocumentComments(a, slug, (id, time, workspace) => deleteComment(a, "document", id, workspace, commentId, time));
 
 /** Follows or unfollows a doc (see subscribeIssue). */
 export function subscribeDocument(a: Actor, slug: string, on: boolean): Document {

@@ -1,11 +1,12 @@
 import type { BunRequest } from "bun";
-import type { DocumentInput, IssueFilter, IssueInput, Status, TeamInput, WorkspaceInput } from "../shared/types.ts";
+import type { DocumentInput, IssueFilter, IssueInput, Status, TeamInput, WebhookInput, WorkspaceInput } from "../shared/types.ts";
 import * as access from "./access.ts";
 import { actorOf, isJson } from "./auth.ts";
 import { AppError } from "./db.ts";
 import { originOf } from "./http.ts";
 import * as inbox from "./inbox.ts";
 import * as tracker from "./tracker.ts";
+import * as webhooks from "./webhooks.ts";
 
 /** Wraps a handler: its return value becomes the JSON body (unless it's a Response); errors become `{ error }`. */
 function handle<Path extends string>(fn: (req: BunRequest<Path>) => unknown, status = 200) {
@@ -137,6 +138,25 @@ export const apiRoutes = {
     POST: handle<"/api/workspaces/:key/agents/:username/token">((req) =>
       access.rotateAgentToken(actorOf(req), req.params.key, req.params.username),
     ),
+  },
+  "/api/workspaces/:key/webhooks": {
+    GET: handle<"/api/workspaces/:key/webhooks">((req) => webhooks.listWebhooks(actorOf(req), req.params.key)),
+    POST: handle<"/api/workspaces/:key/webhooks">(
+      async (req) => webhooks.createWebhook(actorOf(req), req.params.key, await body<WebhookInput>(req)),
+      201,
+    ),
+  },
+  "/api/workspaces/:key/webhooks/:id": {
+    PATCH: handle<"/api/workspaces/:key/webhooks/:id">(async (req) =>
+      webhooks.updateWebhook(actorOf(req), req.params.key, req.params.id, await patch(req, "a webhook", ["url", "label", "resourceTypes", "enabled"])),
+    ),
+    DELETE: handle<"/api/workspaces/:key/webhooks/:id">((req) => webhooks.deleteWebhook(actorOf(req), req.params.key, req.params.id)),
+  },
+  "/api/workspaces/:key/webhooks/:id/secret": {
+    POST: handle<"/api/workspaces/:key/webhooks/:id/secret">((req) => webhooks.rotateWebhookSecret(actorOf(req), req.params.key, req.params.id)),
+  },
+  "/api/workspaces/:key/webhooks/:id/deliveries": {
+    GET: handle<"/api/workspaces/:key/webhooks/:id/deliveries">((req) => webhooks.listDeliveries(actorOf(req), req.params.key, req.params.id)),
   },
 
   // --- Teams and issues ---
