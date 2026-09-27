@@ -1,6 +1,7 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, type ToolCallback } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { ZodRawShapeCompat } from "@modelcontextprotocol/sdk/server/zod-compat.js";
+import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import {
   OPEN_STATUSES,
@@ -20,12 +21,16 @@ import { actorOf } from "./auth.ts";
 import { AppError } from "./db.ts";
 import * as tracker from "./tracker.ts";
 
-const INSTRUCTIONS = `Docket is an issue tracker shared by people and agents, modeled on Linear.
+const instructions = (a: Actor) => `Docket is an issue tracker shared by people and agents, modeled on Linear.
 - Workspace → team → issues and docs. You see only the workspaces you're a member of; list_teams shows each team's workspace, and \`workspace\` keeps list_issues or list_documents inside one.
 - Teams have a 2–5 letter key (e.g. BRD), unique across all workspaces. Issues are identified as KEY-number, e.g. BRD-12.
 - Statuses: backlog, todo, in_progress, in_review, done, canceled. Priority: 0 none, 1 urgent, 2 high, 3 medium, 4 low.
 - People and agents are named by username (@alice). An issue's assignee is a person who owns it; its delegate is an agent working on it for them. "me" means you.
-- Working on an issue: get_issue, then claim_issue (an agent becomes its delegate, a person its assignee, and it moves to in_progress; if someone else holds it, pick another), post progress notes with comment_issue, then set in_review or done. There is no delete: set status canceled instead.
+${
+  a.scope === "read"
+    ? "- This key is read-only: you can list and read everything here, but not change anything."
+    : "- Working on an issue: get_issue, then claim_issue (an agent becomes its delegate, a person its assignee, and it moves to in_progress; if someone else holds it, pick another), post progress notes with comment_issue, then set in_review or done. There is no delete: set status canceled instead."
+}
 - Documents (specs, plans, notes) live in teams and are identified by a slug, e.g. "architecture". They are markdown: mention issues by identifier (BRD-2) and they auto-link; link other docs with [Title](/doc/slug). Change a long doc with update_document's \`edits\` rather than rewriting it.`;
 
 const identifier = z.string().describe('Issue identifier: team key + number, e.g. "BRD-12" (case-insensitive)');
@@ -133,14 +138,31 @@ function result(text: string, structuredContent: Record<string, unknown>): CallT
 }
 
 function createServer(a: Actor): McpServer {
-  const server = new McpServer({ name: "docket", version: "1.0.0" }, { instructions: INSTRUCTIONS });
-  /** Wraps a tool that changes something: a read-only API key can't call it. */
+  const server = new McpServer({ name: "docket", version: "1.0.0" }, { instructions: instructions(a) });
+  /**
+   * Registers a tool only if this caller can use it, so tools/list shows just those: a read key gets
+   * the read-only tools, and `who` narrows the rest. Calling a hidden one is a "not found" tool error.
+   */
+  const register = <I extends ZodRawShapeCompat | undefined = undefined>(
+    name: string,
+    config: { description: string; inputSchema?: I; annotations?: ToolAnnotations },
+    cb: ToolCallback<I>,
+    who?: (a: Actor) => boolean,
+  ) => {
+    if (a.scope === "read" && !config.annotations?.readOnlyHint) return;
+    if (who && !who(a)) return;
+    server.registerTool(name, config, cb);
+  };
+  /** Wraps a tool that changes something: a read-only API key can't call it (kept alongside register as defence in depth). */
   const writes =
     <A extends unknown[], R>(fn: (...args: A) => R) =>
     (...args: A): R => {
       if (a.scope === "read") throw new AppError("This API key is read-only", 403);
       return fn(...args);
     };
+  // Who sees a tool, besides the scope check in register.
+  const people = (a: Actor) => a.kind === "person";
+  const admins = (a: Actor) => [...a.workspaces.values()].includes("admin");
   /** The workspace to use when a tool's is optional: the given one, or your only one. */
   const oneWorkspace = (workspace: string | undefined) => {
     if (workspace) return workspace;
@@ -149,7 +171,7 @@ function createServer(a: Actor): McpServer {
     throw new AppError(`Pass workspace: one of ${mine.join(", ") || "(none)"}`);
   };
 
-  server.registerTool(
+  register(
     "list_workspaces",
     {
       description: "List the workspaces you're a member of, one line each: key · name · your role · team count.",
@@ -162,7 +184,7 @@ function createServer(a: Actor): McpServer {
     },
   );
 
-  server.registerTool(
+  register(
     "create_workspace",
     {
       description: "Create a workspace (people only); you become its admin. Only create one when asked to.",
@@ -175,9 +197,10 @@ function createServer(a: Actor): McpServer {
       const workspace = access.createWorkspace(a, input);
       return result(`Created workspace ${workspace.key} · ${workspace.name}`, { workspace });
     }),
+    people,
   );
 
-  server.registerTool(
+  register(
     "update_workspace",
     {
       description: "Rename a workspace (admins only). Its key never changes. Only do this when asked to.",
@@ -187,9 +210,10 @@ function createServer(a: Actor): McpServer {
       const workspace = access.updateWorkspace(a, key, { name });
       return result(`Updated workspace ${workspace.key} · ${workspace.name}`, { workspace });
     }),
+    admins,
   );
 
-  server.registerTool(
+  register(
     "list_members",
     {
       description:
@@ -206,7 +230,7 @@ function createServer(a: Actor): McpServer {
     },
   );
 
-  server.registerTool(
+  register(
     "list_teams",
     {
       description:
@@ -224,7 +248,7 @@ function createServer(a: Actor): McpServer {
     },
   );
 
-  server.registerTool(
+  register(
     "create_team",
     {
       description:
@@ -240,9 +264,10 @@ function createServer(a: Actor): McpServer {
       const team = tracker.createTeam(a, { ...input, workspace: oneWorkspace(workspace) });
       return result(`Created team ${team.key} · ${team.name} in workspace ${team.workspace}`, { team });
     }),
+    people,
   );
 
-  server.registerTool(
+  register(
     "update_team",
     {
       description:
@@ -257,9 +282,10 @@ function createServer(a: Actor): McpServer {
       const team = tracker.updateTeam(a, key, patch);
       return result(`Updated team ${team.key} · ${team.name} in workspace ${team.workspace}`, { team });
     }),
+    people,
   );
 
-  server.registerTool(
+  register(
     "list_labels",
     {
       description:
@@ -273,7 +299,7 @@ function createServer(a: Actor): McpServer {
     },
   );
 
-  server.registerTool(
+  register(
     "list_issues",
     {
       description:
@@ -305,7 +331,7 @@ function createServer(a: Actor): McpServer {
     },
   );
 
-  server.registerTool(
+  register(
     "get_issue",
     {
       description:
@@ -319,7 +345,7 @@ function createServer(a: Actor): McpServer {
     },
   );
 
-  server.registerTool(
+  register(
     "create_issue",
     {
       description:
@@ -343,7 +369,7 @@ function createServer(a: Actor): McpServer {
     }),
   );
 
-  server.registerTool(
+  register(
     "update_issue",
     {
       description:
@@ -371,7 +397,7 @@ function createServer(a: Actor): McpServer {
     }),
   );
 
-  server.registerTool(
+  register(
     "claim_issue",
     {
       description:
@@ -384,7 +410,7 @@ function createServer(a: Actor): McpServer {
     }),
   );
 
-  server.registerTool(
+  register(
     "comment_issue",
     {
       description:
@@ -397,7 +423,7 @@ function createServer(a: Actor): McpServer {
     }),
   );
 
-  server.registerTool(
+  register(
     "list_documents",
     {
       description:
@@ -415,7 +441,7 @@ function createServer(a: Actor): McpServer {
     },
   );
 
-  server.registerTool(
+  register(
     "get_document",
     {
       description:
@@ -429,7 +455,7 @@ function createServer(a: Actor): McpServer {
     },
   );
 
-  server.registerTool(
+  register(
     "create_document",
     {
       description:
@@ -448,7 +474,7 @@ function createServer(a: Actor): McpServer {
     }),
   );
 
-  server.registerTool(
+  register(
     "update_document",
     {
       description:
@@ -480,7 +506,7 @@ function createServer(a: Actor): McpServer {
     }),
   );
 
-  server.registerTool(
+  register(
     "comment_document",
     {
       description:
@@ -499,7 +525,7 @@ function createServer(a: Actor): McpServer {
     comment: z.number().int().describe("Comment id, shown as #12 in get_issue / get_document"),
   };
 
-  server.registerTool(
+  register(
     "update_comment",
     {
       description:
@@ -521,7 +547,7 @@ function createServer(a: Actor): McpServer {
     ),
   );
 
-  server.registerTool(
+  register(
     "delete_comment",
     {
       description: "Delete one of your own comments on an issue or a document. Only for comments posted by mistake.",
@@ -543,7 +569,7 @@ function createServer(a: Actor): McpServer {
     ),
   );
 
-  server.registerTool(
+  register(
     "delete_document",
     {
       description:

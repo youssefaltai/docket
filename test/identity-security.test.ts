@@ -90,10 +90,12 @@ test("everyone writes as themselves over MCP, whatever author they claim", async
 test("MCP never mints credentials or manages members", async () => {
   const text = await s.as("bot").tool("list_members");
   expect(text).toContain("@ana");
-  // Tool names come back in tools/list; any credential or admin verb there is a leak.
-  const names = (await s.as("bot").api("POST", "/mcp", { jsonrpc: "2.0", id: 1, method: "tools/list" })).body;
-  const listed = typeof names === "string" ? names : JSON.stringify(names);
-  expect(listed).not.toMatch(/invite|api_key|sign_in|token|suspend|create_agent|session/i);
+  // Any credential or admin verb in tools/list is a leak; the admin sees the most tools.
+  for (const who of [s.as("bot"), s.admin]) {
+    const names = await who.tools();
+    expect(names.length).toBeGreaterThan(0);
+    for (const name of names) expect(name).not.toMatch(/invite|api_key|sign_in|token|suspend|create_agent|session/i);
+  }
 });
 
 test("no response carries a token, session or their hashes", async () => {

@@ -1,5 +1,6 @@
 // Runs a real Docket server in a subprocess against a throwaway database, so tests only see HTTP.
 // Tests authenticate only through s.as / s.user / s.agent / s.anon, so an auth redesign touches this file alone.
+// MCP goes through the real SDK client, bearer only: a caller's tool(), tools() (what tools/list shows) and instructions().
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,6 +23,10 @@ export interface Caller {
   api: (method: string, path: string, body?: unknown) => Promise<Reply>;
   /** Calls an MCP tool and returns its text output; throws on a tool error. */
   tool: (name: string, args?: Record<string, unknown>) => Promise<string>;
+  /** The MCP tool names this caller sees in tools/list, sorted. */
+  tools: () => Promise<string[]>;
+  /** The MCP server's instructions for this caller. */
+  instructions: () => Promise<string | undefined>;
   /** Opens /ws with this caller's credentials. */
   ws: () => Socket;
 }
@@ -96,6 +101,15 @@ export async function startServer(
     if (via === "bearer" && creds.token) auth.Authorization = `Bearer ${creds.token}`;
     if (via === "cookie" && creds.cookie) auth.Cookie = creds.cookie;
     let mcp: Promise<Client> | undefined;
+    // One MCP client per caller, connected on first use.
+    const client = () =>
+      (mcp ??= (async () => {
+        const client = new Client({ name: "docket-test", version: "0" });
+        const headers: Record<string, string> = creds.token ? { Authorization: `Bearer ${creds.token}` } : {};
+        await client.connect(new StreamableHTTPClientTransport(new URL("/mcp", url), { requestInit: { headers } }));
+        mcps.push(client);
+        return client;
+      })());
     return {
       username,
       ...creds,
@@ -108,20 +122,19 @@ export async function startServer(
         return { status: res.status, body: await parse(res), headers: res.headers };
       },
       async tool(name, args = {}) {
-        mcp ??= (async () => {
-          const client = new Client({ name: "docket-test", version: "0" });
-          const headers: Record<string, string> = creds.token ? { Authorization: `Bearer ${creds.token}` } : {};
-          await client.connect(new StreamableHTTPClientTransport(new URL("/mcp", url), { requestInit: { headers } }));
-          mcps.push(client);
-          return client;
-        })();
-        const result = (await (await mcp).callTool({ name, arguments: args })) as {
+        const result = (await (await client()).callTool({ name, arguments: args })) as {
           content: { type: string; text: string }[];
           isError?: boolean;
         };
         const text = result.content.map((c) => c.text).join("\n");
         if (result.isError) throw new Error(text);
         return text;
+      },
+      async tools() {
+        return (await (await client()).listTools()).tools.map((t) => t.name).sort();
+      },
+      async instructions() {
+        return (await client()).getInstructions();
       },
       ws() {
         return socket(new WebSocket(new URL("/ws", url.replace(/^http/, "ws")), { headers: { Origin: url, ...auth } } as never));

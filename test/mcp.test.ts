@@ -52,3 +52,30 @@ test("agents can't create or change teams", async () => {
   expect(teams.map((t: any) => t.key)).not.toContain("BOT");
   expect(teams.find((t: any) => t.key === "MCP").name).toBe("Agents");
 });
+
+test("tools/list shows each caller only what it can use", async () => {
+  const ana = await s.user("ana");
+  const ro = s.with({ token: (await ana.api("POST", "/api/api-keys", { name: "ro", scope: "read" })).body.token });
+  const reads = ["get_document", "get_issue", "list_documents", "list_issues", "list_labels", "list_members", "list_teams", "list_workspaces"];
+  const writes = ["claim_issue", "comment_document", "comment_issue", "create_document", "create_issue"];
+  writes.push("delete_comment", "delete_document", "update_comment", "update_document", "update_issue");
+  const agent = [...reads, ...writes].sort();
+  const member = [...agent, "create_team", "create_workspace", "update_team"].sort();
+  expect(await ro.tools()).toEqual(reads);
+  expect(await claude.tools()).toEqual(agent);
+  expect(await ana.tools()).toEqual(member);
+  expect(await s.admin.tools()).toEqual([...member, "update_workspace"].sort());
+
+  // A hidden tool can't be called either, and nothing changes.
+  await expect(claude.tool("create_team", { key: "HID", name: "Hidden" })).rejects.toThrow(/not found/);
+  await expect(ro.tool("create_issue", { team: "MCP", title: "Read-only" })).rejects.toThrow(/not found/);
+  await expect(ana.tool("update_workspace", { key: s.workspace, name: "Ana's" })).rejects.toThrow(/not found/);
+  expect((await s.api("GET", "/api/teams")).body.map((t: any) => t.key)).not.toContain("HID");
+  expect((await s.api("GET", "/api/issues?team=MCP")).body.map((i: any) => i.title)).not.toContain("Read-only");
+  expect((await s.api("GET", "/api/workspaces")).body.find((w: any) => w.key === s.workspace).name).toBe("Acme");
+
+  const instructions = await ro.instructions();
+  expect(instructions).toContain("This key is read-only");
+  expect(instructions).not.toContain("claim_issue");
+  expect(await claude.instructions()).toContain("claim_issue");
+});
