@@ -20,7 +20,9 @@ type Page =
   | { view: "doc"; slug: string }
   | { view: "settings"; section: "account" | "workspace" }
   | { view: "inbox" }
-  | { view: "my"; tab: MyTab };
+  | { view: "my"; tab: MyTab }
+  | { view: "views" }
+  | { view: "customview"; id: number };
 
 /** A page, and the workspace in the URL's first segment: null for a path from before URLs carried one (or "/"). */
 export type Route = Page & { workspace: string | null };
@@ -40,6 +42,9 @@ function parsePage(path: string): Page {
     const tab = my[1] as MyTab | undefined;
     return { view: "my", tab: tab && (MY_TABS as readonly string[]).includes(tab) ? tab : "assigned" };
   }
+  if (/^\/views\/?$/.test(path)) return { view: "views" };
+  const view = /^\/view\/(\d+)\/?$/.exec(path);
+  if (view) return { view: "customview", id: Number(view[1]) };
   const issue = /^\/issue\/([^/]+)/.exec(path);
   if (issue) return { view: "issue", id: decodeURIComponent(issue[1]!).toUpperCase() };
   const doc = /^\/doc\/([^/]+)/.exec(path);
@@ -63,8 +68,8 @@ window.addEventListener("popstate", emitRoute);
 /** Where Esc / breadcrumbs go back to from an issue, doc or project page; a new doc opens in edit mode. */
 export const nav = { lastList: "/", lastDocs: "/docs", lastProjects: "/projects", editDoc: "" };
 
-// App pages written without a workspace: /, /issue/…, /doc/…, /docs, /project/…, /projects, /t/…, /settings/…, /inbox, /my
-const PAGE = /^\/(?:$|(?:issue|doc|docs|project|projects|t|settings|inbox|my)(?:[/?#]|$))/;
+// App pages written without a workspace: /, /issue/…, /doc/…, /docs, /project/…, /projects, /t/…, /settings/…, /inbox, /my, /views, /view/…
+const PAGE = /^\/(?:$|(?:issue|doc|docs|project|projects|t|settings|inbox|my|views|view)(?:[/?#]|$))/;
 
 /** An app path in the current workspace: "/issue/BRD-1" → "/acme/issue/BRD-1". Anything else stays as it is. */
 export function wsPath(path: string): string {

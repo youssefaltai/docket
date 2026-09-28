@@ -616,6 +616,28 @@ const MIGRATIONS: (string | (() => void))[] = [
   ALTER TABLE documents ADD COLUMN project_id INTEGER REFERENCES projects(id);
   CREATE INDEX documents_project ON documents(project_id) WHERE project_id IS NOT NULL;
   `,
+  // Custom views (Linear's): a workspace's saved filters with display options, and who starred which into their sidebar.
+  `
+  CREATE TABLE custom_views (
+    id INTEGER PRIMARY KEY,
+    workspace TEXT NOT NULL REFERENCES workspaces(key) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    filter TEXT NOT NULL, -- JSON: IssueFilter's fields but sort (VIEW_FILTER_FIELDS)
+    group_by TEXT NOT NULL DEFAULT 'status' CHECK (group_by IN ('status', 'assignee', 'priority', 'label')),
+    order_by TEXT NOT NULL DEFAULT 'priority' CHECK (order_by IN ('priority', 'updated', 'created')),
+    layout TEXT NOT NULL DEFAULT 'list' CHECK (layout IN ('list', 'board')),
+    creator_id INTEGER NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX custom_views_workspace ON custom_views(workspace);
+  CREATE TABLE view_favorites (
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    view_id INTEGER NOT NULL REFERENCES custom_views(id) ON DELETE CASCADE,
+    PRIMARY KEY (user_id, view_id)
+  );
+  CREATE INDEX view_favorites_view ON view_favorites(view_id);
+  `,
 ];
 
 db.run("PRAGMA foreign_keys = OFF"); // a migration may rebuild a table (SQLite's 12-step ALTER); checked before each commit

@@ -52,6 +52,10 @@ export const InboxIcon = icon("M2.5 9.5l1.6-5.3a1 1 0 0 1 1-.7h5.8a1 1 0 0 1 1 .
 export const BellIcon = icon("M4 11.5V7a4 4 0 0 1 8 0v4.5l1 1.5H3zM6.5 13.5a1.5 1.5 0 0 0 3 0");
 export const ComposeIcon =icon("M13.5 8.5v4a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1h4M11.5 2.5l2 2L8 10H6V8z");
 export const PaperclipIcon = icon("M13 7.5l-5.2 5.2a3 3 0 0 1-4.3-4.2L9 3a2 2 0 0 1 2.9 2.8L6.6 11a1 1 0 0 1-1.4-1.4L10 4.8");
+export const StarIcon = icon("M8 2l1.8 3.7 4.1.6-3 2.9.7 4.1L8 11.4l-3.6 1.9.7-4.1-3-2.9 4.1-.6z");
+export const GroupIcon = icon("M2.5 3.5h11M5 6.5h8.5M5 9.5h8.5M2.5 12.5h11");
+export const SortIcon = icon("M5 13V3M2.5 5.5L5 3l2.5 2.5M11 3v10M8.5 10.5L11 13l2.5-2.5");
+export const ViewsIcon =icon("M8 2.5l5.5 3L8 8.5l-5.5-3zM2.5 8L8 11l5.5-3M2.5 10.5L8 13.5l5.5-3");
 export const SmileIcon = icon("M8 14A6 6 0 1 0 8 2a6 6 0 0 0 0 12zM5.75 6.5h.01M10.25 6.5h.01M5.3 9.3a3.2 3.2 0 0 0 5.4 0");
 
 export function Logo() {

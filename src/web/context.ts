@@ -1,6 +1,6 @@
 // The app-wide context: current workspace/teams/labels/members and the actions views trigger on the shell.
 import { createContext, useContext } from "react";
-import type { Inbox, IssueInput, Label, Team, Workspace, WorkspaceMember } from "../shared/types";
+import type { CustomView, CustomViewInput, Inbox, IssueInput, Label, Team, Workspace, WorkspaceMember } from "../shared/types";
 
 export interface AppState {
   workspaces: Workspace[] | null;
@@ -12,6 +12,12 @@ export interface AppState {
   labels: Label[];
   /** The current workspace's members (assignee and delegate pickers). */
   members: WorkspaceMember[];
+  /** The current workspace's saved views, by name, each with whether you starred it (the sidebar shows those). */
+  views: CustomView[] | null;
+  /** Refetch the views now, without waiting for the live update. */
+  reloadViews: () => void;
+  /** Opens the New view dialog, starting from a filter and layout (Save as view). */
+  newView: (defaults?: Omit<CustomViewInput, "name">) => void;
   /** Your inbox in the current workspace (the sidebar shows its unread count), null until it loads. */
   inbox: Inbox | null;
   /** Shows an inbox a write answered with; `reloadInbox` fetches it again. */

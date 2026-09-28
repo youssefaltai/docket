@@ -17,6 +17,7 @@ export const SHORTCUT_GROUPS: { title: string; rows: [string, string][] }[] = [
       ["G then I", "Go to Inbox"],
       ["G then M", "Go to My Issues"],
       ["G then D", "Go to All docs"],
+      ["G then V", "Go to Views"],
       ["G then S", "Go to Settings"],
       ["Esc", "Clear the selection, else close the mobile nav, else leave the page, else blur"],
     ],

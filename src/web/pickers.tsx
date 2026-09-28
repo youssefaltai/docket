@@ -65,12 +65,13 @@ interface PickerProps {
   align?: "start" | "end";
   /** `data-cmd` on the trigger button: the command menu and single-key shortcuts click it to open this picker. */
   cmd?: string;
+  disabled?: boolean;
   children: ReactNode;
 }
 
 const coarse = matchMedia("(pointer: coarse)");
 
-export function Picker({ label, options, selected, onPick, multi, create, onOpen, valueText, className, align, cmd, children }: PickerProps) {
+export function Picker({ label, options, selected, onPick, multi, create, onOpen, valueText, className, align, cmd, disabled, children }: PickerProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
@@ -152,6 +153,7 @@ export function Picker({ label, options, selected, onPick, multi, create, onOpen
         type="button"
         className={className}
         data-cmd={cmd}
+        disabled={disabled}
         aria-label={valueText ? `${label}: ${valueText}` : label}
         title={label}
         aria-haspopup="listbox"

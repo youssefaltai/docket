@@ -351,7 +351,7 @@ export function ListHeader({
   children,
 }: {
   team: Team | undefined;
-  title: string;
+  title: ReactNode;
   count: number;
   view: "issues" | "triage" | "docs" | "projects" | "trash" | "settings";
   /** New item, search and controls: lists have them, the trash doesn't. */

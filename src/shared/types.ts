@@ -503,6 +503,46 @@ export type DueFilter = (typeof DUE_FILTERS)[number];
 export const ISSUE_SORTS = ["default", "due"] as const;
 export type IssueSort = (typeof ISSUE_SORTS)[number];
 
+// --- Views: saved filters with display options (Linear's custom views), shared by a workspace's members ---
+
+/** The IssueFilter fields a view saves: all but `sort`, since a view orders by its display's `orderBy`. */
+export const VIEW_FILTER_FIELDS = ["team", "status", "category", "label", "assignee", "delegate", "creator", "parent", "project", "q", "subscribed", "due", "archived"] as const;
+export type ViewFilter = Pick<IssueFilter, (typeof VIEW_FILTER_FIELDS)[number]>;
+
+export const GROUP_BYS = ["status", "assignee", "priority", "label"] as const;
+export type GroupBy = (typeof GROUP_BYS)[number];
+export const ORDER_BYS = ["priority", "updated", "created"] as const;
+export type OrderBy = (typeof ORDER_BYS)[number];
+export const LAYOUTS = ["list", "board"] as const;
+export type Layout = (typeof LAYOUTS)[number];
+
+export interface ViewDisplay {
+  groupBy: GroupBy; // default "status"
+  orderBy: OrderBy; // default "priority": priority (1→4, none last), then most recently updated
+  layout: Layout; // default "list"
+}
+
+export interface CustomView {
+  id: number;
+  workspace: string;
+  name: string;
+  filter: ViewFilter; // applied in the viewer's workspace; "me" means the viewer
+  display: ViewDisplay;
+  creator: UserRef; // with workspace admins, the only one who can change or delete it
+  favorite: boolean; // yours (the caller's): starred into your sidebar
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CustomViewInput {
+  name: string;
+  workspace?: string; // optional: views are created in the request's workspace, and this must name it if given
+  filter?: ViewFilter;
+  display?: Partial<ViewDisplay>;
+}
+
+export type CustomViewPatch = { name?: string; filter?: ViewFilter; display?: Partial<ViewDisplay> }; // filter: replaces the whole filter
+
 export const NOTIFICATION_KINDS = ["assigned", "delegated", "mentioned", "commented", "status"] as const;
 export type NotificationKind = (typeof NOTIFICATION_KINDS)[number];
 
@@ -684,9 +724,9 @@ export type MilestonePatch = Partial<MilestoneInput>;
 // subscription changes) go only to that one user's sockets in that workspace.
 export interface ServerEvent {
   type: "changed";
-  entity: "workspace" | "member" | "team" | "issue" | "document" | "label" | "project" | "inbox";
+  entity: "workspace" | "member" | "team" | "issue" | "document" | "label" | "project" | "view" | "inbox";
   workspace: string;
-  id: string; // workspace key, username, team key, issue identifier, document or project slug, or label id; inbox: the recipient's username
+  id: string; // workspace key, username, team key, issue identifier, document or project slug, label id or view id; inbox: the recipient's username
 }
 
 export interface ApiError {

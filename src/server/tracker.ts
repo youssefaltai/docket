@@ -1,4 +1,4 @@
-// Teams, issues, comments, labels, documents and projects. Every function acts for an Actor in the request's one
+// Teams, issues, comments, labels, views, documents and projects. Every function acts for an Actor in the request's one
 // workspace (requestWorkspace): team keys, identifiers and slugs resolve there, and anything elsewhere is
 // 404, as if it didn't exist.
 import type { SQLQueryBindings } from "bun:sqlite";
@@ -9,14 +9,21 @@ import {
   DUE_FILTERS,
   DUPLICATE_STATUS,
   ESTIMATE_SCALES,
+  GROUP_BYS,
   ISSUE_SORTS,
+  LAYOUTS,
+  ORDER_BYS,
   PRIORITIES,
   PROJECT_STATUSES,
   STATUS_CATEGORIES,
+  VIEW_FILTER_FIELDS,
   type Activity,
   type ActivityKind,
   type BulkIssueResult,
   type Comment,
+  type CustomView,
+  type CustomViewInput,
+  type CustomViewPatch,
   type Document,
   type DocumentFilter,
   type DocumentInput,
@@ -25,6 +32,7 @@ import {
   type DocumentVersion,
   type DocumentVersionSummary,
   type EstimateScale,
+  type GroupBy,
   type Issue,
   type IssueFilter,
   type IssueInput,
@@ -35,9 +43,11 @@ import {
   type Label,
   type LabelInput,
   type LabelPatch,
+  type Layout,
   type Milestone,
   type MilestoneInput,
   type MilestonePatch,
+  type OrderBy,
   type Priority,
   type Project,
   type ProjectInput,
@@ -52,6 +62,8 @@ import {
   type Trash,
   type UserKind,
   type UserRef,
+  type ViewDisplay,
+  type ViewFilter,
   type WebhookAction,
   type WorkflowStatus,
   type WorkflowStatusInput,
@@ -2112,6 +2124,162 @@ export function deleteLabel(a: Actor, id: unknown): Label {
   changed("label", label.workspace, String(label.id));
   for (const ref of refs) changed("issue", label.workspace, ref);
   return deleted;
+}
+
+// --- Views ---
+
+type ViewRow = Record<string, unknown> & {
+  id: number;
+  workspace: string;
+  name: string;
+  filter: string;
+  group_by: GroupBy;
+  order_by: OrderBy;
+  layout: Layout;
+  creator_id: number;
+  favorite: number;
+  created_at: string;
+  updated_at: string;
+};
+
+// Bound first: the caller's id, for `favorite`.
+const VIEW_SELECT = `SELECT v.*, ${userCols("c", "creator")},
+    EXISTS (SELECT 1 FROM view_favorites f WHERE f.view_id = v.id AND f.user_id = ?) AS favorite
+  FROM custom_views v ${userJoin("c", "v.creator_id", "v.workspace")}`;
+
+const toView = (r: ViewRow): CustomView => ({
+  id: r.id,
+  workspace: r.workspace,
+  name: r.name,
+  filter: JSON.parse(r.filter),
+  display: { groupBy: r.group_by, orderBy: r.order_by, layout: r.layout },
+  creator: ref(r, "creator")!,
+  favorite: r.favorite === 1,
+  createdAt: r.created_at,
+  updatedAt: r.updated_at,
+});
+
+/** A view of the request's workspace, by id, as the caller sees it; anything else is 404. */
+function viewRow(a: Actor, id: unknown): ViewRow {
+  const row = db.query<ViewRow, SQLQueryBindings[]>(`${VIEW_SELECT} WHERE v.id = ? AND v.workspace = ?`).get(a.id, Number(id), requestWorkspace(a));
+  if (!row) throw new AppError(`View ${id} not found`, 404);
+  return row;
+}
+
+/** A view the caller may change: its creator's, or any for a workspace admin (403 otherwise). */
+function ownView(a: Actor, id: unknown): ViewRow {
+  const row = viewRow(a, id);
+  if (row.creator_id !== a.id && a.workspaces.get(row.workspace) !== "admin") {
+    throw new AppError("Only the view's creator or a workspace admin can change it", 403);
+  }
+  return row;
+}
+
+const LIST_FIELDS = ["status", "category"];
+const FLAG_FIELDS = ["subscribed", "archived"];
+
+/**
+ * A view's filter: only VIEW_FILTER_FIELDS (anything else is 400 naming it), unset ones dropped, and checked as
+ * GET /api/issues checks it, so a filter naming an unknown team, person or status is 400 here too.
+ */
+function checkViewFilter(a: Actor, value: unknown): ViewFilter {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new AppError("filter must be an object");
+  const filter: Record<string, unknown> = {};
+  for (const [field, given] of Object.entries(value)) {
+    if (!(VIEW_FILTER_FIELDS as readonly string[]).includes(field)) {
+      throw new AppError(`Unknown filter field "${field}": use ${VIEW_FILTER_FIELDS.join(", ")}`);
+    }
+    const v = typeof given === "string" ? given.trim() : given;
+    if (v === undefined || v === null || v === "" || v === false || (Array.isArray(v) && !v.length)) continue;
+    if (LIST_FIELDS.includes(field) ? !Array.isArray(v) || !v.every((s) => typeof s === "string") : FLAG_FIELDS.includes(field) ? v !== true : typeof v !== "string") {
+      throw new AppError(`filter.${field} must be ${LIST_FIELDS.includes(field) ? "an array of strings" : FLAG_FIELDS.includes(field) ? "true or false" : "a string"}`);
+    }
+    filter[field] = v;
+  }
+  queryIssues(a, filter, undefined, 1);
+  return filter;
+}
+
+const DEFAULT_DISPLAY: ViewDisplay = { groupBy: "status", orderBy: "priority", layout: "list" };
+
+/** `current` with the display fields given; anything but groupBy, orderBy and layout is 400. */
+function checkDisplay(value: unknown, current: ViewDisplay): ViewDisplay {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new AppError("display must be an object");
+  const d = value as Partial<Record<keyof ViewDisplay, unknown>>;
+  for (const field of Object.keys(d)) {
+    if (!(field in DEFAULT_DISPLAY)) throw new AppError(`Unknown display field "${field}": use groupBy, orderBy, layout`);
+  }
+  return {
+    groupBy: d.groupBy === undefined ? current.groupBy : checkOneOf(d.groupBy, GROUP_BYS, "groupBy"),
+    orderBy: d.orderBy === undefined ? current.orderBy : checkOneOf(d.orderBy, ORDER_BYS, "orderBy"),
+    layout: d.layout === undefined ? current.layout : checkOneOf(d.layout, LAYOUTS, "layout"),
+  };
+}
+
+/** The request's workspace's views, by name, each with whether the caller starred it. */
+export function listViews(a: Actor): CustomView[] {
+  return db
+    .query<ViewRow, SQLQueryBindings[]>(`${VIEW_SELECT} WHERE v.workspace = ? ORDER BY v.name COLLATE NOCASE, v.id`)
+    .all(a.id, requestWorkspace(a))
+    .map(toView);
+}
+
+export const getView = (a: Actor, id: unknown): CustomView => toView(viewRow(a, id));
+
+/** Any member saves a view in the request's workspace, where every member can see and use it. */
+export function createView(a: Actor, input: CustomViewInput): CustomView {
+  const workspace = requestWorkspace(a);
+  if (input.workspace !== undefined && String(input.workspace).trim().toLowerCase() !== workspace) {
+    throw new AppError("Views are created in the workspace you're in");
+  }
+  const name = requireText(input.name, "name");
+  const filter = checkViewFilter(a, input.filter ?? {});
+  const d = checkDisplay(input.display ?? {}, DEFAULT_DISPLAY);
+  const time = now();
+  const { id } = db
+    .query<{ id: number }, SQLQueryBindings[]>(
+      `INSERT INTO custom_views (workspace, name, filter, group_by, order_by, layout, creator_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+    )
+    .get(workspace, name, JSON.stringify(filter), d.groupBy, d.orderBy, d.layout, a.id, time, time)!;
+  changed("view", workspace, String(id));
+  return getView(a, id);
+}
+
+/** Renames a view or replaces its filter or display fields (its creator or an admin). */
+export function updateView(a: Actor, id: unknown, patch: CustomViewPatch): CustomView {
+  const view = ownView(a, id);
+  const name = patch.name === undefined ? view.name : requireText(patch.name, "name");
+  const filter = patch.filter === undefined ? view.filter : JSON.stringify(checkViewFilter(a, patch.filter));
+  const d = patch.display === undefined ? toView(view).display : checkDisplay(patch.display, toView(view).display);
+  db.query("UPDATE custom_views SET name = ?, filter = ?, group_by = ?, order_by = ?, layout = ?, updated_at = ? WHERE id = ?").run(
+    name,
+    filter,
+    d.groupBy,
+    d.orderBy,
+    d.layout,
+    now(),
+    view.id,
+  );
+  changed("view", view.workspace, String(view.id));
+  return getView(a, view.id);
+}
+
+/** Deletes a view for good, and everyone's star on it (its creator or an admin). */
+export function deleteView(a: Actor, id: unknown): CustomView {
+  const view = ownView(a, id);
+  db.query("DELETE FROM custom_views WHERE id = ?").run(view.id); // its favorites cascade
+  changed("view", view.workspace, String(view.id));
+  return toView(view);
+}
+
+/** Stars or unstars a view for the caller alone (any member); twice changes nothing. */
+export function favoriteView(a: Actor, id: unknown, on: boolean): CustomView {
+  const view = viewRow(a, id);
+  if (on) db.query("INSERT OR IGNORE INTO view_favorites (user_id, view_id) VALUES (?, ?)").run(a.id, view.id);
+  else db.query("DELETE FROM view_favorites WHERE user_id = ? AND view_id = ?").run(a.id, view.id);
+  changed("view", view.workspace, String(view.id), a.id);
+  return getView(a, view.id);
 }
 
 // --- Documents ---

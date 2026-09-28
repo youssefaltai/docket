@@ -1,6 +1,17 @@
 // Issues view: header with search + filters, and the list / board layouts.
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { STATUS_CATEGORIES, type DueFilter, type IssueSummary } from "../shared/types";
+import {
+  PRIORITY_LABELS,
+  STATUS_CATEGORIES,
+  type DueFilter,
+  type GroupBy,
+  type IssueInput,
+  type IssueSummary,
+  type Layout,
+  type OrderBy,
+  type Priority,
+  type ProjectSummary,
+} from "../shared/types";
 import { api, store } from "./api";
 import { getYou } from "./auth";
 import { SelectBox, shiftClick, useBulk, type Selection } from "./bulk";
@@ -25,13 +36,16 @@ import {
   ListHeader,
   ListIcon,
   PlusIcon,
+  PriorityIcon,
+  ProjectIcon,
+  TeamMark,
   TeamNotFound,
   SearchIcon,
   StatusIcon,
   isClosedCategory,
   statusGroups,
-  type StatusLook,
   TagIcon,
+  ViewsIcon,
   cls,
   errorToast,
   estimateOf,
@@ -40,7 +54,7 @@ import {
   toPatch,
   trashToast,
   type IssueChange,
-  sortIssues,
+  orderIssues,
   timeAgo,
   useApp,
   useDebounced,
@@ -49,7 +63,6 @@ import {
   useResolved,
 } from "./ui";
 
-type View = "list" | "board";
 type Patch = (id: string, change: IssueChange) => void;
 
 /** What lists and boards show: every category but triage (its issues wait on the Triage tab). */
@@ -93,7 +106,7 @@ export function useListShortcuts(
 export function IssuesView({ teamKey }: { teamKey: string | null }) {
   const app = useApp();
   const team = teamKey ? app.teams?.find((t) => t.key === teamKey) : undefined;
-  const [view, setView] = useState<View>(() => (store.get("view") === "board" ? "board" : "list"));
+  const [view, setView] = useState<Layout>(() => (store.get("view") === "board" ? "board" : "list"));
   const [search, setSearch] = useState("");
   const [label, setLabel] = useState("");
   const [assignee, setAssignee] = useState("");
@@ -131,7 +144,7 @@ export function IssuesView({ teamKey }: { teamKey: string | null }) {
     });
   };
 
-  const changeView = (v: View) => {
+  const changeView = (v: Layout) => {
     setView(v);
     store.set("view", v);
   };
@@ -220,14 +233,15 @@ export function IssuesView({ teamKey }: { teamKey: string | null }) {
             Clear
           </button>
         )}
-        <div className="segmented" role="group" aria-label="Layout">
-          <button className={cls(view === "list" && "on")} onClick={() => changeView("list")} aria-pressed={view === "list"} title="List">
-            <ListIcon />
-          </button>
-          <button className={cls(view === "board" && "on")} onClick={() => changeView("board")} aria-pressed={view === "board"} title="Board">
-            <BoardIcon />
-          </button>
-        </div>
+        <LayoutToggle layout={view} onChange={changeView} />
+        <button
+          className="icon-btn"
+          onClick={() => app.newView({ filter: { team: teamKey ?? undefined, q, label, assignee, delegate, due: due || undefined }, display: { layout: view } })}
+          aria-label="Save as view"
+          title="Save as view"
+        >
+          <ViewsIcon />
+        </button>
       </ListHeader>
       <div className={cls("content", view === "board" && !!issues?.length && "content-board")}>{body}</div>
       {bar}
@@ -235,8 +249,29 @@ export function IssuesView({ teamKey }: { teamKey: string | null }) {
   );
 }
 
-/** `assignee` and `delegate` are usernames. */
-function Filters(props: {
+/** List or Board. */
+export function LayoutToggle({ layout, onChange, disabled }: { layout: Layout; onChange: (layout: Layout) => void; disabled?: boolean }) {
+  return (
+    <div className="segmented" role="group" aria-label="Layout">
+      {(["list", "board"] as const).map((l) => (
+        <button key={l} className={cls(layout === l && "on")} onClick={() => onChange(l)} aria-pressed={layout === l} disabled={disabled} title={l === "list" ? "List" : "Board"}>
+          {l === "list" ? <ListIcon /> : <BoardIcon />}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * `assignee` and `delegate` are usernames, or "me": the viewer, what the Mine chip sets, so a saved view means whoever
+ * opens it. With `setTeam`, a team filter too (a view's). `disabled`: shown, not changeable.
+ */
+export function Filters(props: {
+  team?: string;
+  setTeam?: (v: string) => void;
+  project?: string;
+  setProject?: (v: string) => void;
+  disabled?: boolean;
   label: string;
   setLabel: (v: string) => void;
   assignee: string;
@@ -250,18 +285,59 @@ function Filters(props: {
   const people = useMembers("person");
   const agents = useMembers("agent");
   const me = getYou();
+  const { teams } = useApp();
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const loadProjects = () => void api.projects().then(setProjects, errorToast);
+  useEffect(() => void (props.project && loadProjects()), []); // to name the one chosen
   const any = (label: string, icon: ReactNode) => ({ value: "", label, icon });
-  const mine = props.assignee === me.username;
-  const selected = people.find((u) => u.username === props.assignee) ?? null;
-  const selectedDelegate = agents.find((u) => u.username === props.delegate) ?? null;
+  const assignee = props.assignee === "me" ? me.username : props.assignee;
+  const delegate = props.delegate === "me" ? me.username : props.delegate;
+  const mine = assignee === me.username;
+  const selected = people.find((u) => u.username === assignee) ?? null;
+  const selectedDelegate = agents.find((u) => u.username === delegate) ?? null;
+  const disabled = props.disabled;
   return (
     <>
-      <button className={cls("chip", mine && "chip-on")} aria-pressed={mine} onClick={() => props.setAssignee(mine ? "" : me.username)}>
+      <button className={cls("chip", mine && "chip-on")} aria-pressed={mine} disabled={disabled} onClick={() => props.setAssignee(mine ? "" : "me")}>
         <Avatar user={me} />
         <span className="chip-text">Mine</span>
       </button>
+      {props.setTeam && (
+        <Picker
+          label="Filter by team"
+          options={[any("Any team", <IssuesIcon />), ...(teams ?? []).map((t) => ({ value: t.key, label: t.name, icon: <TeamMark id={t.key} /> }))]}
+          selected={[props.team ?? ""]}
+          onPick={props.setTeam}
+          disabled={disabled}
+          className={cls("chip", props.team && "chip-on")}
+        >
+          {props.team ? <TeamMark id={props.team} /> : <IssuesIcon />}
+          <span className="chip-text" dir="auto">
+            {teams?.find((t) => t.key === props.team)?.name ?? (props.team || "Team")}
+          </span>
+          <ChevronDownIcon className="chip-caret" />
+        </Picker>
+      )}
+      {props.setProject && (
+        <Picker
+          label="Filter by project"
+          options={[any("Any project", <ProjectIcon />), ...projects.map((p) => ({ value: p.slug, label: p.name, icon: <ProjectIcon /> }))]}
+          selected={[props.project ?? ""]}
+          onPick={props.setProject}
+          onOpen={loadProjects}
+          disabled={disabled}
+          className={cls("chip", props.project && "chip-on")}
+        >
+          <ProjectIcon />
+          <span className="chip-text" dir="auto">
+            {projects.find((p) => p.slug === props.project)?.name ?? (props.project || "Project")}
+          </span>
+          <ChevronDownIcon className="chip-caret" />
+        </Picker>
+      )}
       <Picker
         label="Filter by label"
+        disabled={disabled}
         // Groups too: a group matches any of its labels.
         options={[any("Any label", <TagIcon />), ...labels.map((l) => ({ value: l.path, label: l.path, icon: <LabelDot color={l.color} /> }))]}
         selected={[props.label]}
@@ -277,34 +353,37 @@ function Filters(props: {
       </Picker>
       <Picker
         label="Filter by assignee"
+        disabled={disabled}
         options={[any("Anyone", <Avatar user={null} />), ...people.map(userOption)]}
-        selected={[props.assignee]}
+        selected={[assignee]}
         onPick={props.setAssignee}
         onOpen={loadDirectory}
         className={cls("chip", props.assignee && "chip-on")}
       >
         <Avatar user={selected} />
         <span className="chip-text" dir="auto">
-          {selected?.name ?? (props.assignee || "Assignee")}
+          {selected?.name ?? (assignee || "Assignee")}
         </span>
         <ChevronDownIcon className="chip-caret" />
       </Picker>
       <Picker
         label="Filter by delegate"
+        disabled={disabled}
         options={[any("Anyone", <Avatar user={null} />), ...agents.map(userOption)]}
-        selected={[props.delegate]}
+        selected={[delegate]}
         onPick={props.setDelegate}
         onOpen={loadDirectory}
         className={cls("chip", props.delegate && "chip-on")}
       >
         <Avatar user={selectedDelegate} />
         <span className="chip-text" dir="auto">
-          {selectedDelegate?.name ?? (props.delegate || "Delegate")}
+          {selectedDelegate?.name ?? (delegate || "Delegate")}
         </span>
         <ChevronDownIcon className="chip-caret" />
       </Picker>
       <Picker
         label="Filter by due date"
+        disabled={disabled}
         options={DUE_OPTIONS.map(([value, label]) => ({ value, label, icon: <CalendarIcon /> }))}
         selected={[props.due]}
         onPick={(v) => props.setDue(v as DueFilter | "")}
@@ -330,22 +409,83 @@ const DUE_OPTIONS: [DueFilter | "", string][] = [
 
 // ---------- List ----------
 
-/**
- * The status groups of a list or board: the team's statuses, or every team's in the workspace (a key names its first
- * team's status), triage left out; the board leaves out canceled ones too.
- */
-function useGroups(team: string | null | undefined, issues: IssueSummary[], board = false) {
-  const { teams } = useApp();
-  const scope = (teams ?? []).filter((t) => !team || t.key === team);
-  const groups = statusGroups(scope, issues).filter((s) => s.category !== "triage" && !(board && s.category === "canceled"));
-  const sum = issues.some((i) => estimateOf(teams, i)); // counts show estimate totals once anything in view has one
-  return { groups, sum, sorted: useMemo(() => sortIssues(issues, teams), [issues, teams]) };
+/** How a list or board is grouped and ordered: by status and priority unless a saved view says otherwise. */
+export type Display = { groupBy?: GroupBy; orderBy?: OrderBy };
+
+/** One group of a list or board: its issues in order, its head, and what a new issue or a dropped card gets there. */
+interface Group {
+  key: string;
+  name: string;
+  icon: ReactNode;
+  items: IssueSummary[];
+  collapsed: boolean; // starts collapsed in a list: completed and canceled statuses
+  defaults: Partial<IssueInput>; // a new issue from the group's +
+  drop?: IssueChange; // a card dropped in the column; none for labels (an issue can carry several)
 }
 
-export function IssueList({ issues, team, onPatch, selection }: { issues: IssueSummary[]; team?: string | null; onPatch: Patch; selection: Selection }) {
+const PRIORITY_GROUPS: Priority[] = [1, 2, 3, 4, 0];
+const byName = (a: string, b: string) => a.localeCompare(b, undefined, { sensitivity: "base" });
+
+/**
+ * The groups of a list or board. By status: the team's statuses, or every team's in the workspace (a key names its first
+ * team's status), triage left out, and on a board canceled ones too. By priority: Urgent to Low, then none. By assignee
+ * or label: those the issues have, then "No assignee" / "No labels" if any lack one; an issue with two labels is in both.
+ */
+function useGroups(team: string | null | undefined, issues: IssueSummary[], { groupBy = "status", orderBy = "priority" }: Display, board = false) {
+  const { teams, labels } = useApp();
+  const sorted = useMemo(() => orderIssues(issues, orderBy), [issues, orderBy]);
+  const sum = issues.some((i) => estimateOf(teams, i)); // counts show estimate totals once anything in view has one
+  const group = (g: Omit<Group, "items" | "collapsed">, has: (i: IssueSummary) => boolean, collapsed = false): Group => ({
+    ...g,
+    collapsed,
+    items: sorted.filter(has),
+  });
+  let groups: Group[];
+  if (groupBy === "status") {
+    const scope = (teams ?? []).filter((t) => !team || t.key === team);
+    groups = statusGroups(scope, issues)
+      .filter((s) => s.category !== "triage" && !(board && s.category === "canceled"))
+      .map((s) =>
+        group({ key: s.key, name: s.name, icon: <StatusIcon status={s} />, defaults: { status: s.key }, drop: { status: s.key } }, (i) => i.status === s.key, isClosedCategory(s.category)),
+      );
+  } else if (groupBy === "priority") {
+    groups = PRIORITY_GROUPS.map((p) =>
+      group({ key: String(p), name: PRIORITY_LABELS[p], icon: <PriorityIcon priority={p} />, defaults: { priority: p }, drop: { priority: p } }, (i) => i.priority === p),
+    );
+  } else if (groupBy === "assignee") {
+    const people = [...new Map(issues.flatMap((i) => (i.assignee ? [[i.assignee.username, i.assignee] as const] : []))).values()].sort((a, b) => byName(a.name, b.name));
+    groups = [
+      ...people.map((u) => group({ key: u.username, name: u.name, icon: <Avatar user={u} />, defaults: {}, drop: { assignee: u } }, (i) => i.assignee?.username === u.username)),
+      group({ key: "", name: "No assignee", icon: <Avatar user={null} />, defaults: {}, drop: { assignee: null } }, (i) => !i.assignee),
+    ];
+  } else {
+    const paths = [...new Set(issues.flatMap((i) => i.labels))].sort(byName);
+    groups = [
+      ...paths.map((path) => group({ key: path, name: path, icon: <LabelDot color={labelColor(labels, path)} />, defaults: { labels: [path] } }, (i) => i.labels.includes(path))),
+      group({ key: "", name: "No labels", icon: <TagIcon />, defaults: {} }, (i) => !i.labels.length),
+    ];
+  }
+  // Every status and priority column stays on a board; the rest show only where issues are.
+  if (!board || groupBy === "assignee" || groupBy === "label") groups = groups.filter((g) => g.items.length);
+  return { groups, sum };
+}
+
+export function IssueList({
+  issues,
+  team,
+  display = {},
+  onPatch,
+  selection,
+}: {
+  issues: IssueSummary[];
+  team?: string | null;
+  display?: Display;
+  onPatch: Patch;
+  selection: Selection;
+}) {
   // Completed and canceled groups start collapsed; `toggled` holds the groups flipped from that.
   const [toggled, setToggled] = useState(() => new Set<string>());
-  const { groups, sum, sorted } = useGroups(team, issues);
+  const { groups, sum } = useGroups(team, issues, display);
   const toggle = (key: string) =>
     setToggled((cur) => {
       const next = new Set(cur);
@@ -355,21 +495,19 @@ export function IssueList({ issues, team, onPatch, selection }: { issues: IssueS
 
   return (
     <div className={cls("list", selection.any && "selecting")}>
-      {groups.map((status) => {
-        const items = sorted.filter((i) => i.status === status.key);
-        if (!items.length) return null;
-        const open = isClosedCategory(status.category) === toggled.has(status.key);
+      {groups.map((g) => {
+        const open = g.collapsed === toggled.has(g.key);
         return (
-          <section key={status.key}>
+          <section key={g.key}>
             <div className="group">
-              <button className="group-toggle" onClick={() => toggle(status.key)} aria-expanded={open}>
+              <button className="group-toggle" onClick={() => toggle(g.key)} aria-expanded={open}>
                 <ChevronDownIcon className={cls("caret", !open && "caret-closed")} />
-                <StatusIconLabel status={status} />
-                <GroupCount items={items} sum={sum} />
+                <GroupLabel group={g} />
+                <GroupCount items={g.items} sum={sum} />
               </button>
-              <NewInStatus status={status} />
+              <NewInGroup group={g} />
             </div>
-            {open && items.map((i) => <IssueRow key={i.id} issue={i} onPatch={onPatch} selection={selection} />)}
+            {open && g.items.map((i) => <IssueRow key={i.id} issue={i} onPatch={onPatch} selection={selection} />)}
           </section>
         );
       })}
@@ -377,15 +515,10 @@ export function IssueList({ issues, team, onPatch, selection }: { issues: IssueS
   );
 }
 
-function NewInStatus({ status }: { status: StatusLook }) {
+function NewInGroup({ group }: { group: Group }) {
   const { newIssue } = useApp();
   return (
-    <button
-      className="icon-btn sm"
-      onClick={() => newIssue({ status: status.key })}
-      aria-label={`New ${status.name} issue`}
-      title="New issue"
-    >
+    <button className="icon-btn sm" onClick={() => newIssue(group.defaults)} aria-label={`New ${group.name} issue`} title="New issue">
       <PlusIcon />
     </button>
   );
@@ -403,12 +536,12 @@ function Blocked({ by }: { by: string[] }) {
   );
 }
 
-function StatusIconLabel({ status }: { status: StatusLook }) {
+function GroupLabel({ group }: { group: Group }) {
   return (
     <>
-      <StatusIcon status={status} />
+      {group.icon}
       <span className="group-label" dir="auto">
-        {status.name}
+        {group.name}
       </span>
     </>
   );
@@ -459,46 +592,61 @@ function Labels({ labels, max }: { labels: string[]; max: number }) {
 
 // ---------- Board ----------
 
-/** Columns by status, canceled ones left out. Dropping on a column the issue's team lacks answers 400: it toasts and reloads. */
-export function Board({ issues, team, onPatch, selection }: { issues: IssueSummary[]; team?: string | null; onPatch: Patch; selection: Selection }) {
+/**
+ * Columns by group (status by default, canceled ones left out). Dropping a card sets the column's status, priority or
+ * assignee (label columns take no drops); a status its team lacks answers 400: it toasts and reloads.
+ */
+export function Board({
+  issues,
+  team,
+  display = {},
+  onPatch,
+  selection,
+}: {
+  issues: IssueSummary[];
+  team?: string | null;
+  display?: Display;
+  onPatch: Patch;
+  selection: Selection;
+}) {
   const [dragging, setDragging] = useState<string | null>(null);
   const [over, setOver] = useState<string | null>(null);
-  const { groups, sum, sorted } = useGroups(team, issues, true);
+  const { groups, sum } = useGroups(team, issues, display, true);
 
-  const drop = (status: string) => {
+  const drop = (group: Group) => {
     const issue = issues.find((i) => i.id === dragging);
-    if (issue && issue.status !== status) onPatch(issue.id, { status });
+    if (issue && group.drop && !group.items.includes(issue)) onPatch(issue.id, group.drop);
     setDragging(null);
     setOver(null);
   };
 
   return (
     <div className={cls("board", selection.any && "selecting")}>
-      {groups.map((status) => {
-        const items = sorted.filter((i) => i.status === status.key);
+      {groups.map((g) => {
+        const items = g.items;
         return (
           <section
-            key={status.key}
-            className={cls("column", over === status.key && "column-over")}
+            key={g.key}
+            className={cls("column", over === g.key && "column-over")}
             onDragOver={(e) => {
-              if (!dragging) return;
+              if (!dragging || !g.drop) return;
               e.preventDefault();
               e.dataTransfer.dropEffect = "move";
-              setOver(status.key);
+              setOver(g.key);
             }}
             onDragLeave={(e) => {
               if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOver(null);
             }}
             onDrop={(e) => {
               e.preventDefault();
-              drop(status.key);
+              drop(g);
             }}
           >
             <div className="column-head">
-              <StatusIconLabel status={status} />
+              <GroupLabel group={g} />
               <GroupCount items={items} sum={sum} />
               <span className="grow" />
-              <NewInStatus status={status} />
+              <NewInGroup group={g} />
             </div>
             <div className="column-body">
               {items.map((i) => (
