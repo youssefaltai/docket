@@ -128,6 +128,7 @@ function line(issue: IssueSummary): string {
 function details(issue: Issue): string {
   const meta = [
     `team ${issue.team}`,
+    issue.previousIdentifiers.length > 0 && `previously ${issue.previousIdentifiers.join(", ")}`,
     `created by ${at(issue.creator)}`,
     issue.parent && `parent ${issue.parent}`,
     issue.blockedBy.length > 0 && `blocked by ${issue.blockedBy.join(", ")}`,
@@ -466,7 +467,7 @@ function createServer(a: Actor, origin: string): McpServer {
     "get_issue",
     {
       description:
-        "Get one issue by identifier (e.g. BRD-12): markdown description, status, priority, labels, assignee, delegate, parent, sub-issues, blocked-by/blocks, related, duplicate-of/duplicates, and comments, plus its history: who changed what and when (latest 30). Read it before starting work on an issue.",
+        "Get one issue by identifier (e.g. BRD-12; one it had before it moved team works too): markdown description, status, priority, labels, assignee, delegate, parent, sub-issues, blocked-by/blocks, related, duplicate-of/duplicates, and comments, plus its history: who changed what and when (latest 30). Read it before starting work on an issue.",
       inputSchema: { id: identifier },
       annotations: { readOnlyHint: true },
     },
@@ -507,9 +508,14 @@ function createServer(a: Actor, origin: string): McpServer {
     "update_issue",
     {
       description:
-        "Update an issue; only the fields you pass change. Status flow: in_progress when you start, in_review when ready for review, done when finished (or the team's statuses in the started and completed categories; list_teams), canceled instead of deleting (there is no delete). labels, blockedBy and relatedTo replace the whole list, so include existing entries you want to keep, and pass baseUpdatedAt (from get_issue) when replacing them or the description, so you don't overwrite someone else's change. To start work, use claim_issue. Don't reassign an issue someone else holds; use claim_issue. Mark an issue a duplicate with duplicateOf: it's set to its team's Duplicate status and the relation is recorded; use relatedTo for issues that are connected but not duplicates or blockers. Pass null for assignee, delegate, parent or duplicateOf to clear it (clearing duplicateOf leaves the status as it is). Log progress with comment_issue rather than editing the description. Closing an issue may also close its parent or its sub-issues, per the teams' auto-close settings: check get_issue after; @docket made those changes, after yours.",
+        "Update an issue; only the fields you pass change. Status flow: in_progress when you start, in_review when ready for review, done when finished (or the team's statuses in the started and completed categories; list_teams), canceled instead of deleting (there is no delete). labels, blockedBy and relatedTo replace the whole list, so include existing entries you want to keep, and pass baseUpdatedAt (from get_issue) when replacing them or the description, so you don't overwrite someone else's change. To start work, use claim_issue. Don't reassign an issue someone else holds; use claim_issue. Mark an issue a duplicate with duplicateOf: it's set to its team's Duplicate status and the relation is recorded; use relatedTo for issues that are connected but not duplicates or blockers. Pass null for assignee, delegate, parent or duplicateOf to clear it (clearing duplicateOf leaves the status as it is). Log progress with comment_issue rather than editing the description. Closing an issue may also close its parent or its sub-issues, per the teams' auto-close settings: check get_issue after; @docket made those changes, after yours. Move an issue to another team (team) only when asked to.",
       inputSchema: {
         id: identifier,
+        team: teamKey
+          .optional()
+          .describe(
+            "Move it to this team of the same workspace: it gets a new identifier there (the old one keeps resolving), keeps its status if that team has it (else the team's first of that category, else its default), and loses the old team's own labels",
+          ),
         title: title.optional(),
         description: description.optional(),
         status: status.optional(),
@@ -530,7 +536,9 @@ function createServer(a: Actor, origin: string): McpServer {
     },
     writes(({ id, ...patch }) => {
       const issue = tracker.updateIssue(a, id, patch);
-      return result(`Updated ${issue.id}\n${line(issue)}`, { issue });
+      const was = id.trim().toUpperCase();
+      const moved = patch.team !== undefined && was !== issue.id;
+      return result(`${moved ? `Moved ${was} to ${issue.id}` : `Updated ${issue.id}`}\n${line(issue)}`, { issue });
     }),
   );
 

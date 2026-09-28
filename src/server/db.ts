@@ -550,6 +550,18 @@ const MIGRATIONS: (string | (() => void))[] = [
       .all();
     if (lost.length) throw new Error(`Labels: issues that would lose a label: ${JSON.stringify(lost)}`);
   },
+  // Moving an issue to another team of its workspace (Linear's): it takes that team's next number, and each identifier
+  // it had before keeps resolving to it. Numbers are never reused, so an old identifier never names another issue.
+  `
+  CREATE TABLE issue_aliases (
+    team_id INTEGER NOT NULL REFERENCES teams(id),
+    number INTEGER NOT NULL,
+    issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (team_id, number)
+  );
+  CREATE INDEX issue_aliases_issue ON issue_aliases(issue_id);
+  `,
 ];
 
 db.run("PRAGMA foreign_keys = OFF"); // a migration may rebuild a table (SQLite's 12-step ALTER); checked before each commit

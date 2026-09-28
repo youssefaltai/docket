@@ -24,7 +24,8 @@ const isInternal = (url: string) => /^(\/(?!\/)|#)/.test(url);
 // Set right before each parse: whether images load (not in the assistant's replies, see Markdown).
 let allowImages = true;
 
-// Set right before each parse: which identifiers resolve to real issues of known teams.
+// Set right before each parse: which identifiers resolve to real issues of known teams (one from before a move links to
+// the issue's current one).
 let chipKeys = new Set<string>();
 let chipIndex: Map<string, IssueSummary> | null = null;
 const chipFor = (id: string) => (chipKeys.has(id.slice(0, id.indexOf("-"))) ? chipIndex?.get(id) : undefined);
@@ -79,7 +80,7 @@ const marked = new Marked({
       renderer({ raw }) {
         const issue = chipFor(raw);
         if (!issue) return raw;
-        return `<a class="issue-ref" href="${wsPath(`/issue/${raw}`)}" title="${escapeHtml(issue.title)}">${statusSvg(issue.status)}${raw}</a>`;
+        return `<a class="issue-ref" href="${wsPath(`/issue/${issue.id}`)}" title="${escapeHtml(issue.title)}">${statusSvg(issue.status)}${raw}</a>`;
       },
     },
     {

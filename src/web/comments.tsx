@@ -6,6 +6,7 @@ import { Avatar, isMe, Kbd, Section } from "./components";
 import { RichEditor } from "./editor";
 import { CheckIcon, PencilIcon, ReplyIcon, SmileIcon, StatusIcon, TrashIcon } from "./icons";
 import { Link } from "./routing";
+import { useApp } from "./context";
 import { useRun, useStatusOf } from "./hooks";
 import { Markdown } from "./markdown";
 import { ask, errorToast } from "./toast";
@@ -266,12 +267,20 @@ function Run({ lines, team }: { lines: Line[]; team: string }) {
 }
 
 function HistoryLine({ line, team }: { line: Line; team: string }) {
+  const { teams } = useApp();
   const statusOf = useStatusOf();
+  // A status from before the issue moved team may be one only another team has: look it up there.
+  const has = (key: string) => (t: { key: string; statuses: { key: string }[] }) => t.statuses.some((s) => s.key === key);
+  const look = (key: unknown) => {
+    const k = String(key);
+    const own = teams?.find((t) => t.key === team);
+    return statusOf(own && has(k)(own) ? team : (teams?.find(has(k))?.key ?? team), k);
+  };
   const moved = line.rows.find((r) => r.kind === "status" || r.kind === "claimed");
-  const statusName = (key: unknown) => statusOf(team, String(key)).name;
+  const statusName = (key: unknown) => look(key).name;
   return (
     <li className="event">
-      <span className="event-icon">{moved ? <StatusIcon status={statusOf(team, String(moved.to))} size={12} /> : <span className="event-dot" />}</span>
+      <span className="event-icon">{moved ? <StatusIcon status={look(moved.to)} size={12} /> : <span className="event-dot" />}</span>
       <span>
         <b className="event-name" dir="auto">
           {line.actor.name}
@@ -334,6 +343,12 @@ function describe({ kind, from, to, onBehalfOf }: Activity, actor: UserRef, stat
   switch (kind) {
     case "created":
       return "created the issue";
+    case "team":
+      return (
+        <>
+          moved the issue from {issue(from as string)} to {issue(to as string)}
+        </>
+      );
     case "title":
       return <>changed the title to “{name(to as string)}”</>;
     case "description":

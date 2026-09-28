@@ -43,6 +43,7 @@ const PROPS: [string, string][] = [
   ["priority", "Set priority"],
   ["assignee", "Set assignee"],
   ["delegate", "Set delegate"],
+  ["team", "Move to team"],
 ];
 
 /** Filters `items` on `q` against `fields`, exact matches first, capped at `cap`. Same substring+exact-boost
@@ -187,7 +188,7 @@ export function CommandMenu() {
           });
       }
 
-    const issues: IssueSummary[] = index ? [...index.values()].filter((i) => !i.deletedAt) : [];
+    const issues: IssueSummary[] = index ? [...new Set(index.values())].filter((i) => !i.deletedAt) : []; // once each, not per old identifier
     const issueItems = pick(issues, q, (i) => [i.id, i.title], q ? 8 : 0).map(
       (i): Item => ({ key: i.id, label: i.title, prefix: i.id, icon: <IssueStatusIcon issue={i} />, group: "Issues", run: go(`/issue/${i.id}`) }),
     );

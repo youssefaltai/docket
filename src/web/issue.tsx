@@ -14,6 +14,7 @@ import {
   PriorityPicker,
   RelatedPicker,
   StatusPicker,
+  TeamPicker,
 } from "./pickers";
 import {
   Avatar,
@@ -32,6 +33,7 @@ import {
   MOD,
   Markdown,
   MenuButton,
+  navigate,
   ParentIcon,
   PencilIcon,
   PlusIcon,
@@ -71,6 +73,11 @@ export function IssuePage({ id }: { id: string }) {
   useEffect(() => {
     document.title = `${issue ? `${issue.id} ${issue.title}` : id} · Docket`;
   }, [id, issue?.title]);
+
+  // Opened by an identifier it had before it moved team, or just moved: show its current one in the address bar.
+  useEffect(() => {
+    if (issue && issue.id !== id) navigate(`/issue/${issue.id}${location.search}${location.hash}`, true);
+  }, [id, issue?.id]);
 
   // S/P/A/D/L, I and ⌘⌫ click the matching data-cmd trigger anywhere on the page (the Properties panel's
   // pickers, and the header's Claim/trash buttons below) — see useIssueShortcuts.
@@ -575,11 +582,11 @@ function Properties({ issue, patch }: { issue: Issue; patch: (p: IssueChange) =>
       <Prop label="Due date">
         <DueDate issue={issue} patch={patch} />
       </Prop>
-      <Prop label="Team">
-        <Link to={`/t/${issue.team}`} className="prop-btn">
+      <Prop label="Team" cmd="team">
+        <TeamPicker value={issue.team} onChange={(key) => key !== issue.team && patch({ team: key })} className="prop-btn">
           <TeamMark id={issue.team} />
           <span dir="auto">{team?.name ?? issue.team}</span>
-        </Link>
+        </TeamPicker>
       </Prop>
       <Prop label="Parent">
         <Relations ids={issue.parent ? [issue.parent] : []}>
