@@ -1,6 +1,7 @@
 // Issues view: header with search + filters, and the list / board layouts.
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
+  cycleLastDay,
   PRIORITY_LABELS,
   STATUS_CATEGORIES,
   type Cycle,
@@ -268,7 +269,7 @@ export function IssuesView({ teamKey, cycle }: { teamKey: string | null; cycle?:
   );
 }
 
-const cycleDates = (c: Cycle) => `${dayLabel(c.startsAt.slice(0, 10))} – ${dayLabel(c.endsAt.slice(0, 10))}`;
+const cycleDates = (c: Cycle) => `${dayLabel(c.startsAt.slice(0, 10))} – ${dayLabel(cycleLastDay(c.endsAt))}`;
 const done = (c: Cycle) => `${c.completedCount} of ${c.issueCount} done`;
 
 /** A cycle at a glance: "Cycle 12 · Mar 3 – Mar 17 · 5 days left", its progress and "5 of 12 done". */
@@ -564,7 +565,9 @@ function useGroups(team: string | null | undefined, issues: IssueSummary[], { gr
   } else if (groupBy === "assignee") {
     const people = [...new Map(issues.flatMap((i) => (i.assignee ? [[i.assignee.username, i.assignee] as const] : []))).values()].sort((a, b) => byName(a.name, b.name));
     groups = [
-      ...people.map((u) => group({ key: u.username, name: u.name, icon: <Avatar user={u} />, defaults: {}, drop: { assignee: u } }, (i) => i.assignee?.username === u.username)),
+      ...people.map((u) =>
+        group({ key: u.username, name: u.name, icon: <Avatar user={u} />, defaults: { assignee: u.username }, drop: { assignee: u } }, (i) => i.assignee?.username === u.username),
+      ),
       group({ key: "", name: "No assignee", icon: <Avatar user={null} />, defaults: {}, drop: { assignee: null } }, (i) => !i.assignee),
     ];
   } else {

@@ -23,6 +23,7 @@ import {
 } from "./pickers";
 import {
   ArchivedBanner,
+  ArchiveIcon,
   EditorTeam,
   Avatar,
   ago,
@@ -210,6 +211,10 @@ export function IssuePage({ id }: { id: string }) {
   const alreadyMine = isMe(assignee) && category === "started";
   const claimable = !issue.deletedAt && !issue.archivedAt && !isClosedCategory(category) && !heldByOther && !alreadyMine;
   const claim = () => withFresh(() => api.claimIssue(issue.id)).catch(errorToast);
+  // Manual archive: only a live, unarchived issue that's done or canceled (the server allows any live issue, but
+  // that's what archiving is for; auto-archive only ever reaches these too).
+  const archivable = !issue.deletedAt && !issue.archivedAt && isClosedCategory(category);
+  const archive = () => withFresh(() => api.archiveIssue(issue.id)).catch(errorToast);
 
   // The description is the one field sent with baseUpdatedAt, since a stale save would overwrite someone's
   // text. Comments bump updatedAt too, so on a 409 it only counts as a conflict if the description itself
@@ -257,6 +262,11 @@ export function IssuePage({ id }: { id: string }) {
             <CopyIcon />
           </button>
           <CopyBranchButton branch={issue.branchName} />
+          {archivable && (
+            <button className="icon-btn" data-cmd="archive" onClick={archive} aria-label="Archive issue" title="Archive issue">
+              <ArchiveIcon />
+            </button>
+          )}
           {!issue.deletedAt && (
             <button className="icon-btn" data-cmd="delete" onClick={remove} aria-label="Delete issue" title="Delete issue">
               <TrashIcon />

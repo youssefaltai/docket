@@ -1,13 +1,14 @@
 // Comment threads with composer, shared by issues and docs; an issue's history interleaves with them.
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { ESTIMATE_VALUES, PRIORITY_LABELS, type Activity, type Comment, type Priority, type Reaction, type UserRef } from "../shared/types";
+import { ESTIMATE_VALUES, PRIORITY_LABELS, type Activity, type Comment, type Priority, type ProjectSummary, type Reaction, type UserRef } from "../shared/types";
+import { api } from "./api";
 import { Avatar, isMe, Kbd, Section } from "./components";
 import { RichEditor } from "./editor";
 import { CheckIcon, PencilIcon, ReplyIcon, SmileIcon, StatusIcon, TrashIcon } from "./icons";
 import { Link } from "./routing";
 import { useApp } from "./context";
-import { useRun, useStatusOf } from "./hooks";
+import { useFetch, useRun, useStatusOf } from "./hooks";
 import { Markdown } from "./markdown";
 import { ask, errorToast } from "./toast";
 import { ago, cls, dayLabel, fullDate, MOD } from "./util";
@@ -199,6 +200,8 @@ export function Comments({
 }) {
   const replies = new Map<number, Comment[]>();
   for (const c of comments) if (c.parent !== null) replies.set(c.parent, [...(replies.get(c.parent) ?? []), c]);
+  // Only issues log a "project" change; fetch names to show instead of slugs, once, for the whole history.
+  const projects = useFetch(activity.length ? () => api.projects() : null, []).data;
   return (
     <Section title={title}>
       <ol className="timeline">
@@ -209,7 +212,7 @@ export function Comments({
           "body" in item ? (
             <Thread key={`c${item.id}`} root={item} replies={replies.get(item.id) ?? []} actions={actions} />
           ) : (
-            <Run key={item[0]!.rows[0]!.id} lines={item} team={team} />
+            <Run key={item[0]!.rows[0]!.id} lines={item} team={team} projects={projects} />
           ),
         )}
       </ol>
@@ -242,7 +245,7 @@ function timeline(comments: Comment[], activity: Activity[]): (Comment | Line[])
 }
 
 /** History between two comments: a long run shows its last 2 lines until expanded (Linear's collapse). Creation always shows. */
-function Run({ lines, team }: { lines: Line[]; team: string }) {
+function Run({ lines, team, projects }: { lines: Line[]; team: string; projects?: ProjectSummary[] | null }) {
   const [open, setOpen] = useState(false);
   const pinned = lines[0]!.rows[0]!.kind === "created" ? lines.slice(0, 1) : [];
   const rest = lines.slice(pinned.length);
@@ -250,7 +253,7 @@ function Run({ lines, team }: { lines: Line[]; team: string }) {
   return (
     <>
       {pinned.map((line) => (
-        <HistoryLine key={line.rows[0]!.id} line={line} team={team} />
+        <HistoryLine key={line.rows[0]!.id} line={line} team={team} projects={projects} />
       ))}
       {hidden > 0 && (
         <li className="event">
@@ -260,13 +263,13 @@ function Run({ lines, team }: { lines: Line[]; team: string }) {
         </li>
       )}
       {rest.slice(hidden).map((line) => (
-        <HistoryLine key={line.rows[0]!.id} line={line} team={team} />
+        <HistoryLine key={line.rows[0]!.id} line={line} team={team} projects={projects} />
       ))}
     </>
   );
 }
 
-function HistoryLine({ line, team }: { line: Line; team: string }) {
+function HistoryLine({ line, team, projects }: { line: Line; team: string; projects?: ProjectSummary[] | null }) {
   const { teams } = useApp();
   const statusOf = useStatusOf();
   // A status from before the issue moved team may be one only another team has: look it up there.
@@ -280,6 +283,8 @@ function HistoryLine({ line, team }: { line: Line; team: string }) {
   const statusName = (key: unknown) => look(key).name;
   const scale = teams?.find((t) => t.key === team)?.estimateScale;
   const estimateName = (position: number) => (scale ? ESTIMATE_VALUES[scale][position - 1] : String(position));
+  // A project's name at render time, falling back to its slug if it no longer exists.
+  const projectName = (slug: string) => projects?.find((p) => p.slug === slug)?.name ?? slug;
   return (
     <li className="event">
       <span className="event-icon">{moved ? <StatusIcon status={look(moved.to)} size={12} /> : <span className="event-dot" />}</span>
@@ -290,7 +295,7 @@ function HistoryLine({ line, team }: { line: Line; team: string }) {
         {line.rows.map((r, i) => (
           <Fragment key={r.id}>
             {i > 0 && ", "}
-            {describe(r, line.actor, statusName, estimateName)}
+            {describe(r, line.actor, statusName, estimateName, projectName)}
           </Fragment>
         ))}
         {line.rows[0]!.onBehalfOf && ` (after @${line.rows[0]!.onBehalfOf.username}'s change)`}
@@ -307,6 +312,7 @@ function describe(
   actor: UserRef,
   statusName: (key: unknown) => string,
   estimateName: (position: number) => string | undefined,
+  projectName: (slug: string) => string,
 ): ReactNode {
   const name = (text: string) => (
     <b className="event-name" dir="auto">
@@ -321,7 +327,7 @@ function describe(
   );
   const project = (slug: string) => (
     <Link className="event-name" to={`/project/${slug}`}>
-      {slug}
+      {projectName(slug)}
     </Link>
   );
   const joined = (items: string[], show: (item: string) => ReactNode) =>

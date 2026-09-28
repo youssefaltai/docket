@@ -12,6 +12,7 @@ import {
   INLINE_IMAGE_TYPES,
   ISSUE_SORTS,
   attachmentMarkdown,
+  cycleLastDay,
   PRIORITIES,
   PRIORITY_LABELS,
   PROJECT_STATUSES,
@@ -338,9 +339,9 @@ function projectDetails(p: Project): string {
   return parts.join("\n\n");
 }
 
-/** One line per cycle: `Cycle 12 · current · 2026-09-28 – 2026-10-12 · 3/8 done · 44%` (the end is exclusive: the next cycle's start). */
+/** One line per cycle: `Cycle 12 · current · 2026-09-28 – 2026-10-11 · 3/8 done · 44%` (shows the last day, not the exclusive end). */
 function cycleLine(c: Cycle): string {
-  return [`Cycle ${c.number}`, c.state, `${c.startsAt.slice(0, 10)} – ${c.endsAt.slice(0, 10)}`, `${c.completedCount}/${c.issueCount} done`, percent(c.progress)].join(" · ");
+  return [`Cycle ${c.number}`, c.state, `${c.startsAt.slice(0, 10)} – ${cycleLastDay(c.endsAt)}`, `${c.completedCount}/${c.issueCount} done`, percent(c.progress)].join(" · ");
 }
 
 /** One line per notification: `#41 · unread · delegated · BRD-12 Fix login · by @ana · 5m ago · "excerpt"`. */
@@ -472,18 +473,35 @@ function createServer(a: Actor, origin: string): McpServer {
     "update_team",
     {
       description:
-        "Update a team's name, description, auto-close settings or estimate scale (people only); only the fields you pass change. Its key and workspace never change. Only do this when asked to.",
+        "Update a team's name, description, auto-close settings, auto-archive, estimate scale or cycles (people only); only the fields you pass change. Its key and workspace never change. Only do this when asked to.",
       inputSchema: {
         key: teamKey,
         name: z.string().optional(),
         description: z.string().optional(),
         autoCloseParent: z.boolean().optional().describe("Close a parent issue (to the team's first completed status) once all its sub-issues are completed or canceled"),
         autoCloseChildren: z.boolean().optional().describe("When a parent issue is completed or canceled, close its open sub-issues to the same status"),
+        autoArchiveDays: z
+          .number()
+          .int()
+          .positive()
+          .nullable()
+          .optional()
+          .describe("Archive an issue this many days after it's completed or canceled; null for never"),
         estimateScale: z
           .enum(ESTIMATE_SCALES)
           .nullable()
           .optional()
           .describe("Turn estimates on with this scale: exponential 1,2,4,8,16; fibonacci 1,2,3,5,8; linear 1-5; tshirt XS,S,M,L,XL. null turns them off (issues keep theirs, hidden)"),
+        cycleWeeks: z
+          .number()
+          .int()
+          .min(1)
+          .max(8)
+          .nullable()
+          .optional()
+          .describe("Turn cycles on with this length in weeks (1-8), or change the length of cycles not started yet; null turns cycles off"),
+        upcomingCycles: z.number().int().min(1).max(15).optional().describe("How many upcoming cycles to keep ready (1-15)"),
+        cycleStartsOn: z.string().optional().describe("YYYY-MM-DD, today or later: where the first cycle starts. Only when turning cycles on"),
       },
     },
     writes(({ key, ...patch }) => {

@@ -53,6 +53,24 @@ test("labels: add and remove edit each issue's own; labels replaces them", async
   expect(res.body.results.map((r: any) => r.issue.labels)).toEqual([["one"], ["one"]]);
 });
 
+test("estimate and project apply like their own PATCH, and fail an issue whose team lacks estimates", async () => {
+  const a = await create("Ea");
+  const b = await create("Eb");
+  expect((await s.api("PATCH", "/api/teams/BLK", { estimateScale: "linear" })).status).toBe(200);
+  const project = (await s.api("POST", "/api/projects", { teams: ["BLK"], name: "Bulk project" })).body;
+  const res = await bulk([a, b], { estimate: 3, project: project.slug });
+  expect(res.body.results.map((r: any) => [r.issue.estimate, r.issue.project])).toEqual([
+    [3, project.slug],
+    [3, project.slug],
+  ]);
+  expect((await get(a)).activity.map((r: any) => r.kind)).toEqual(["created", "estimate", "project"]);
+
+  // Turn estimates off again: the same bulk field now fails each issue with updateIssue's own message.
+  expect((await s.api("PATCH", "/api/teams/BLK", { estimateScale: null })).status).toBe(200);
+  const off = await bulk([a], { estimate: 2 });
+  expect(off.body.results).toEqual([{ id: a, error: "Turn on estimates for this team first", status: 400 }]);
+});
+
 test("a failing issue reports its error in its slot and the others still change", async () => {
   const a = await create("Ok");
   const gone = await create("Gone");
