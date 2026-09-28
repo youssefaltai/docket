@@ -170,6 +170,9 @@ export const api = {
   /** Moves it to the trash; `restoreIssue` brings it back (for 30 days). */
   deleteIssue: (id: string) => request<Issue>("DELETE", `/api/issues/${enc(id)}`),
   restoreIssue: (id: string) => request<Issue>("POST", `/api/issues/${enc(id)}/restore`),
+  /** Hides it from default lists (still searchable and openable); `unarchiveIssue` brings it back. */
+  archiveIssue: (id: string) => request<Issue>("POST", `/api/issues/${enc(id)}/archive`),
+  unarchiveIssue: (id: string) => request<Issue>("POST", `/api/issues/${enc(id)}/unarchive`),
   /** One change for many issues (up to 100), each applied on its own: see `BulkIssueResult`. */
   bulkIssues: (ids: string[], patch: BulkIssuePatch) =>
     request<{ results: BulkIssueResult[] }>("POST", "/api/issues/bulk", { ids, patch }).then((r) => r.results),

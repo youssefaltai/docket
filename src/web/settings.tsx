@@ -1176,7 +1176,16 @@ function Workflow({ team }: { team: Team }) {
   );
 }
 
-/** Linear's auto-close switches, each saved as it's flipped. */
+// null (never, the default) or a number of days: after 1/3/6/12 months.
+const ARCHIVE_OPTIONS: { label: string; days: number | null }[] = [
+  { label: "Never", days: null },
+  { label: "After 1 month", days: 30 },
+  { label: "After 3 months", days: 90 },
+  { label: "After 6 months", days: 180 },
+  { label: "After 12 months", days: 365 },
+];
+
+/** Linear's auto-close switches, each saved as it's flipped; auto-archive's select likewise. */
 function Automations({ team }: { team: Team }) {
   const { reloadTeams } = useApp();
   const toggle = (patch: { autoCloseParent: boolean } | { autoCloseChildren: boolean }) => api.updateTeam(team.key, patch).then(reloadTeams, errorToast);
@@ -1194,6 +1203,22 @@ function Automations({ team }: { team: Team }) {
           <b>Auto-close sub-issues</b> <span className="muted">When a parent issue is done or canceled, its open sub-issues follow.</span>
         </span>
       </label>
+      <Field
+        label="Auto-archive closed issues"
+        hint="Completed and canceled issues are hidden from default views (still searchable, still open by link) once they've stayed closed this long."
+      >
+        <select
+          className="input"
+          value={team.autoArchiveDays ?? ""}
+          onChange={(e) => api.updateTeam(team.key, { autoArchiveDays: e.target.value ? Number(e.target.value) : null }).then(reloadTeams, errorToast)}
+        >
+          {ARCHIVE_OPTIONS.map((o) => (
+            <option key={o.label} value={o.days ?? ""}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      </Field>
     </Section>
   );
 }

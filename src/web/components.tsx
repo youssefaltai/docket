@@ -10,7 +10,7 @@ import { api } from "./api";
 import { getYou } from "./auth";
 import type { IssueSummary, Label, Team, UserRef } from "../shared/types";
 import { useApp } from "./context";
-import { CalendarIcon, PlusIcon, SearchIcon, SettingsIcon, MenuIcon, TrashIcon } from "./icons";
+import { ArchiveIcon, CalendarIcon, PlusIcon, SearchIcon, SettingsIcon, MenuIcon, TrashIcon } from "./icons";
 import { Link } from "./routing";
 import { isClosedCategory, issueStatus, triageCount, useAutosize, useRun } from "./hooks";
 import { errorToast } from "./toast";
@@ -353,6 +353,23 @@ export function TrashBanner({ deletedAt, onRestore }: { deletedAt: string; onRes
       <span className="grow" />
       <button className="btn btn-primary btn-sm" disabled={busy} onClick={() => run(onRestore)}>
         Restore
+      </button>
+    </div>
+  );
+}
+
+/** Atop an archived issue opened by URL: it can be read and unarchived, nothing else. Never shown alongside TrashBanner. */
+export function ArchivedBanner({ archivedAt, onUnarchive }: { archivedAt: string; onUnarchive: () => Promise<unknown> }) {
+  const { busy, run } = useRun();
+  return (
+    <div className="doc-banner doc-banner-warn" role="status">
+      <ArchiveIcon />
+      <span className="doc-banner-text">
+        Archived on <time title={fullDate(archivedAt)}>{fullDate(archivedAt)}</time>. Unarchive it to make changes.
+      </span>
+      <span className="grow" />
+      <button className="btn btn-primary btn-sm" disabled={busy} onClick={() => run(onUnarchive)}>
+        Unarchive
       </button>
     </div>
   );

@@ -185,6 +185,10 @@ function change(row: Activity): string {
       return "moved to trash";
     case "restored":
       return "restored";
+    case "archived":
+      return "archived";
+    case "unarchived":
+      return "unarchived";
     default:
       return `${kind} ${show(from)} → ${show(to)}`;
   }
@@ -449,6 +453,7 @@ function createServer(a: Actor, origin: string): McpServer {
           .optional()
           .describe("By due date (the server's date, UTC): overdue (past, open issues only), soon (today to 7 days ahead), today, any (has one), none"),
         sort: z.enum(ISSUE_SORTS).optional().describe("default (status, priority, recently updated) or due (earliest due date first, none last)"),
+        archived: z.boolean().optional().describe("true: also include archived issues (excluded by default, but still found by query)"),
         limit: z.number().int().min(1).max(500).optional().describe("Page size (default 50)"),
         after: z.string().optional().describe("The cursor from the end of the previous page"),
       },

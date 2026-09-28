@@ -65,6 +65,7 @@ const issueFilter = (req: Request): IssueFilter => ({
   subscribed: param(req, "subscribed") === "true" || undefined,
   due: param(req, "due") as IssueFilter["due"],
   sort: param(req, "sort") as IssueFilter["sort"],
+  archived: param(req, "archived") === "true" || undefined,
 });
 
 const link = (req: Request, { code, expiresAt }: { code: string; expiresAt: string }) => ({
@@ -173,7 +174,7 @@ export const apiRoutes = {
       tracker.updateTeam(
         actorOf(req),
         req.params.key,
-        await patch(req, "a team", ["name", "description", "defaultStatus", "autoCloseParent", "autoCloseChildren"], {
+        await patch(req, "a team", ["name", "description", "defaultStatus", "autoCloseParent", "autoCloseChildren", "autoArchiveDays"], {
           workspace: "Teams can't move between workspaces",
           key: "A team's key never changes",
         }),
@@ -230,6 +231,12 @@ export const apiRoutes = {
   },
   "/api/issues/:id/restore": {
     POST: handle<"/api/issues/:id/restore">((req) => tracker.restoreIssue(actorOf(req), req.params.id)),
+  },
+  "/api/issues/:id/archive": {
+    POST: handle<"/api/issues/:id/archive">((req) => tracker.archiveIssue(actorOf(req), req.params.id)),
+  },
+  "/api/issues/:id/unarchive": {
+    POST: handle<"/api/issues/:id/unarchive">((req) => tracker.unarchiveIssue(actorOf(req), req.params.id)),
   },
   "/api/issues/:id/claim": {
     POST: handle<"/api/issues/:id/claim">((req) => tracker.claimIssue(actorOf(req), req.params.id)),
