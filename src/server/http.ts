@@ -73,15 +73,19 @@ const credentialOf = (req: Request, ip: string) =>
 
 type Handler = (req: Request, server: Bun.Server<any>) => Response | undefined | Promise<Response | undefined>;
 
-/** Wraps a route (a handler or a method map) with the body cap (`maxBody`), the rate limit and the headers. */
-export function http<T>(route: T, { api = true, maxBody = MAX_BODY } = {}): T {
+/**
+ * Wraps a route (a handler or a method map) with the body cap (`maxBody`), the rate limit and the headers. `perIp`: the
+ * limit is per client IP only, for a public route that takes no credential (else any made-up header is a fresh bucket).
+ */
+export function http<T>(route: T, { api = true, maxBody = MAX_BODY, perIp = false } = {}): T {
   const wrap =
     (fn: Handler): Handler =>
     async (req, server) => {
       const json = (error: string, status: number, headers: Record<string, string> = {}) =>
         secure(req, Response.json({ error }, { status, headers }), { api });
       if (Number(req.headers.get("content-length") ?? 0) > maxBody) return json(`Request body too large (at most ${maxBody / MAX_BODY} MB)`, 413);
-      const wait = take(credentialOf(req, server.requestIP(req)?.address ?? ""));
+      const ip = server.requestIP(req)?.address ?? "";
+      const wait = take(perIp ? `ip:${ip}` : credentialOf(req, ip));
       if (wait) return json("Too many requests, slow down", 429, { "Retry-After": String(wait) });
       const res = await fn(req, server);
       return res && secure(req, res, { api }); // undefined: upgraded to a WebSocket

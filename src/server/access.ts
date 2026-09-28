@@ -83,7 +83,7 @@ const PROFILE_SELECT = "SELECT m.username, m.name, u.kind FROM workspace_members
  * Who an account is in `workspace`; without one (or not a member there), its default profile: the
  * membership it joined most recently, whatever its status.
  */
-function profileOf(userId: number, workspace?: string | null): UserRef {
+export function profileOf(userId: number, workspace?: string | null): UserRef {
   const there = workspace
     ? db.query<UserRef, [number, string]>(`${PROFILE_SELECT} WHERE m.user_id = ? AND m.workspace = ?`).get(userId, workspace)
     : null;
@@ -318,13 +318,15 @@ export function activeMemberId(a: Actor, workspace: string, value: string, kind:
   const given = value.trim().toLowerCase();
   const me = given === "me";
   const row = db
-    .query<{ id: number; username: string; kind: UserKind }, [string, string | number]>(
-      `SELECT m.user_id AS id, m.username, u.kind FROM workspace_members m JOIN users u ON u.id = m.user_id
+    .query<{ id: number; username: string; kind: UserKind; integration: number }, [string, string | number]>(
+      `SELECT m.user_id AS id, m.username, u.kind, ${isIntegration("m.user_id")} AS integration
+       FROM workspace_members m JOIN users u ON u.id = m.user_id
        WHERE m.workspace = ? AND m.${me ? "user_id" : "username"} = ? AND m.suspended_at IS NULL`,
     )
     .get(workspace, me ? a.id : given);
   const username = row?.username ?? given;
   if (!row) throw new AppError(`${field}: ${username} isn't an active member of this workspace`);
+  if (row.integration) throw new AppError(`${field}: ${username} is an integration`);
   if (row.kind !== kind) {
     const hint = field === "assignee" ? "; set it as the delegate" : ", not a person";
     throw new AppError(kind === "person" ? `${field}: ${username} is an agent${hint}` : `${field}: ${username} isn't an agent`);
@@ -758,10 +760,12 @@ interface MemberRow {
   role: Role;
   joined_at: string;
   suspended_at: string | null;
+  integration: number;
 }
 
 const MEMBER_SELECT = `
-  SELECT m.user_id AS id, u.kind, m.username, m.name, u.email, m.role, m.created_at AS joined_at, m.suspended_at
+  SELECT m.user_id AS id, u.kind, m.username, m.name, u.email, m.role, m.created_at AS joined_at, m.suspended_at,
+    ${isIntegration("m.user_id")} AS integration
   FROM workspace_members m JOIN users u ON u.id = m.user_id`;
 
 const toMember = (row: MemberRow): WorkspaceMember => ({
@@ -770,6 +774,7 @@ const toMember = (row: MemberRow): WorkspaceMember => ({
   role: row.role,
   joinedAt: row.joined_at,
   suspendedAt: row.suspended_at,
+  integration: row.integration === 1,
 });
 
 function memberRow(workspace: string, username: unknown): MemberRow {
@@ -817,6 +822,7 @@ function suspend(key: string, row: MemberRow) {
 export function updateMember(a: Actor, workspace: unknown, username: unknown, patch: { role?: unknown; suspended?: unknown }): WorkspaceMember {
   const key = requireAdminSession(a, workspace);
   const row = memberRow(key, username);
+  if (row.integration) throw new AppError(INTEGRATION_MANAGED);
   const role = patch.role === undefined ? row.role : checkOneOf(patch.role, PERSON_ROLES, "role");
   if (row.kind === "agent" && patch.role !== undefined) throw new AppError("Agents have no role to change");
   if (patch.suspended !== undefined && typeof patch.suspended !== "boolean") throw new AppError("suspended must be true or false");
@@ -857,6 +863,7 @@ function agentRow(a: Actor, workspace: unknown, username: unknown): { key: strin
   const key = requireAdminSession(a, workspace);
   const row = memberRow(key, username);
   if (row.kind !== "agent") throw new AppError(`${row.username} isn't an agent`, 404);
+  if (row.integration) throw new AppError(INTEGRATION_MANAGED);
   return { key, row };
 }
 
@@ -878,4 +885,41 @@ export function removeAgent(a: Actor, workspace: unknown, username: unknown) {
   const { key, row } = agentRow(a, workspace, username);
   db.transaction(() => suspend(key, row))();
   changed("member", key, row.username);
+}
+
+// --- Integrations: the GitHub integration's agent account ---
+
+/** SQL: whether the account with id `column` is an integration's (GitHub's). */
+function isIntegration(column: string) {
+  return `EXISTS (SELECT 1 FROM github_integrations g WHERE g.user_id = ${column})`;
+}
+
+const INTEGRATION_MANAGED = "This is the GitHub integration's account: connect or disconnect GitHub in workspace settings";
+
+/**
+ * The account an integration acts as in `workspace`: `userId`'s membership reinstated, else a new agent account with
+ * this one membership, as `username` (deduped in the workspace: github-2, github-3…) and `name`. It never gets a key.
+ */
+export function ensureIntegrationAgent(workspace: string, username: string, name: string, userId?: number): number {
+  if (userId !== undefined) {
+    setSuspended(workspace, userId, null);
+    return userId;
+  }
+  const taken = (u: string) => !!db.query("SELECT 1 FROM workspace_members WHERE workspace = ? AND username = ?").get(workspace, u);
+  let free = username;
+  for (let n = 2; taken(free); n++) free = `${username}-${n}`;
+  const id = insertAccount("agent");
+  addMember(workspace, id, "agent", { username: free, name });
+  return id;
+}
+
+/** Disconnecting suspends the integration's account: it can't act, and history keeps its name. */
+export function suspendIntegrationAgent(workspace: string, userId: number) {
+  setSuspended(workspace, userId, now());
+  revoked({ userId });
+}
+
+/** The actor an integration's changes are made as: its account, writing, in `workspace` only, with no session or key. */
+export function integrationActor(userId: number, workspace: string): Actor {
+  return actorFor(db.query<AccountRow, [number]>("SELECT * FROM users WHERE id = ?").get(userId)!, { scope: "write" }, workspace);
 }

@@ -1722,6 +1722,41 @@ fieldset.plain {
   color: var(--text);
 }
 
+/* ---------- Pull requests (GitHub) ---------- */
+
+.link-icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--muted);
+}
+.link-icon.pr-open {
+  color: #30a46c;
+}
+.link-icon.pr-merged {
+  color: #8e4ec6;
+}
+.link-commit .row-title {
+  color: var(--muted);
+}
+.pr-state {
+  flex: none;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 18px;
+}
+.pr-state.pr-open {
+  border-color: #30a46c55;
+  color: #218358;
+}
+.pr-state.pr-merged {
+  border-color: #8e4ec655;
+  color: #8e4ec6;
+}
+
 /* ---------- Docs ---------- */
 
 .doc-icon {

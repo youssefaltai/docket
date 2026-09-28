@@ -95,6 +95,15 @@ Back up its conversations nightly with Docket's script:
 </details>
 
 <details>
+<summary><b>Connect GitHub</b></summary>
+
+Pull requests and commits link to the issues they mention, and move them along: a branch like `ana/dkt-12-fix-login` (copy it from the issue page, or press `⌘/Ctrl+Shift+.` there), the identifier in the PR title, or `Fixes DKT-12` in its description. Opening the PR moves the issue to In Review, and merging it to Done. `Part of DKT-12` links without moving it.
+
+An admin connects it in **Settings → Workspace → GitHub** and gets a payload URL and a secret, shown once. Add them as a webhook in the GitHub repo or organization (**Settings → Webhooks → Add webhook**): content type `application/json`, the events Pull requests and Pushes. GitHub must be able to reach Docket at that URL, and its host must be in `DOCKET_HOSTS`.
+
+</details>
+
+<details>
 <summary><b>Upgrade</b></summary>
 
 ```sh

@@ -7,6 +7,7 @@ import { apiRoutes } from "./api.ts";
 import { attachmentRoutes } from "./attachments.ts";
 import { actorOf, authRoutes, guard } from "./auth.ts";
 import { proxyChat } from "./chat.ts";
+import { receive as receiveGitHub } from "./github.ts";
 import { onChange } from "./db.ts";
 import { HARD_MAX_BODY, http, publicFile, secure, webApp } from "./http.ts";
 import { handleMcp } from "./mcp.ts";
@@ -57,6 +58,8 @@ const server = Bun.serve({
     ...(Object.fromEntries(
       Object.entries(attachmentRoutes).map(([path, route]) => [path, http(guard(route), { maxBody: MAX_UPLOAD_BYTES })]),
     ) as typeof attachmentRoutes),
+    // GitHub's webhook: public, signed with the workspace's secret; rate-limited per IP, since it takes no credential.
+    "/api/github/:workspace": http({ POST: receiveGitHub }, { perIp: true }),
     "/mcp": http(guard(handleMcp, { mcp: true })),
     "/api/chat": http(guard(proxyChat)),
     "/api/chat/*": http(guard(proxyChat)),

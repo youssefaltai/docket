@@ -23,6 +23,7 @@ import {
   type DocumentSummary,
   type EstimateScale,
   type Issue,
+  type IssueLink,
   type IssueSummary,
   type Notification,
   type Priority,
@@ -154,6 +155,10 @@ function line(issue: IssueSummary): string {
     .join(" · ");
 }
 
+/** A linked PR or commit: `PR #12 · open · Fix login · <url>`, `commit · Fix typo · <url>`. */
+const linkLine = (l: IssueLink) =>
+  (l.kind === "pull_request" ? [`PR #${l.number}`, l.state, l.title, l.url] : ["commit", l.title, l.url]).filter(Boolean).join(" · ");
+
 function details(issue: Issue, scale: EstimateScale | null): string {
   const meta = [
     `team ${issue.team}`,
@@ -170,6 +175,7 @@ function details(issue: Issue, scale: EstimateScale | null): string {
     issue.duplicateOf && `duplicate of ${issue.duplicateOf}`,
     issue.duplicates.length > 0 && `duplicates: ${issue.duplicates.join(", ")}`,
     `updated ${issue.updatedAt}`,
+    `branch ${issue.branchName}`,
   ];
   const parts = [line(issue), meta.filter(Boolean).join(" · "), issue.description || "_No description._"];
   const reactions = reactionsLine(issue.reactions);
@@ -177,6 +183,7 @@ function details(issue: Issue, scale: EstimateScale | null): string {
   if (issue.deletedAt) parts.unshift(`**In the trash** since ${issue.deletedAt}: read-only until someone restores it.`);
   if (issue.children.length) parts.push(`## Sub-issues\n${issue.children.map(line).join("\n")}`);
   if (issue.docs.length) parts.push(`## Docs\n${issue.docs.map(docLine).join("\n")}`);
+  if (issue.links.length) parts.push(`## Links\n${issue.links.map(linkLine).join("\n")}`);
   if (issue.activity.length) parts.push(historySection(issue.activity, scale));
   if (issue.comments.length) parts.push(commentsSection(issue.comments));
   return parts.join("\n\n");
@@ -415,7 +422,7 @@ function createServer(a: Actor, origin: string): McpServer {
       const members = access.listMembers(a, access.requestWorkspace(a));
       const you = access.usernameOf(a);
       const lines = members.map((m) =>
-        [at(m.user), m.user.name, m.role, m.suspendedAt && "suspended", m.user.username === you && "you"].filter(Boolean).join(" · "),
+        [at(m.user), m.user.name, m.role, m.integration && "integration", m.suspendedAt && "suspended", m.user.username === you && "you"].filter(Boolean).join(" · "),
       );
       return result(lines.join("\n"), { members, you });
     },
@@ -580,7 +587,7 @@ function createServer(a: Actor, origin: string): McpServer {
     "get_issue",
     {
       description:
-        "Get one issue by identifier (e.g. BRD-12; one it had before it moved team works too): markdown description, status, priority, labels, assignee, delegate, parent, sub-issues, blocked-by/blocks, related, duplicate-of/duplicates, and comments, plus its history: who changed what and when (latest 30). Read it before starting work on an issue.",
+        "Get one issue by identifier (e.g. BRD-12; one it had before it moved team works too): markdown description, status, priority, labels, assignee, delegate, parent, sub-issues, blocked-by/blocks, related, duplicate-of/duplicates, and comments, plus its history: who changed what and when (latest 30), the git branch name to use, and linked pull requests. Read it before starting work on an issue.",
       inputSchema: { id: identifier },
       annotations: { readOnlyHint: true },
     },

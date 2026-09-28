@@ -252,7 +252,7 @@ export const userOption = (user: UserRef): Option => ({
 /** Active members of the current workspace of one kind (people assign, agents are delegates), you first. */
 export function useMembers(kind: UserKind): UserRef[] {
   const users = useApp()
-    .members.filter((m) => !m.suspendedAt && m.user.kind === kind)
+    .members.filter((m) => !m.suspendedAt && !m.integration && m.user.kind === kind)
     .map((m) => m.user);
   return [...users.filter(isMe), ...users.filter((u) => !isMe(u))];
 }
