@@ -7,6 +7,8 @@ import {
   ACTIVE_CATEGORIES,
   CLOSED_CATEGORIES,
   DUE_FILTERS,
+  ESTIMATE_SCALES,
+  ESTIMATE_VALUES,
   INLINE_IMAGE_TYPES,
   ISSUE_SORTS,
   attachmentMarkdown,
@@ -17,6 +19,7 @@ import {
   type Comment,
   type Document,
   type DocumentSummary,
+  type EstimateScale,
   type Issue,
   type IssueSummary,
   type Notification,
@@ -72,6 +75,12 @@ const dueOn = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/)
   .describe('Due date, a calendar date like "2026-09-30" (no time)');
+const estimate = z
+  .number()
+  .int()
+  .min(1)
+  .max(5)
+  .describe("A position in the team's estimate scale, 1 (smallest) to 5, if the team has estimates on (list_teams shows its scale and values)");
 const assignee = z.string().describe('A person\'s username (see list_members), or "me"');
 const delegate = z.string().describe('An agent\'s username (see list_members), or "me" if you are one');
 
@@ -109,6 +118,9 @@ function due(issue: IssueSummary): string | null {
   return `${overdue ? "overdue" : "due"} ${issue.dueOn}`;
 }
 
+/** An estimate position as its team's scale shows it: 4 is "5" in fibonacci, "L" in tshirt. */
+const estimateValue = (scale: EstimateScale | null, position: number) => (scale ? ESTIMATE_VALUES[scale][position - 1]! : String(position));
+
 /** One line per issue: `BRD-3 · todo · high · Title · @assignee · →@delegate · #label · due 2026-10-01`. */
 function line(issue: IssueSummary): string {
   return [
@@ -125,9 +137,10 @@ function line(issue: IssueSummary): string {
     .join(" · ");
 }
 
-function details(issue: Issue): string {
+function details(issue: Issue, scale: EstimateScale | null): string {
   const meta = [
     `team ${issue.team}`,
+    issue.estimate !== null && `estimate ${estimateValue(scale, issue.estimate)}`,
     issue.previousIdentifiers.length > 0 && `previously ${issue.previousIdentifiers.join(", ")}`,
     `created by ${at(issue.creator)}`,
     issue.parent && `parent ${issue.parent}`,
@@ -144,18 +157,19 @@ function details(issue: Issue): string {
   if (issue.deletedAt) parts.unshift(`**In the trash** since ${issue.deletedAt}: read-only until someone restores it.`);
   if (issue.children.length) parts.push(`## Sub-issues\n${issue.children.map(line).join("\n")}`);
   if (issue.docs.length) parts.push(`## Docs\n${issue.docs.map(docLine).join("\n")}`);
-  if (issue.activity.length) parts.push(historySection(issue.activity));
+  if (issue.activity.length) parts.push(historySection(issue.activity, scale));
   if (issue.comments.length) parts.push(commentsSection(issue.comments));
   return parts.join("\n\n");
 }
 
 /** One change, compactly: `status todo → in_progress`, `labels +bug −ui`; Docket's own say whose change set them off. */
-function change(row: Activity): string {
+function change(row: Activity, scale: EstimateScale | null): string {
   const { kind, from, to, onBehalfOf } = row;
   if (onBehalfOf && kind === "status") return `closed the issue, status ${from} → ${to} (after ${at(onBehalfOf)}'s change)`; // an auto-close
   const show = (v: Activity["from"]) => {
     if (v === null || v === 0) return "none"; // 0: no priority
     if (typeof v === "object") return at(v as UserRef);
+    if (kind === "estimate") return estimateValue(scale, v as number);
     return kind === "priority" ? PRIORITY_LABELS[v as Priority].toLowerCase() : String(v);
   };
   const diff = () => {
@@ -200,15 +214,15 @@ const HISTORY_LINES = 30;
  * One line per mutation, the latest 30: `time · @who · change, change`. A mutation's rows are consecutive,
  * with one actor and time, and never repeat a kind (that starts the next mutation, made in the same millisecond).
  */
-function historySection(activity: Activity[]): string {
+function historySection(activity: Activity[], scale: EstimateScale | null): string {
   const lines: { key: string; kinds: string[]; text: string[] }[] = [];
   for (const row of activity) {
     const key = `${row.createdAt} · ${at(row.actor)}`;
     const last = lines.at(-1);
     if (last?.key === key && !last.kinds.includes(row.kind)) {
       last.kinds.push(row.kind);
-      last.text.push(change(row));
-    } else lines.push({ key, kinds: [row.kind], text: [change(row)] });
+      last.text.push(change(row, scale));
+    } else lines.push({ key, kinds: [row.kind], text: [change(row, scale)] });
   }
   const cut = lines.length - HISTORY_LINES;
   const shown = lines.slice(-HISTORY_LINES).map((l) => `${l.key} · ${l.text.join(", ")}`);
@@ -359,7 +373,7 @@ function createServer(a: Actor, origin: string): McpServer {
     "list_teams",
     {
       description:
-        "List the workspace's teams, one line each: key · name · workspace · open count · status keys in workflow order, the default for new issues marked. A team's key (e.g. BRD) prefixes its issue identifiers (BRD-12). Statuses are per team: use a team's own keys for its issues (categories: triage, backlog, unstarted, started, completed, canceled; structuredContent has each status's name and category).",
+        "List the workspace's teams, one line each: key · name · workspace · open count · status keys in workflow order, the default for new issues marked, and the estimate scale if the team has estimates on (an issue's estimate is a position 1-5 in it). A team's key (e.g. BRD) prefixes its issue identifiers (BRD-12). Statuses are per team: use a team's own keys for its issues (categories: triage, backlog, unstarted, started, completed, canceled; structuredContent has each status's name and category).",
       annotations: { readOnlyHint: true },
     },
     () => {
@@ -367,7 +381,8 @@ function createServer(a: Actor, origin: string): McpServer {
       const lines = teams.map((t) => {
         const open = t.statuses.filter((s) => ACTIVE_CATEGORIES.includes(s.category)).reduce((sum, s) => sum + (t.counts[s.key] ?? 0), 0);
         const statuses = t.statuses.map((s) => (s.key === t.defaultStatus ? `${s.key} (default)` : s.key)).join(", ");
-        return `${t.key} · ${t.name} · workspace ${t.workspace} · ${open} open · statuses: ${statuses}`;
+        const estimates = t.estimateScale && `estimates: ${t.estimateScale} (${ESTIMATE_VALUES[t.estimateScale].join(", ")})`;
+        return [t.key, t.name, `workspace ${t.workspace}`, `${open} open`, `statuses: ${statuses}`, estimates].filter(Boolean).join(" · ");
       });
       return result(lines.join("\n") || "No teams yet.", { teams });
     },
@@ -395,13 +410,18 @@ function createServer(a: Actor, origin: string): McpServer {
     "update_team",
     {
       description:
-        "Update a team's name, description or auto-close settings (people only); only the fields you pass change. Its key and workspace never change. Only do this when asked to.",
+        "Update a team's name, description, auto-close settings or estimate scale (people only); only the fields you pass change. Its key and workspace never change. Only do this when asked to.",
       inputSchema: {
         key: teamKey,
         name: z.string().optional(),
         description: z.string().optional(),
         autoCloseParent: z.boolean().optional().describe("Close a parent issue (to the team's first completed status) once all its sub-issues are completed or canceled"),
         autoCloseChildren: z.boolean().optional().describe("When a parent issue is completed or canceled, close its open sub-issues to the same status"),
+        estimateScale: z
+          .enum(ESTIMATE_SCALES)
+          .nullable()
+          .optional()
+          .describe("Turn estimates on with this scale: exponential 1,2,4,8,16; fibonacci 1,2,3,5,8; linear 1-5; tshirt XS,S,M,L,XL. null turns them off (issues keep theirs, hidden)"),
       },
     },
     writes(({ key, ...patch }) => {
@@ -478,7 +498,8 @@ function createServer(a: Actor, origin: string): McpServer {
     },
     ({ id }) => {
       const issue = tracker.getIssue(a, id);
-      return result(details(issue), { issue });
+      const scale = tracker.listTeams(a).find((t) => t.key === issue.team)?.estimateScale ?? null;
+      return result(details(issue, scale), { issue });
     },
   );
 
@@ -493,6 +514,7 @@ function createServer(a: Actor, origin: string): McpServer {
         description: description.optional(),
         status: status.optional().describe("Default: the team's default status (list_teams marks it)"),
         priority: priority.optional().describe("0 none (default), 1 urgent, 2 high, 3 medium, 4 low"),
+        estimate: estimate.optional(),
         labels: labels.optional(),
         assignee: assignee.optional().describe('The person who owns it: a username, or "me"'),
         delegate: delegate.optional().describe("An agent to work on it"),
@@ -525,6 +547,7 @@ function createServer(a: Actor, origin: string): McpServer {
         description: description.optional(),
         status: status.optional(),
         priority: priority.optional(),
+        estimate: estimate.nullable().optional().describe("A position in the team's estimate scale, 1 to 5, if the team has estimates on (list_teams); null to clear"),
         labels: labels.optional(),
         assignee: assignee.nullable().optional().describe('The person who owns it, or "me"; null to unassign'),
         delegate: delegate.nullable().optional().describe("The agent working on it; null to clear"),

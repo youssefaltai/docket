@@ -39,6 +39,7 @@ export const TrashIcon = icon("M2.5 4.5h11M6 4.5V3h4v1.5M4 4.5l.7 8.6a1 1 0 0 0 
 export const ArchiveIcon = icon("M2.5 3.5h11a1 1 0 0 1 1 1v2h-13v-2a1 1 0 0 1 1-1zM3.5 6.5v6a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1v-6M6.5 9h3");
 export const PencilIcon = icon("M10.5 2.5l3 3L6 13H3v-3z");
 export const ReplyIcon = icon("M6 3.5L2.5 7 6 10.5M2.5 7h6.5a4 4 0 0 1 4 4v1.5");
+export const EstimateIcon = icon("M8 2.5l5.5 10h-11z");
 export const CalendarIcon = icon("M3.5 3.5h9a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-8a1 1 0 0 1 1-1zM2.5 6.5h11M5.5 2v3M10.5 2v3");
 const Dots = icon("M3.5 8h.01M8 8h.01M12.5 8h.01");
 export const MoreIcon = (props: IconProps) => <Dots strokeWidth={2.4} {...props} />;

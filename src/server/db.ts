@@ -570,6 +570,12 @@ const MIGRATIONS: (string | (() => void))[] = [
   CREATE INDEX issues_archived ON issues(archived_at) WHERE archived_at IS NOT NULL;
   ALTER TABLE teams ADD COLUMN auto_archive_days INTEGER; -- NULL = never (default); else days after completed_at
   `,
+  // Estimates (Linear's, opt-in per team): a team's scale (NULL: off) and each issue's 1-5 position in it (NULL: none).
+  // Turning estimates off or changing the scale never touches issues' positions.
+  `
+  ALTER TABLE teams ADD COLUMN estimate_scale TEXT CHECK (estimate_scale IN ('exponential', 'fibonacci', 'linear', 'tshirt'));
+  ALTER TABLE issues ADD COLUMN estimate INTEGER CHECK (estimate BETWEEN 1 AND 5);
+  `,
 ];
 
 db.run("PRAGMA foreign_keys = OFF"); // a migration may rebuild a table (SQLite's 12-step ALTER); checked before each commit

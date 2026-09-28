@@ -61,6 +61,20 @@ export const PRIORITY_LABELS: Record<Priority, string> = {
   4: "Low",
 };
 
+/**
+ * Estimates (Linear's, opt-in per team): a team picks a scale, and an issue holds a 1–5 position in it, shown as that
+ * scale's value. The position stays when the team changes scale or turns estimates off. T-shirt sizes sum by position.
+ */
+export const ESTIMATE_SCALES = ["exponential", "fibonacci", "linear", "tshirt"] as const;
+export type EstimateScale = (typeof ESTIMATE_SCALES)[number];
+
+export const ESTIMATE_VALUES: Record<EstimateScale, string[]> = {
+  exponential: ["1", "2", "4", "8", "16"],
+  fibonacci: ["1", "2", "3", "5", "8"],
+  linear: ["1", "2", "3", "4", "5"],
+  tshirt: ["XS", "S", "M", "L", "XL"],
+};
+
 /** Who did or owns something: a person or an agent. */
 export type UserKind = "person" | "agent";
 
@@ -186,6 +200,7 @@ export interface Team {
   autoCloseParent: boolean; // a parent here closes (first completed status) once all its sub-issues are completed or canceled
   autoCloseChildren: boolean; // closing a parent here closes its open sub-issues to the same status
   autoArchiveDays: number | null; // null (default): never; else archive completed/canceled issues this many days after completedAt
+  estimateScale: EstimateScale | null; // estimates on, in this scale; null: off (issues keep theirs, hidden)
   counts: Record<string, number>; // live issues per status key; 0 for each of the team's statuses without any
   docCount: number;
   createdAt: string; // ISO 8601
@@ -200,6 +215,7 @@ export interface TeamInput {
   autoCloseParent?: boolean; // default false
   autoCloseChildren?: boolean; // default false
   autoArchiveDays?: number | null; // default null (never)
+  estimateScale?: EstimateScale | null; // default null (off)
 }
 
 export type TeamPatch = Partial<Omit<TeamInput, "key" | "workspace">> & { defaultStatus?: string }; // the key and workspace never change
@@ -212,6 +228,7 @@ export interface IssueSummary {
   status: string; // a status key of its team's workflow
   statusCategory: StatusCategory; // that status's category, for API clients (the web app reads it from the team)
   priority: Priority;
+  estimate: number | null; // 1–5, a position in its team's scale (ESTIMATE_VALUES); null when unset or the team has estimates off
   labels: string[]; // label paths ("Bug", "Type/Feature"), sorted case-insensitively
   assignee: UserRef | null; // a person: who owns it
   delegate: UserRef | null; // an agent working on it for the assignee (Linear's delegate)
@@ -302,6 +319,7 @@ export const ACTIVITY_KINDS = [
   "description",
   "status",
   "priority",
+  "estimate",
   "assignee",
   "delegate",
   "labels",
@@ -320,7 +338,7 @@ export type ActivityKind = (typeof ACTIVITY_KINDS)[number];
 
 /**
  * One change to an issue. from/to by kind: team (its identifier before and after a move), title, parent and duplicateOf (identifiers), status and claimed (status keys), dueOn
- * ("YYYY-MM-DD") are strings; priority a number; assignee, delegate a UserRef; labels, blockedBy, relatedTo string arrays; null when unset, and both
+ * ("YYYY-MM-DD") are strings; priority and estimate (a position) numbers; assignee, delegate a UserRef; labels, blockedBy, relatedTo string arrays; null when unset, and both
  * null for created, description, trashed, restored, archived, unarchived.
  */
 export type ActivityValue = string | number | string[] | UserRef | null;
@@ -407,6 +425,7 @@ export interface IssueInput {
   description?: string;
   status?: string; // a status key (or name) of the team's workflow; default: the team's defaultStatus
   priority?: Priority; // default 0
+  estimate?: number | null; // 1–5, a position in the team's scale; only on a team with estimates on
   labels?: string[]; // names or paths; an unknown one creates a workspace label (Group/Label: in that group)
   assignee?: string | null; // a person's username, or "me"
   delegate?: string | null; // an agent's username, or "me" (as an agent)

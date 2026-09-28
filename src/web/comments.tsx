@@ -1,7 +1,7 @@
 // Comment threads with composer, shared by issues and docs; an issue's history interleaves with them.
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { PRIORITY_LABELS, type Activity, type Comment, type Priority, type Reaction, type UserRef } from "../shared/types";
+import { ESTIMATE_VALUES, PRIORITY_LABELS, type Activity, type Comment, type Priority, type Reaction, type UserRef } from "../shared/types";
 import { Avatar, isMe, Kbd, Section } from "./components";
 import { RichEditor } from "./editor";
 import { CheckIcon, PencilIcon, ReplyIcon, SmileIcon, StatusIcon, TrashIcon } from "./icons";
@@ -278,6 +278,8 @@ function HistoryLine({ line, team }: { line: Line; team: string }) {
   };
   const moved = line.rows.find((r) => r.kind === "status" || r.kind === "claimed");
   const statusName = (key: unknown) => look(key).name;
+  const scale = teams?.find((t) => t.key === team)?.estimateScale;
+  const estimateName = (position: number) => (scale ? ESTIMATE_VALUES[scale][position - 1] : String(position));
   return (
     <li className="event">
       <span className="event-icon">{moved ? <StatusIcon status={look(moved.to)} size={12} /> : <span className="event-dot" />}</span>
@@ -288,7 +290,7 @@ function HistoryLine({ line, team }: { line: Line; team: string }) {
         {line.rows.map((r, i) => (
           <Fragment key={r.id}>
             {i > 0 && ", "}
-            {describe(r, line.actor, statusName)}
+            {describe(r, line.actor, statusName, estimateName)}
           </Fragment>
         ))}
         {line.rows[0]!.onBehalfOf && ` (after @${line.rows[0]!.onBehalfOf.username}'s change)`}
@@ -300,7 +302,12 @@ function HistoryLine({ line, team }: { line: Line; team: string }) {
 }
 
 /** One change in words: "moved from Todo to In Progress", "assigned to Ana", "added label bug". */
-function describe({ kind, from, to, onBehalfOf }: Activity, actor: UserRef, statusName: (key: unknown) => string): ReactNode {
+function describe(
+  { kind, from, to, onBehalfOf }: Activity,
+  actor: UserRef,
+  statusName: (key: unknown) => string,
+  estimateName: (position: number) => string | undefined,
+): ReactNode {
   const name = (text: string) => (
     <b className="event-name" dir="auto">
       {text}
@@ -357,6 +364,8 @@ function describe({ kind, from, to, onBehalfOf }: Activity, actor: UserRef, stat
       return onBehalfOf ? "closed the issue" : `moved from ${statusName(from)} to ${statusName(to)}`; // Docket's: an auto-close
     case "priority":
       return to ? `set priority to ${PRIORITY_LABELS[to as Priority]}` : "removed priority";
+    case "estimate":
+      return to ? `set the estimate to ${estimateName(to as number)}` : "removed the estimate";
     case "assignee":
       return to ? <>assigned to {who(to as UserRef)}</> : <>unassigned {who(from as UserRef)}</>;
     case "delegate":

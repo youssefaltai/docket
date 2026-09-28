@@ -1,6 +1,6 @@
 // Issue page: title, description, sub-issues, comments and the properties panel.
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { PRIORITY_LABELS, type Issue } from "../shared/types";
+import { ESTIMATE_VALUES, PRIORITY_LABELS, type Issue } from "../shared/types";
 import { HttpError, api } from "./api";
 import { RichEditor } from "./editor";
 import { SubscribeButton } from "./inbox";
@@ -9,6 +9,7 @@ import {
   BlockedByPicker,
   DelegatePicker,
   DuplicatePicker,
+  EstimatePicker,
   LabelsPicker,
   ParentPicker,
   PriorityPicker,
@@ -21,6 +22,7 @@ import {
   Avatar,
   ago,
   CalendarIcon,
+  EstimateIcon,
   ChevronRightIcon,
   CloseIcon,
   Comments,
@@ -567,6 +569,14 @@ function Properties({ issue, patch }: { issue: Issue; patch: (p: IssueChange) =>
           {PRIORITY_LABELS[issue.priority]}
         </PriorityPicker>
       </Prop>
+      {team?.estimateScale && (
+        <Prop label="Estimate" cmd="estimate">
+          <EstimatePicker scale={team.estimateScale} value={issue.estimate} onChange={(estimate) => patch({ estimate })} className="prop-btn">
+            <EstimateIcon />
+            {issue.estimate ? ESTIMATE_VALUES[team.estimateScale][issue.estimate - 1] : <span className="muted">No estimate</span>}
+          </EstimatePicker>
+        </Prop>
+      )}
       <Prop label="Assignee" cmd="assignee">
         <AssigneePicker value={issue.assignee} onChange={(assignee) => patch({ assignee })} className="prop-btn">
           <Avatar user={issue.assignee} />
