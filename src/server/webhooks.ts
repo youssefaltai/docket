@@ -16,7 +16,7 @@ import {
   type WebhookResource,
 } from "../shared/types.ts";
 import { type Actor, requireAdminSession } from "./access.ts";
-import { AppError, changed, checkOneOf, db, now, optionalText } from "./db.ts";
+import { AppError, changed, checkOneOf, db, knownAs, now, optionalText } from "./db.ts";
 
 const ALLOW_PRIVATE = process.env.DOCKET_WEBHOOK_ALLOW_PRIVATE === "true";
 const TIMEOUT_MS = Number(process.env.DOCKET_WEBHOOK_TIMEOUT_MS) || 5000; // tests only
@@ -104,13 +104,14 @@ function pathOf(type: WebhookResource, data: any): string {
   return issue ? `/issue/${issue}` : `/doc/${type === "Comment" ? data.document : data.document.slug}`;
 }
 
-/** How someone is known in `workspace`. */
+/** How someone is known in `workspace` (Docket's own account: as itself). */
 function refOf(userId: number, workspace: string): UserRef {
   return db
-    .query<UserRef, [number, string]>(
-      "SELECT m.username, m.name, u.kind FROM workspace_members m JOIN users u ON u.id = m.user_id WHERE m.user_id = ? AND m.workspace = ?",
+    .query<UserRef, [string, number]>(
+      `SELECT ${knownAs("m", "u", "username")} AS username, ${knownAs("m", "u", "name")} AS name, u.kind
+       FROM users u LEFT JOIN workspace_members m ON m.user_id = u.id AND m.workspace = ? WHERE u.id = ?`,
     )
-    .get(userId, workspace)!;
+    .get(workspace, userId)!;
 }
 
 export interface Change {

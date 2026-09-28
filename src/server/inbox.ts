@@ -4,7 +4,7 @@
 import type { SQLQueryBindings } from "bun:sqlite";
 import type { Inbox, Notification, NotificationKind, UserKind } from "../shared/types.ts";
 import { type Actor, requestWorkspace, usernameOf } from "./access.ts";
-import { AppError, changed, db, now } from "./db.ts";
+import { AppError, changed, db, knownAs, now } from "./db.ts";
 import { enqueue } from "./webhooks.ts";
 
 /** An issue or a doc, by row id. */
@@ -100,7 +100,7 @@ const MAX_LIST = 500;
 
 const SELECT = `
   SELECT n.id, n.kind, n.workspace, n.status, n.comment_id, n.created_at, n.read_at,
-    am.username AS actor_username, am.name AS actor_name, au.kind AS actor_kind,
+    ${knownAs("am", "au", "username")} AS actor_username, ${knownAs("am", "au", "name")} AS actor_name, au.kind AS actor_kind,
     t.key || '-' || i.number AS issue_ref, i.title AS issue_title, i.status AS issue_status,
     d.slug AS doc_slug, d.title AS doc_title,
     CASE WHEN n.issue_id IS NOT NULL THEN (SELECT body FROM comments WHERE id = n.comment_id AND issue_id = n.issue_id)

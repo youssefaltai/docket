@@ -494,6 +494,14 @@ const MIGRATIONS: (string | (() => void))[] = [
       .all();
     if (stray.length) throw new Error(`Workflow statuses: issues whose status isn't in the default workflow: ${JSON.stringify(stray)}`);
   },
+  // Auto-close (Linear's per-team settings), both off. users.system marks Docket's own account, which its automated
+  // changes are attributed to: made on first use (so no row changes here), never a login and never a member.
+  `
+  ALTER TABLE teams ADD COLUMN auto_close_parent INTEGER NOT NULL DEFAULT 0 CHECK (auto_close_parent IN (0, 1));
+  ALTER TABLE teams ADD COLUMN auto_close_children INTEGER NOT NULL DEFAULT 0 CHECK (auto_close_children IN (0, 1));
+  ALTER TABLE users ADD COLUMN system INTEGER NOT NULL DEFAULT 0 CHECK (system IN (0, 1));
+  CREATE UNIQUE INDEX users_system ON users(system) WHERE system = 1;
+  `,
 ];
 
 db.run("PRAGMA foreign_keys = OFF"); // a migration may rebuild a table (SQLite's 12-step ALTER); checked before each commit
@@ -524,6 +532,18 @@ export function onChange(fn: typeof listener) {
 export function changed(entity: ServerEvent["entity"], workspace: string, id: string, userId?: number) {
   listener({ type: "changed", entity, workspace, id }, userId);
 }
+
+// --- Docket's own account ---
+
+/**
+ * Docket itself (`users.system = 1`): what its automated changes (auto-close) are attributed to. It has no
+ * membership, so this is how it's known in every workspace, and its username is reserved in all of them.
+ */
+export const SYSTEM_USER = { username: "docket", name: "Docket" } as const;
+
+/** SQL for how a user is known: their membership's `field` (alias `m`), else Docket's own for the system account (alias `u`). */
+export const knownAs = (m: string, u: string, field: keyof typeof SYSTEM_USER) =>
+  `COALESCE(${m}.${field}, CASE WHEN ${u}.system = 1 THEN '${SYSTEM_USER[field]}' END)`;
 
 // --- Validation ---
 
