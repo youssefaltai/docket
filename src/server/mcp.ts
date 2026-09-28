@@ -144,8 +144,10 @@ function details(issue: Issue): string {
   return parts.join("\n\n");
 }
 
-/** One change, compactly: `status todo → in_progress`, `labels +bug −ui`. */
-function change({ kind, from, to }: Activity): string {
+/** One change, compactly: `status todo → in_progress`, `labels +bug −ui`; Docket's own say whose change set them off. */
+function change(row: Activity): string {
+  const { kind, from, to, onBehalfOf } = row;
+  if (onBehalfOf && kind === "status") return `closed the issue, status ${from} → ${to} (after ${at(onBehalfOf)}'s change)`; // an auto-close
   const show = (v: Activity["from"]) => {
     if (v === null || v === 0) return "none"; // 0: no priority
     if (typeof v === "object") return at(v as UserRef);
@@ -384,11 +386,13 @@ function createServer(a: Actor, origin: string): McpServer {
     "update_team",
     {
       description:
-        "Update a team's name or description (people only); only the fields you pass change. Its key and workspace never change. Only do this when asked to.",
+        "Update a team's name, description or auto-close settings (people only); only the fields you pass change. Its key and workspace never change. Only do this when asked to.",
       inputSchema: {
         key: teamKey,
         name: z.string().optional(),
         description: z.string().optional(),
+        autoCloseParent: z.boolean().optional().describe("Close a parent issue (to the team's first completed status) once all its sub-issues are completed or canceled"),
+        autoCloseChildren: z.boolean().optional().describe("When a parent issue is completed or canceled, close its open sub-issues to the same status"),
       },
     },
     writes(({ key, ...patch }) => {
@@ -497,7 +501,7 @@ function createServer(a: Actor, origin: string): McpServer {
     "update_issue",
     {
       description:
-        "Update an issue; only the fields you pass change. Status flow: in_progress when you start, in_review when ready for review, done when finished (or the team's statuses in the started and completed categories; list_teams), canceled instead of deleting (there is no delete). labels, blockedBy and relatedTo replace the whole list, so include existing entries you want to keep, and pass baseUpdatedAt (from get_issue) when replacing them or the description, so you don't overwrite someone else's change. To start work, use claim_issue. Don't reassign an issue someone else holds; use claim_issue. Mark an issue a duplicate with duplicateOf: it's set to its team's Duplicate status and the relation is recorded; use relatedTo for issues that are connected but not duplicates or blockers. Pass null for assignee, delegate, parent or duplicateOf to clear it (clearing duplicateOf leaves the status as it is). Log progress with comment_issue rather than editing the description.",
+        "Update an issue; only the fields you pass change. Status flow: in_progress when you start, in_review when ready for review, done when finished (or the team's statuses in the started and completed categories; list_teams), canceled instead of deleting (there is no delete). labels, blockedBy and relatedTo replace the whole list, so include existing entries you want to keep, and pass baseUpdatedAt (from get_issue) when replacing them or the description, so you don't overwrite someone else's change. To start work, use claim_issue. Don't reassign an issue someone else holds; use claim_issue. Mark an issue a duplicate with duplicateOf: it's set to its team's Duplicate status and the relation is recorded; use relatedTo for issues that are connected but not duplicates or blockers. Pass null for assignee, delegate, parent or duplicateOf to clear it (clearing duplicateOf leaves the status as it is). Log progress with comment_issue rather than editing the description. Closing an issue may also close its parent or its sub-issues, per the teams' auto-close settings: check get_issue after; @docket made those changes, after yours.",
       inputSchema: {
         id: identifier,
         title: title.optional(),

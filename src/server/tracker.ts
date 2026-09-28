@@ -43,7 +43,7 @@ import {
   type WorkflowStatusInput,
   type WorkflowStatusPatch,
 } from "../shared/types.ts";
-import { type Actor, activeMemberId, requestWorkspace, requirePerson } from "./access.ts";
+import { type Actor, activeMemberId, requestWorkspace, requirePerson, systemUserId } from "./access.ts";
 import {
   AppError,
   BUMPED_AT,
@@ -52,6 +52,7 @@ import {
   changed,
   checkOneOf,
   db,
+  knownAs,
   mentionedIn,
   now,
   optionalText,
@@ -88,13 +89,14 @@ function ref(row: Record<string, unknown>, p: string): UserRef | null {
 }
 /**
  * Joins the user `id` (a column) as `alias`: their account, and their membership in `workspace` (an SQL
- * expression, e.g. the row's team's), which holds how they're known there. Read it with `userCols`.
+ * expression, e.g. the row's team's), which holds how they're known there (Docket's own account: as itself).
+ * Read it with `userCols`.
  */
 const userJoin = (alias: string, id: string, workspace: string) =>
   `LEFT JOIN users ${alias} ON ${alias}.id = ${id}
    LEFT JOIN workspace_members ${alias}_m ON ${alias}_m.user_id = ${id} AND ${alias}_m.workspace = ${workspace}`;
 const userCols = (alias: string, p: string) =>
-  `${alias}_m.username AS ${p}_username, ${alias}_m.name AS ${p}_name, ${alias}.kind AS ${p}_kind`;
+  `${knownAs(`${alias}_m`, alias, "username")} AS ${p}_username, ${knownAs(`${alias}_m`, alias, "name")} AS ${p}_name, ${alias}.kind AS ${p}_kind`;
 
 // --- Mentions ---
 
@@ -355,6 +357,8 @@ interface TeamRow {
   name: string;
   description: string;
   default_status: string;
+  auto_close_parent: number; // 0 or 1
+  auto_close_children: number;
   statuses: string; // JSON array of WorkflowStatus, in workflow order
   counts: string; // JSON object: status → issue count, statuses without issues left out
   doc_count: number;
@@ -387,6 +391,8 @@ function toTeam(row: TeamRow): Team {
     description: row.description,
     statuses,
     defaultStatus: row.default_status,
+    autoCloseParent: row.auto_close_parent === 1,
+    autoCloseChildren: row.auto_close_children === 1,
     counts: { ...Object.fromEntries(statuses.map((s) => [s.key, 0])), ...JSON.parse(row.counts) },
     docCount: row.doc_count,
     createdAt: row.created_at,
@@ -422,6 +428,8 @@ export function createTeam(a: Actor, input: TeamInput): Team {
   }
   const name = requireText(input.name, "name");
   const description = optionalText(input.description, "description");
+  const autoCloseParent = checkFlag(input.autoCloseParent ?? false, "autoCloseParent");
+  const autoCloseChildren = checkFlag(input.autoCloseChildren ?? false, "autoCloseChildren");
   if (db.query("SELECT 1 FROM teams WHERE workspace = ? AND key = ?").get(workspace, key)) {
     throw new AppError(`Team key ${key} is taken in this workspace`, 409);
   }
@@ -429,9 +437,9 @@ export function createTeam(a: Actor, input: TeamInput): Team {
   db.transaction(() => {
     const { id } = db
       .query<{ id: number }, SQLQueryBindings[]>(
-        "INSERT INTO teams (key, workspace, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
+        "INSERT INTO teams (key, workspace, name, description, auto_close_parent, auto_close_children, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
       )
-      .get(key, workspace, name, description, time, time)!;
+      .get(key, workspace, name, description, autoCloseParent, autoCloseChildren, time, time)!;
     const insert = db.query("INSERT INTO workflow_statuses (team_id, key, name, category, color, position) VALUES (?, ?, ?, ?, ?, ?)");
     for (const s of DEFAULT_WORKFLOW) insert.run(id, s.key, s.name, s.category, s.color, s.position);
   })();
@@ -439,9 +447,15 @@ export function createTeam(a: Actor, input: TeamInput): Team {
   return toTeam(teamRow(a, key));
 }
 
+/** A team setting's switch, stored as 0 or 1. */
+function checkFlag(value: unknown, field: string): number {
+  if (typeof value !== "boolean") throw new AppError(`${field} must be true or false`);
+  return value ? 1 : 0;
+}
+
 /**
- * Renames or redescribes a team, or sets where its new issues start (a backlog or unstarted status). Teams never
- * change workspace: their issues, people and links belong to it.
+ * Renames or redescribes a team, sets where its new issues start (a backlog or unstarted status), or switches
+ * auto-close. Teams never change workspace: their issues, people and links belong to it.
  */
 export function updateTeam(a: Actor, key: string, patch: TeamPatch & { workspace?: unknown }): Team {
   requirePerson(a, NO_AGENT_TEAMS);
@@ -455,7 +469,11 @@ export function updateTeam(a: Actor, key: string, patch: TeamPatch & { workspace
     if (status.category !== "backlog" && status.category !== "unstarted") throw new AppError("The default status must be in Backlog or Unstarted");
     defaultStatus = status.key;
   }
-  db.query("UPDATE teams SET name = ?, description = ?, default_status = ?, updated_at = ? WHERE id = ?").run(name, description, defaultStatus, now(), row.id);
+  const autoCloseParent = patch.autoCloseParent === undefined ? row.auto_close_parent : checkFlag(patch.autoCloseParent, "autoCloseParent");
+  const autoCloseChildren = patch.autoCloseChildren === undefined ? row.auto_close_children : checkFlag(patch.autoCloseChildren, "autoCloseChildren");
+  db.query(
+    "UPDATE teams SET name = ?, description = ?, default_status = ?, auto_close_parent = ?, auto_close_children = ?, updated_at = ? WHERE id = ?",
+  ).run(name, description, defaultStatus, autoCloseParent, autoCloseChildren, now(), row.id);
   changed("team", row.workspace, row.key);
   return toTeam(teamRow(a, row.key));
 }
@@ -1021,11 +1039,21 @@ function announced(issueId: number, status: string): boolean {
  * Values as they are in memory (users by id, parent and blockers by identifier), stored as JSON.
  * Then the inbox: creating or claiming subscribes the actor; a new assignee or delegate is subscribed and told;
  * a move into in_review or a completed or canceled status tells the subscribers. The webhook event goes first (`was`: see issueEvent).
+ * `a` is the actor, or for Docket's own changes its account with `onBehalfOf`, whose change set them off.
  */
-function logActivity(a: Actor, issueId: number, workspace: string, changes: Change[], time: string, was: Record<string, unknown> = {}) {
-  const insert = db.query("INSERT INTO issue_activity (issue_id, actor_id, kind, from_value, to_value, created_at) VALUES (?, ?, ?, ?, ?, ?)");
+function logActivity(
+  a: { id: number; onBehalfOf?: number },
+  issueId: number,
+  workspace: string,
+  changes: Change[],
+  time: string,
+  was: Record<string, unknown> = {},
+) {
+  const insert = db.query(
+    "INSERT INTO issue_activity (issue_id, actor_id, on_behalf_of_id, kind, from_value, to_value, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+  );
   const json = (kind: ActivityKind, value: unknown) => (NO_VALUES.includes(kind) || value == null ? null : JSON.stringify(value));
-  for (const { kind, from, to } of changes) insert.run(issueId, a.id, kind, json(kind, from), json(kind, to), time);
+  for (const { kind, from, to } of changes) insert.run(issueId, a.id, a.onBehalfOf ?? null, kind, json(kind, from), json(kind, to), time);
   if (changes.length) issueEvent(a, issueId, workspace, changes, time, was);
   const target = { issueId };
   const event = { actorId: a.id, workspace, target };
@@ -1048,7 +1076,7 @@ const userRef = (id: number, workspace: string) =>
  * Queues a mutation's one Issue webhook event: created is `create`, trashed `remove`, anything else `update`, with
  * `updatedFrom` the changed fields' values before (plus `was`: a claim's previous assignee or delegate).
  */
-function issueEvent(a: Actor, issueId: number, workspace: string, changes: Change[], time: string, was: Record<string, unknown>) {
+function issueEvent(a: { id: number }, issueId: number, workspace: string, changes: Change[], time: string, was: Record<string, unknown>) {
   const kinds = changes.map((c) => c.kind);
   const action = kinds.includes("created") ? "create" : kinds.includes("trashed") ? "remove" : "update";
   let updatedFrom: Record<string, unknown> | undefined;
@@ -1095,8 +1123,8 @@ function changes(before: IssueRow, after: IssueRow): Change[] {
 function listActivity(issueId: number, workspace: string): Activity[] {
   const rows = db
     .query<Record<string, unknown>, [string, number]>(
-      `SELECT x.id, x.kind, x.from_value, x.to_value, x.created_at, ${userCols("u", "a")}
-       FROM issue_activity x ${userJoin("u", "x.actor_id", "?")} WHERE x.issue_id = ? ORDER BY x.id`,
+      `SELECT x.id, x.kind, x.from_value, x.to_value, x.created_at, ${userCols("u", "a")}, ${userCols("o", "o")}
+       FROM issue_activity x ${userJoin("u", "x.actor_id", "?1")} ${userJoin("o", "x.on_behalf_of_id", "?1")} WHERE x.issue_id = ?2 ORDER BY x.id`,
     )
     .all(workspace, issueId)
     .map((r) => ({ r, from: JSON.parse((r.from_value as string | null) ?? "null"), to: JSON.parse((r.to_value as string | null) ?? "null") }));
@@ -1113,6 +1141,7 @@ function listActivity(issueId: number, workspace: string): Activity[] {
     id: r.id as number,
     kind: r.kind as ActivityKind,
     actor: ref(r, "a")!,
+    onBehalfOf: ref(r, "o"),
     from: people(r) && from !== null ? (users.get(from) ?? null) : from,
     to: people(r) && to !== null ? (users.get(to) ?? null) : to,
     createdAt: r.created_at as string,
@@ -1275,12 +1304,57 @@ export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Is
     const refs = bumpIssues(related, time);
     if (cols.description !== undefined) saveMentions(a, workspace, `issue:${id}`, { issueId: id }, cols.description as string, time);
     logActivity(a, id, workspace, changes(before, read.get(id)!), time);
-    return refs;
+    const closed = closing === true && !isClosed(before.status_category) ? autoClose(a.id, id, workspace, time) : [];
+    return [...refs, ...closed.map((c) => ownerRef("issue", c))];
   }).immediate();
   const issue = getIssue(a, identifier);
   changed("issue", workspace, issue.id);
-  for (const r of refs) changed("issue", workspace, r);
+  for (const r of new Set(refs)) changed("issue", workspace, r);
   return issue;
+}
+
+// --- Auto-close (Linear's per-team settings) ---
+
+type IssueNode = { id: number; status: string; category: StatusCategory; team_id: number; parent_id: number | null; deleted_at: string | null };
+const NODE_SELECT = `SELECT i.id, i.status, ws.category, i.team_id, i.parent_id, i.deleted_at FROM issues i
+  JOIN workflow_statuses ws ON ws.team_id = i.team_id AND ws.key = i.status`;
+const CLOSED_SQL = `(${CLOSED_CATEGORIES.map((c) => `'${c}'`).join(", ")})`;
+const teamFlag = (teamId: number, flag: "auto_close_parent" | "auto_close_children") =>
+  db.query<{ on: number }, [number]>(`SELECT ${flag} AS "on" FROM teams WHERE id = ?`).get(teamId)!.on === 1;
+
+/**
+ * What closing issue `id` sets off, in the same transaction, each change made by Docket on behalf of `by`: when its
+ * team auto-closes sub-issues, its live open sub-issues close to the same status (their own team's: the same key, else
+ * the first of that category that isn't Duplicate); when its parent's team auto-closes parents and every live sub-issue
+ * of the parent is now completed or canceled, the parent closes to its team's first completed status. Each close sets
+ * off the same, so it cascades down the tree and up the chain (both acyclic). Reopening sets off nothing. Returns the
+ * ids it closed.
+ */
+function autoClose(by: number, id: number, workspace: string, time: string): number[] {
+  const node = db.query<IssueNode, [number]>(`${NODE_SELECT} WHERE i.id = ?`);
+  const closed: number[] = [];
+  const close = (issue: IssueNode, status: string) => {
+    db.query(`UPDATE issues SET status = ?, completed_at = ?, ${BUMPED_AT} WHERE id = ?`).run(status, time, time, time, issue.id);
+    logActivity({ id: systemUserId(), onBehalfOf: by }, issue.id, workspace, [{ kind: "status", from: issue.status, to: status }], time);
+    closed.push(issue.id);
+    cascade(issue.id);
+  };
+  const cascade = (from: number) => {
+    const issue = node.get(from)!;
+    if (teamFlag(issue.team_id, "auto_close_children")) {
+      const open = db.query<IssueNode, [number]>(`${NODE_SELECT} WHERE i.parent_id = ? AND i.deleted_at IS NULL AND ws.category NOT IN ${CLOSED_SQL} ORDER BY i.id`);
+      for (const child of open.all(from)) {
+        const statuses = teamStatuses(child.team_id).filter((s) => s.category === issue.category && s.key !== DUPLICATE_STATUS);
+        close(child, (statuses.find((s) => s.key === issue.status) ?? statuses[0]!).key);
+      }
+    }
+    const parent = issue.parent_id === null ? null : node.get(issue.parent_id)!;
+    if (!parent || parent.deleted_at || isClosed(parent.category) || !teamFlag(parent.team_id, "auto_close_parent")) return;
+    const stillOpen = db.query(`${NODE_SELECT} WHERE i.parent_id = ? AND i.deleted_at IS NULL AND ws.category NOT IN ${CLOSED_SQL} LIMIT 1`).get(parent.id);
+    if (!stillOpen) close(parent, teamStatuses(parent.team_id).find((s) => s.category === "completed")!.key);
+  };
+  cascade(id);
+  return closed;
 }
 
 /** Issues that gain or lose a relation when `id` enters or leaves the trash: its parent, sub-issues, blockers, related and duplicates. */

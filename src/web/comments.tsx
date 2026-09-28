@@ -282,6 +282,7 @@ function HistoryLine({ line, team }: { line: Line; team: string }) {
             {describe(r, line.actor, statusName)}
           </Fragment>
         ))}
+        {line.rows[0]!.onBehalfOf && ` (after @${line.rows[0]!.onBehalfOf.username}'s change)`}
         {" · "}
         <time title={fullDate(line.createdAt)}>{ago(line.createdAt)}</time>
       </span>
@@ -290,7 +291,7 @@ function HistoryLine({ line, team }: { line: Line; team: string }) {
 }
 
 /** One change in words: "moved from Todo to In Progress", "assigned to Ana", "added label bug". */
-function describe({ kind, from, to }: Activity, actor: UserRef, statusName: (key: unknown) => string): ReactNode {
+function describe({ kind, from, to, onBehalfOf }: Activity, actor: UserRef, statusName: (key: unknown) => string): ReactNode {
   const name = (text: string) => (
     <b className="event-name" dir="auto">
       {text}
@@ -338,7 +339,7 @@ function describe({ kind, from, to }: Activity, actor: UserRef, statusName: (key
     case "description":
       return "updated the description";
     case "status":
-      return `moved from ${statusName(from)} to ${statusName(to)}`;
+      return onBehalfOf ? "closed the issue" : `moved from ${statusName(from)} to ${statusName(to)}`; // Docket's: an auto-close
     case "priority":
       return to ? `set priority to ${PRIORITY_LABELS[to as Priority]}` : "removed priority";
     case "assignee":

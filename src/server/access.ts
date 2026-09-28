@@ -20,7 +20,7 @@ import {
   type WorkspaceMember,
   type WorkspacePatch,
 } from "../shared/types.ts";
-import { AppError, changed, checkOneOf, db, exists, now, pickSlug, requireText } from "./db.ts";
+import { AppError, SYSTEM_USER, changed, checkOneOf, db, exists, now, pickSlug, requireText } from "./db.ts";
 
 /** Who a request acts as. Built fresh per request, so role and suspension changes apply at once. */
 export interface Actor {
@@ -107,8 +107,8 @@ export function usernameOf(a: Actor): string | null {
   return workspace ? profileOf(a.id, workspace).username : null;
 }
 
-// "me" means the caller wherever a username is taken.
-const RESERVED = ["me"];
+// "me" means the caller wherever a username is taken; "docket" is Docket's own account, in every workspace.
+const RESERVED = ["me", SYSTEM_USER.username];
 
 /** A username free in `workspace` (`self` may keep their own); unique among its people and agents. */
 function checkUsername(value: unknown, workspace: string, self = -1): string {
@@ -229,7 +229,7 @@ export function sessionActor(token: string): Actor | null {
   const row = db
     .query<AccountRow & { session_id: number; last_seen_at: string }, [string]>(
       `SELECT u.*, s.id AS session_id, s.last_seen_at FROM sessions s JOIN users u ON u.id = s.user_id
-       WHERE s.token_hash = ?`,
+       WHERE s.token_hash = ? AND u.system = 0`,
     )
     .get(hash(token));
   if (!row) return null;
@@ -329,6 +329,18 @@ export function activeMemberId(a: Actor, workspace: string, value: string, kind:
     throw new AppError(kind === "person" ? `${field}: ${username} is an agent; set it as the delegate` : `${field}: ${username} isn't an agent`);
   }
   return row.id;
+}
+
+/**
+ * Docket's own account (SYSTEM_USER), made the first time Docket changes something itself. It's never a member,
+ * so it can't be assigned, delegated to or mentioned, and it never signs in: nothing issues it a session, key or
+ * code, a key only works for a member, and `sessionActor` refuses a session naming it.
+ */
+export function systemUserId(): number {
+  const row =
+    db.query<{ id: number }, []>("SELECT id FROM users WHERE system = 1").get() ??
+    db.query<{ id: number }, [string]>("INSERT INTO users (kind, system, created_at) VALUES ('agent', 1, ?) RETURNING id").get(now());
+  return row!.id;
 }
 
 // --- Setup (first run) ---

@@ -183,6 +183,8 @@ export interface Team {
   description: string;
   statuses: WorkflowStatus[]; // its workflow: category order, then position
   defaultStatus: string; // where new issues start: a backlog or unstarted key
+  autoCloseParent: boolean; // a parent here closes (first completed status) once all its sub-issues are completed or canceled
+  autoCloseChildren: boolean; // closing a parent here closes its open sub-issues to the same status
   counts: Record<string, number>; // live issues per status key; 0 for each of the team's statuses without any
   docCount: number;
   createdAt: string; // ISO 8601
@@ -194,6 +196,8 @@ export interface TeamInput {
   workspace?: string; // optional: teams are created in the request's workspace, and this must name it if given
   name: string;
   description?: string;
+  autoCloseParent?: boolean; // default false
+  autoCloseChildren?: boolean; // default false
 }
 
 export type TeamPatch = Partial<Omit<TeamInput, "key" | "workspace">> & { defaultStatus?: string }; // the key and workspace never change
@@ -290,7 +294,8 @@ export type ActivityValue = string | number | string[] | UserRef | null;
 export interface Activity {
   id: number;
   kind: ActivityKind;
-  actor: UserRef;
+  actor: UserRef; // @docket (Docket itself) for its automated changes, e.g. an auto-close
+  onBehalfOf: UserRef | null; // an automated change: whose change set it off
   from: ActivityValue;
   to: ActivityValue;
   createdAt: string; // the same for every change one mutation made

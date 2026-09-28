@@ -173,7 +173,7 @@ export const apiRoutes = {
       tracker.updateTeam(
         actorOf(req),
         req.params.key,
-        await patch(req, "a team", ["name", "description", "defaultStatus"], {
+        await patch(req, "a team", ["name", "description", "defaultStatus", "autoCloseParent", "autoCloseChildren"], {
           workspace: "Teams can't move between workspaces",
           key: "A team's key never changes",
         }),

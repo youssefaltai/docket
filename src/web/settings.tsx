@@ -908,6 +908,7 @@ export function TeamSettingsPage({ teamKey }: { teamKey: string }) {
             <div className="settings">
               <TeamGeneral key={team.key} team={team} />
               <Workflow team={team} />
+              <Automations team={team} />
             </div>
           )
         )}
@@ -993,6 +994,28 @@ function Workflow({ team }: { team: Team }) {
           </div>
         );
       })}
+    </Section>
+  );
+}
+
+/** Linear's auto-close switches, each saved as it's flipped. */
+function Automations({ team }: { team: Team }) {
+  const { reloadTeams } = useApp();
+  const toggle = (patch: { autoCloseParent: boolean } | { autoCloseChildren: boolean }) => api.updateTeam(team.key, patch).then(reloadTeams, errorToast);
+  return (
+    <Section title="Automations">
+      <label className="workflow-switch">
+        <input type="checkbox" checked={team.autoCloseParent} onChange={(e) => toggle({ autoCloseParent: e.target.checked })} />
+        <span>
+          <b>Auto-close parent issues</b> <span className="muted">When all its sub-issues are done or canceled, a parent issue is marked done.</span>
+        </span>
+      </label>
+      <label className="workflow-switch">
+        <input type="checkbox" checked={team.autoCloseChildren} onChange={(e) => toggle({ autoCloseChildren: e.target.checked })} />
+        <span>
+          <b>Auto-close sub-issues</b> <span className="muted">When a parent issue is done or canceled, its open sub-issues follow.</span>
+        </span>
+      </label>
     </Section>
   );
 }
