@@ -1,7 +1,7 @@
 // App shell: boot, sidebar, routing, live updates, global shortcuts.
 import { Fragment, StrictMode, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
-import type { Inbox, IssueInput, Label, Team, Workspace, WorkspaceMember } from "../shared/types";
+import type { CustomView, CustomViewInput, Inbox, IssueInput, Label, Team, Workspace, WorkspaceMember } from "../shared/types";
 import { api, connectionStore, setCurrentWorkspace, setOnAccessLost, setOnUnauthorized, store, subscribe } from "./api";
 import { auth, getMe, getYou, loadMe } from "./auth";
 import { ChatDock, ChatNavItem } from "./chat";
@@ -12,13 +12,14 @@ import { IssuePage } from "./issue";
 import { IssuesView } from "./issues";
 import { Login, Setup } from "./login";
 import { MyIssuesView } from "./myissues";
-import { NewDocModal, NewIssueModal, NewProjectModal, NewTeamModal, NewWorkspaceModal } from "./modals";
+import { NewDocModal, NewIssueModal, NewProjectModal, NewTeamModal, NewViewModal, NewWorkspaceModal } from "./modals";
 import { Picker } from "./pickers";
 import { ProjectPage, ProjectsView } from "./projects";
 import { SettingsPage, TeamSettingsPage } from "./settings";
 import { ShortcutsHelp } from "./shortcuts";
 import { TrashView } from "./trash";
 import { TriageView } from "./triage";
+import { CustomViewPage, ViewsPage } from "./views";
 import {
   AppContext,
   Avatar,
@@ -36,8 +37,10 @@ import {
   PlusIcon,
   ProjectIcon,
   SearchIcon,
+  StarIcon,
   TeamMark,
   Toaster,
+  ViewsIcon,
   Confirm,
   cls,
   errorToast,
@@ -64,6 +67,7 @@ type ModalState =
   | { kind: "project"; team?: string }
   | { kind: "team" }
   | { kind: "workspace" }
+  | { kind: "view"; defaults: Omit<CustomViewInput, "name"> }
   | null;
 
 function App() {
@@ -183,6 +187,16 @@ function App() {
     return () => void (stale = true);
   }, [currentKey, live, teamsTick]);
 
+  // The workspace's views: the sidebar lists the ones you starred.
+  const [views, setViews] = useState<{ workspace: string; list: CustomView[] } | null>(null);
+  const [viewsTick, setViewsTick] = useState(0);
+  useEffect(() => {
+    if (!currentKey) return;
+    let stale = false;
+    api.views().then((list) => !stale && setViews({ workspace: currentKey, list }), errorToast);
+    return () => void (stale = true);
+  }, [currentKey, live, viewsTick]);
+
   useEffect(() => setNavOpen(false), [path]);
 
   const workspace = workspaces?.find((w) => w.key === currentKey) ?? null;
@@ -210,7 +224,9 @@ function App() {
           ? "/inbox"
           : route.view === "my"
             ? `/my/${route.tab}`
-            : "";
+            : route.view === "views" || route.view === "customview"
+              ? "/views"
+              : "";
   const switchWorkspace = (key: string) => navigate(`/${key}${same}`);
 
   // Access changed under us (the socket closed with 4401): ask who we are now. A 401 goes to the sign-in
@@ -249,6 +265,12 @@ function App() {
     reloadInbox: loadInbox,
     loadDirectory,
     reloadTeams: () => setTeamsTick((t) => t + 1),
+    views: views?.workspace === currentKey ? views.list : null,
+    reloadViews: () => setViewsTick((t) => t + 1),
+    newView: (defaults = {}) => {
+      loadDirectory();
+      setModal({ kind: "view", defaults });
+    },
     newIssue: (defaults = {}) => {
       const team = pickTeam(defaults.team);
       if (!team) return setModal({ kind: "team" });
@@ -284,7 +306,7 @@ function App() {
       chord.current = null;
       if (key !== "Escape") {
         const k = key.toLowerCase();
-        const to = ({ i: "/inbox", m: "/my", d: "/docs", s: "/settings/account" } as Record<string, string>)[k];
+        const to = ({ i: "/inbox", m: "/my", d: "/docs", v: "/views", s: "/settings/account" } as Record<string, string>)[k];
         if (to) {
           e.preventDefault();
           navigate(to);
@@ -313,7 +335,7 @@ function App() {
       else if (route.view === "doc") navigate(nav.lastDocs);
       else if (route.view === "project") navigate(nav.lastProjects);
       else (document.activeElement as HTMLElement | null)?.blur?.();
-    } else if (["issues", "triage", "docs", "projects", "project", "inbox", "my"].includes(route.view) && (key === "j" || key === "k" || key === "ArrowDown" || key === "ArrowUp")) {
+    } else if (["issues", "triage", "docs", "projects", "project", "inbox", "my", "views", "customview"].includes(route.view) && (key === "j" || key === "k" || key === "ArrowDown" || key === "ArrowUp")) {
       if (moveFocus(key === "j" || key === "ArrowDown" ? 1 : -1)) e.preventDefault();
     }
   });
@@ -343,6 +365,10 @@ function App() {
     <InboxView />
   ) : route.view === "my" ? (
     <MyIssuesView key={route.tab} tab={route.tab} />
+  ) : route.view === "views" ? (
+    <ViewsPage />
+  ) : route.view === "customview" ? (
+    <CustomViewPage key={route.id} id={route.id} />
   ) : route.view === "issue" ? (
     <IssuePage key={route.id} id={route.id} />
   ) : route.view === "doc" ? (
@@ -383,6 +409,7 @@ function App() {
         {modal?.kind === "doc" && <NewDocModal team={modal.team} project={modal.project} onClose={() => setModal(null)} />}
         {modal?.kind === "project" && <NewProjectModal team={modal.team} onClose={() => setModal(null)} />}
         {modal?.kind === "team" && <NewTeamModal onClose={() => setModal(null)} />}
+        {modal?.kind === "view" && <NewViewModal defaults={modal.defaults} onClose={() => setModal(null)} />}
         {modal?.kind === "workspace" && (
           <NewWorkspaceModal
             onCreate={(w) => {
@@ -408,7 +435,8 @@ function routeTeam(route: Route, docTeam: string | null): string | null {
 }
 
 function Sidebar({ route, active, onSwitch }: { route: Route; active: string | null; onSwitch: (key: string) => void }) {
-  const { workspaces, workspace, teams, inbox, newIssue, newTeam, newWorkspace } = useApp();
+  const { workspaces, workspace, teams, views, inbox, newIssue, newTeam, newWorkspace } = useApp();
+  const favorites = views?.filter((v) => v.favorite) ?? [];
   const total = teams?.reduce((n, t) => n + openCount(t), 0) ?? 0;
   const docs = teams?.reduce((n, t) => n + t.docCount, 0) ?? 0;
   const options = [
@@ -469,7 +497,27 @@ function Sidebar({ route, active, onSwitch }: { route: Route; active: string | n
           <ProjectIcon />
           <span className="nav-label">Projects</span>
         </Link>
+        <Link
+          to="/views"
+          className={cls("nav-item", (on("views") || (route.view === "customview" && !favorites.some((v) => v.id === route.id))) && "active")}
+        >
+          <ViewsIcon />
+          <span className="nav-label">Views</span>
+        </Link>
         {getMe().chat && <ChatNavItem />}
+        {favorites.length > 0 && (
+          <div className="nav-section">
+            <span>Favorites</span>
+          </div>
+        )}
+        {favorites.map((v) => (
+          <Link key={v.id} to={`/view/${v.id}`} className={cls("nav-item", route.view === "customview" && route.id === v.id && "active")}>
+            <StarIcon className="nav-star" />
+            <span className="nav-label" dir="auto">
+              {v.name}
+            </span>
+          </Link>
+        ))}
         <div className="nav-section">
           <span>Teams</span>
           <button className="icon-btn xs" onClick={newTeam} aria-label="New team" title="New team">

@@ -1,6 +1,6 @@
 // New issue, doc, team and workspace dialogs.
 import { useState, type ReactNode } from "react";
-import { PRIORITY_LABELS, PROJECT_STATUS_LABELS, type IssueInput, type ProjectStatus, type UserRef, type Workspace } from "../shared/types";
+import { PRIORITY_LABELS, PROJECT_STATUS_LABELS, type CustomViewInput, type IssueInput, type ProjectStatus, type UserRef, type Workspace } from "../shared/types";
 import { api } from "./api";
 import { RichEditor } from "./editor";
 import {
@@ -478,6 +478,37 @@ export function NewWorkspaceModal({ onCreate, onClose }: { onCreate: (w: Workspa
     >
       <Field label="Name" hint="A workspace groups related teams, with their issues and docs.">
         <input className="input" autoFocus dir="auto" placeholder="Acme" value={name} onChange={(e) => setName(e.target.value)} />
+      </Field>
+    </FormModal>
+  );
+}
+
+/** Saves a view in the current workspace, from the filter and layout it was opened with (none: every issue), then opens it. */
+export function NewViewModal({ defaults, onClose }: { defaults: Omit<CustomViewInput, "name">; onClose: () => void }) {
+  const app = useApp();
+  const [name, setName] = useState("");
+  return (
+    <FormModal
+      title="New view"
+      aside={
+        app.workspace && (
+          <span className="muted" dir="auto">
+            in {app.workspace.name}
+          </span>
+        )
+      }
+      action="Create view"
+      ready={!!name.trim()}
+      onSubmit={async () => {
+        const view = await api.createView({ ...defaults, name: name.trim() });
+        app.reloadViews();
+        navigate(`/view/${view.id}`);
+        onClose();
+      }}
+      onClose={onClose}
+    >
+      <Field label="Name" hint="Everyone in the workspace can see and use it. Change its filters and display on its page.">
+        <input className="input" autoFocus dir="auto" placeholder="Open bugs" value={name} onChange={(e) => setName(e.target.value)} />
       </Field>
     </FormModal>
   );

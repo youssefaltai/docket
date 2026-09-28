@@ -4,6 +4,9 @@ import type {
   Attachment,
   BulkIssuePatch,
   BulkIssueResult,
+  CustomView,
+  CustomViewInput,
+  CustomViewPatch,
   Document,
   DocumentFilter,
   DocumentInput,
@@ -201,6 +204,13 @@ export const api = {
   updateLabel: (id: number, patch: LabelPatch) => request<Label>("PATCH", `/api/labels/${id}`, patch),
   /** For good: it comes off every issue carrying it. */
   deleteLabel: (id: number) => request<Label>("DELETE", `/api/labels/${id}`),
+  views: () => request<CustomView[]>("GET", "/api/views"),
+  view: (id: number) => request<CustomView>("GET", `/api/views/${id}`),
+  createView: (input: CustomViewInput) => request<CustomView>("POST", "/api/views", input),
+  updateView: (id: number, patch: CustomViewPatch) => inOrder(`view:${id}`, () => request<CustomView>("PATCH", `/api/views/${id}`, patch)),
+  deleteView: (id: number) => request<CustomView>("DELETE", `/api/views/${id}`),
+  /** Stars it into your sidebar, or unstars it: yours alone. */
+  favoriteView: (id: number, on: boolean) => request<CustomView>(on ? "PUT" : "DELETE", `/api/views/${id}/favorite`),
   /** Which of your workspaces a link made before URLs carried one points into (404 if none). */
   locate: (what: { issue: string } | { doc: string } | { team: string }) =>
     request<{ workspace: string }>("GET", `/api/locate?${new URLSearchParams(what)}`),

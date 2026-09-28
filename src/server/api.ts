@@ -1,5 +1,5 @@
 import type { BunRequest } from "bun";
-import type { DocumentInput, IssueFilter, IssueInput, LabelInput, MilestoneInput, ProjectInput, TeamInput, WebhookInput, WorkflowStatusInput, WorkspaceInput } from "../shared/types.ts";
+import type { CustomViewInput, DocumentInput, IssueFilter, IssueInput, LabelInput, MilestoneInput, ProjectInput, TeamInput, WebhookInput, WorkflowStatusInput, WorkspaceInput } from "../shared/types.ts";
 import * as access from "./access.ts";
 import { actorOf, isJson } from "./auth.ts";
 import { AppError } from "./db.ts";
@@ -37,14 +37,14 @@ async function body<T = Record<string, unknown>>(req: Request): Promise<T> {
  * A PATCH body with only the fields that can change: anything else is 400 naming it, so a typo or an
  * unsupported change (moving a team to another workspace) doesn't pass as a silent 200.
  */
-async function patch(req: Request, what: string, fields: readonly string[], why: Record<string, string> = {}) {
+async function patch<T = Record<string, unknown>>(req: Request, what: string, fields: readonly string[], why: Record<string, string> = {}): Promise<T> {
   const data = await body(req);
   for (const field of Object.keys(data)) {
     if (!fields.includes(field)) {
       throw new AppError(Object.hasOwn(why, field) ? why[field]! : `Unknown field "${field}" for ${what}: use ${fields.join(", ")}`);
     }
   }
-  return data;
+  return data as T;
 }
 
 const ISSUE_FIELDS = ["title", "description", "team", "status", "priority", "labels", "assignee", "delegate", "parent", "blockedBy", "relatedTo", "duplicateOf", "dueOn", "estimate", "project", "milestone", "baseUpdatedAt"];
@@ -320,6 +320,22 @@ export const apiRoutes = {
       tracker.updateMilestone(actorOf(req), req.params.slug, req.params.id, await patch(req, "a milestone", MILESTONE_FIELDS)),
     ),
     DELETE: handle<"/api/projects/:slug/milestones/:id">((req) => tracker.deleteMilestone(actorOf(req), req.params.slug, req.params.id)),
+  },
+  // --- Views ---
+  "/api/views": {
+    GET: handle((req) => tracker.listViews(actorOf(req))),
+    POST: handle(async (req) => tracker.createView(actorOf(req), await patch<CustomViewInput>(req, "a view", ["name", "workspace", "filter", "display"])), 201),
+  },
+  "/api/views/:id": {
+    GET: handle<"/api/views/:id">((req) => tracker.getView(actorOf(req), req.params.id)),
+    PATCH: handle<"/api/views/:id">(async (req) =>
+      tracker.updateView(actorOf(req), req.params.id, await patch(req, "a view", ["name", "filter", "display"], { workspace: "Views can't move between workspaces" })),
+    ),
+    DELETE: handle<"/api/views/:id">((req) => tracker.deleteView(actorOf(req), req.params.id)),
+  },
+  "/api/views/:id/favorite": {
+    PUT: handle<"/api/views/:id/favorite">((req) => tracker.favoriteView(actorOf(req), req.params.id, true)),
+    DELETE: handle<"/api/views/:id/favorite">((req) => tracker.favoriteView(actorOf(req), req.params.id, false)),
   },
 
   // --- Inbox ---

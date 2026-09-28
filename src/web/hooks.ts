@@ -10,6 +10,7 @@ import {
   STATUS_CATEGORIES,
   type IssuePatch,
   type IssueSummary,
+  type OrderBy,
   type Priority,
   type StatusCategory,
   type Team,
@@ -246,4 +247,10 @@ export function sortIssues<T extends IssueSummary>(list: T[], teams: Team[] | nu
     const [x, y] = [status.get(a)!, status.get(b)!];
     return rank(x) - rank(y) || x.position - y.position || priorityRank(a.priority) - priorityRank(b.priority) || b.updatedAt.localeCompare(a.updatedAt);
   });
+}
+
+/** A list's order within each group (Linear's ordering): priority (1→4, none last), else newest updated or created first. */
+export function orderIssues<T extends IssueSummary>(list: T[], by: OrderBy): T[] {
+  const time = by === "created" ? "createdAt" : "updatedAt";
+  return [...list].sort((a, b) => (by === "priority" ? priorityRank(a.priority) - priorityRank(b.priority) : 0) || b[time].localeCompare(a[time]));
 }

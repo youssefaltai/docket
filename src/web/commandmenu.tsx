@@ -16,7 +16,9 @@ import {
   ProjectIcon,
   SettingsIcon,
   IssueStatusIcon,
+  StarIcon,
   TeamMark,
+  ViewsIcon,
   cls,
   navigate,
   parseRoute,
@@ -33,7 +35,7 @@ interface Item {
   label: string;
   prefix?: string;
   icon?: ReactNode;
-  group: "Actions" | "Issues" | "Docs";
+  group: "Actions" | "Views" | "Issues" | "Docs";
   run: () => void;
 }
 
@@ -138,6 +140,7 @@ export function CommandMenu() {
       { key: "new-project", label: "New project", icon: <ProjectIcon />, group: "Actions", run: act(() => app.newProject()) },
       { key: "new-team", label: "New team", icon: <PlusIcon />, group: "Actions", run: act(app.newTeam) },
       { key: "new-workspace", label: "New workspace", icon: <PlusIcon />, group: "Actions", run: act(app.newWorkspace) },
+      { key: "new-view", label: "New view", icon: <ViewsIcon />, group: "Actions", run: act(() => app.newView()) },
       { key: "go-inbox", label: "Go to Inbox", icon: <InboxIcon />, group: "Actions", run: go("/inbox") },
       { key: "go-my", label: "Go to My Issues", icon: <IssuesIcon />, group: "Actions", run: go("/my") },
       ...MY_TABS.map((t): Item => ({
@@ -150,6 +153,7 @@ export function CommandMenu() {
       { key: "go-issues", label: "Go to All issues", icon: <IssuesIcon />, group: "Actions", run: go("/") },
       { key: "go-docs", label: "Go to All docs", icon: <DocIcon />, group: "Actions", run: go("/docs") },
       { key: "go-projects", label: "Go to Projects", icon: <ProjectIcon />, group: "Actions", run: go("/projects") },
+      { key: "go-views", label: "Go to Views", icon: <ViewsIcon />, group: "Actions", run: go("/views") },
       { key: "go-settings", label: "Go to Settings", icon: <SettingsIcon />, group: "Actions", run: go("/settings/account") },
     ];
     if (app.workspace?.role === "admin")
@@ -163,11 +167,11 @@ export function CommandMenu() {
           group: "Actions",
           run: act(() => app.switchWorkspace(w.key)),
         });
-    // Toggle List/Board: only where that segmented control is on screen (issues and My Issues pages).
-    if (route.view === "issues" || route.view === "my") {
+    // Toggle List/Board: only where that segmented control is on screen and enabled (issues, My Issues and view pages).
+    if (route.view === "issues" || route.view === "my" || route.view === "customview") {
       const seg = document.querySelector<HTMLElement>('.segmented[aria-label="Layout"]');
       const current = seg?.querySelector<HTMLButtonElement>("button.on");
-      const other = seg?.querySelector<HTMLButtonElement>("button:not(.on)");
+      const other = seg?.querySelector<HTMLButtonElement>("button:not(.on):not(:disabled)");
       if (current && other) {
         const toBoard = current.title === "List";
         actions.push({
@@ -203,7 +207,13 @@ export function CommandMenu() {
       (d): Item => ({ key: d.slug, label: d.title, icon: <DocIcon />, group: "Docs", run: go(`/doc/${d.slug}`) }),
     );
 
-    return [...pick(actions, q, (a) => [a.label], q ? 8 : actions.length), ...issueItems, ...docItems];
+    // Views: your starred ones up front; typing finds any of the workspace's by name.
+    const views = app.views ?? [];
+    const viewItems = (q ? pick(views, q, (v) => [v.name], 5) : views.filter((v) => v.favorite)).map(
+      (v): Item => ({ key: `view-${v.id}`, label: v.name, icon: v.favorite ? <StarIcon /> : <ViewsIcon />, group: "Views", run: go(`/view/${v.id}`) }),
+    );
+
+    return [...pick(actions, q, (a) => [a.label], q ? 8 : actions.length), ...viewItems, ...issueItems, ...docItems];
   }, [open, query, app, route.view, index, docs]);
 
   const current = Math.min(active, items.length - 1);
@@ -231,7 +241,7 @@ export function CommandMenu() {
           aria-activedescendant={items[current] ? optionId(current) : undefined}
           autoFocus
           value={query}
-          placeholder="Search actions, issues and docs…"
+          placeholder="Search actions, views, issues and docs…"
           dir="auto"
           onChange={(e) => {
             setQuery(e.target.value);

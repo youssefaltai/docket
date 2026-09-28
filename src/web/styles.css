@@ -3354,3 +3354,33 @@ textarea.input {
     min-width: 0;
   }
 }
+
+/* ---------- Views ---------- */
+
+.icon-btn.starred {
+  color: #e8a800;
+}
+.icon-btn.starred > svg,
+.nav-item > .nav-star {
+  fill: currentColor;
+}
+.view-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.view-new {
+  margin-left: auto;
+}
+.view-by {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+/* A view only its creator or an admin can change: its filters and display show, but don't open. */
+.chip:disabled,
+.segmented button:disabled {
+  opacity: 0.6;
+  pointer-events: none;
+}
