@@ -45,6 +45,7 @@ import {
   navigate,
   toast,
   useApp,
+  EditorTeam,
   useRun,
 } from "./ui";
 
@@ -183,16 +184,18 @@ export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueIn
           }}
         />
         {describing ? (
-          <RichEditor
-            className="new-desc"
-            label="Description"
-            placeholder="Add description…"
-            value={description}
-            onChange={set("description")}
-            autoFocus={describing === "focus"}
-            onSubmit={submit}
-            onCancel={onClose}
-          />
+          <EditorTeam.Provider value={team}>
+            <RichEditor
+              className="new-desc"
+              label="Description"
+              placeholder="Add description…"
+              value={description}
+              onChange={set("description")}
+              autoFocus={describing === "focus"}
+              onSubmit={submit}
+              onCancel={onClose}
+            />
+          </EditorTeam.Provider>
         ) : (
           <button className="new-desc new-desc-idle" onClick={() => setDescribing("focus")} onFocus={() => setDescribing("focus")}>
             Add description…
@@ -208,7 +211,7 @@ export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueIn
           <PriorityIcon priority={priority} />
           {priority ? PRIORITY_LABELS[priority] : "Priority"}
         </PriorityPicker>
-        <AssigneePicker value={assignee} onChange={set("assignee")} className="chip">
+        <AssigneePicker team={team} value={assignee} onChange={set("assignee")} className="chip">
           <Avatar user={assignee} />
           <span dir="auto">{assignee?.name ?? "Assignee"}</span>
         </AssigneePicker>
@@ -454,6 +457,7 @@ export function NewTeamModal({ onClose }: { onClose: () => void }) {
   const [name, setName] = useState("");
   const [customKey, setCustomKey] = useState<string | null>(null);
   const [description, setDescription] = useState("");
+  const [isPrivate, setPrivate] = useState(false);
   const key = customKey ?? deriveKey(name);
   const workspace = app.workspace;
 
@@ -474,6 +478,7 @@ export function NewTeamModal({ onClose }: { onClose: () => void }) {
           key,
           name: name.trim(),
           description: description.trim() || undefined,
+          private: isPrivate,
         });
         app.reloadTeams();
         navigate(`/t/${team.key}`);
@@ -501,6 +506,12 @@ export function NewTeamModal({ onClose }: { onClose: () => void }) {
       >
         <textarea className="input" dir="auto" rows={2} value={description} onChange={(e) => setDescription(e.target.value)} />
       </Field>
+      <label className="workflow-switch">
+        <input type="checkbox" checked={isPrivate} onChange={(e) => setPrivate(e.target.checked)} />
+        <span>
+          <b>Private</b> <span className="muted">Only people you add see it, its issues and docs.</span>
+        </span>
+      </label>
     </FormModal>
   );
 }

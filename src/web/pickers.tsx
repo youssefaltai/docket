@@ -44,6 +44,7 @@ import {
   labelColor,
   labelGroupOf,
   useApp,
+  seesTeam,
 } from "./ui";
 
 interface Option {
@@ -249,11 +250,11 @@ export const userOption = (user: UserRef): Option => ({
   icon: <Avatar user={user} />,
 });
 
-/** Active members of the current workspace of one kind (people assign, agents are delegates), you first. */
-export function useMembers(kind: UserKind): UserRef[] {
-  const users = useApp()
-    .members.filter((m) => !m.suspendedAt && !m.integration && m.user.kind === kind)
-    .map((m) => m.user);
+/** Active members of the current workspace of one kind (people assign, agents are delegates), you first; with `team`, who see it. */
+export function useMembers(kind: UserKind, teamKey?: string): UserRef[] {
+  const { members, teams } = useApp();
+  const team = teamKey ? teams?.find((t) => t.key === teamKey) : undefined;
+  const users = members.filter((m) => !m.suspendedAt && !m.integration && m.user.kind === kind && seesTeam(m, team)).map((m) => m.user);
   return [...users.filter(isMe), ...users.filter((u) => !isMe(u))];
 }
 const toggle = (xs: string[], x: string) => (xs.includes(x) ? xs.filter((y) => y !== x) : [...xs, x]);
@@ -327,11 +328,12 @@ export function EstimatePicker({
   );
 }
 
-type UserPickerProps = Trigger & { value: UserRef | null; onChange: (user: UserRef | null) => void };
+/** `team`: offer only who see it (an issue's assignee and delegate must). */
+type UserPickerProps = Trigger & { value: UserRef | null; onChange: (user: UserRef | null) => void; team?: string };
 
-function UserPicker({ kind, label, none, value, onChange, children, ...rest }: UserPickerProps & { kind: UserKind; label: string; none: string }) {
+function UserPicker({ kind, label, none, value, onChange, team, children, ...rest }: UserPickerProps & { kind: UserKind; label: string; none: string }) {
   const { loadDirectory } = useApp();
-  const members = useMembers(kind);
+  const members = useMembers(kind, team);
   // Keep the current holder listed even if they left the workspace.
   const users = value && !members.some((u) => u.username === value.username) ? [...members, value] : members;
   return (

@@ -1,6 +1,6 @@
-// Teams, issues, comments, labels, views, documents and projects. Every function acts for an Actor in the request's one
-// workspace (requestWorkspace): team keys, identifiers and slugs resolve there, and anything elsewhere is
-// 404, as if it didn't exist.
+// Teams and their members, issues, comments, labels, views, documents and projects. Every function acts for an Actor in the
+// request's one workspace (requestWorkspace), seeing only its teams (visibleTeamIds: private teams, guests): team keys,
+// identifiers and slugs resolve there, and anything elsewhere or in a team it doesn't see is 404, as if it didn't exist.
 import type { SQLQueryBindings } from "bun:sqlite";
 import {
   CATEGORY_COLORS,
@@ -60,6 +60,7 @@ import {
   type ProjectStatus,
   type ProjectSummary,
   type Reaction,
+  type ServerEvent,
   type StatusCategory,
   type Team,
   type TeamInput,
@@ -74,7 +75,20 @@ import {
   type WorkflowStatusInput,
   type WorkflowStatusPatch,
 } from "../shared/types.ts";
-import { type Actor, activeMemberId, requestWorkspace, requirePerson, systemUserId, usernameOf } from "./access.ts";
+import {
+  type Actor,
+  activeMemberId,
+  isGuest,
+  requestWorkspace,
+  requirePerson,
+  requireSession,
+  revokeAccess,
+  SEES_TEAM,
+  seesTeam,
+  systemUserId,
+  usernameOf,
+  visibleTeamIds,
+} from "./access.ts";
 import {
   AppError,
   BUMPED_AT,
@@ -130,6 +144,15 @@ const LABEL_PATH = "CASE WHEN g.id IS NULL THEN l.name ELSE g.name || '/' || l.n
 /** Placeholders for `IN (…)`; never empty, so the SQL stays valid. */
 const inList = (values: unknown[]) => (values.length ? values.map(() => "?").join(", ") : "NULL");
 
+/**
+ * The teams a reader sees (see SEES_TEAM in access.ts): an SQL list of team ids for `IN`, e.g. "(3, 5)", or null for
+ * Docket's own reads (history, webhooks, sweeps), which see everything. Ids are integers from the database.
+ */
+type Seen = string | null;
+const seenBy = (a: Actor, workspace?: string): string => `(${visibleTeamIds(a, workspace).join(", ") || "NULL"})`;
+/** SQL: `column` (a team id) is one the reader sees. */
+const within = (column: string, seen: Seen) => (seen === null ? "1" : `${column} IN ${seen}`);
+
 /** A UserRef from joined columns `${p}_username`, `${p}_name`, `${p}_kind`, or null. */
 function ref(row: Record<string, unknown>, p: string): UserRef | null {
   const username = row[`${p}_username`] as string | null;
@@ -165,6 +188,9 @@ function saveMentions(
   { typing = false, commentId }: { typing?: boolean; commentId?: number } = {},
 ): number[] {
   const ids = mentionedIn(workspace, text, typing);
+  // Only someone who sees the team it's in can be mentioned there (Linear: no @mentioning a non-member in a private team).
+  const teamId = inbox.teamOf(owner);
+  for (const id of ids) if (!seesTeam(id, teamId)) ids.delete(id);
   const had = db.query<{ user_id: number }, [string]>("SELECT user_id FROM mentions WHERE source = ?").all(source).map((r) => r.user_id);
   for (const id of had) if (!ids.has(id)) db.query("DELETE FROM mentions WHERE source = ? AND user_id = ?").run(source, id);
   const fresh = [...ids].filter((id) => !had.includes(id) && id !== a.id);
@@ -415,6 +441,8 @@ interface TeamRow {
   statuses: string; // JSON array of WorkflowStatus, in workflow order
   counts: string; // JSON object: status → issue count, statuses without issues left out
   doc_count: number;
+  private: number; // 0 or 1
+  member: number; // the reader is in it
   created_at: string;
   updated_at: string;
 }
@@ -428,8 +456,9 @@ const WORKFLOW_ORDER = `ORDER BY ${categoryRank("category")}, position, id`;
 const NOW = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
 const RUNNING = `completed_at IS NULL AND starts_at <= ${NOW} AND ends_at > ${NOW}`;
 
-const TEAM_SELECT = `
-  SELECT t.*,
+/** Teams as `reader` (an account id) sees them: whether they're in each. */
+const teamSelect = (reader: number) => `
+  SELECT t.*, EXISTS (SELECT 1 FROM team_members WHERE team_id = t.id AND user_id = ${reader}) AS member,
     (SELECT json_group_array(json_object('key', key, 'name', name, 'category', category, 'color', color, 'position', position)) FROM (
       SELECT * FROM workflow_statuses WHERE team_id = t.id ${WORKFLOW_ORDER}
     )) AS statuses,
@@ -458,30 +487,47 @@ function toTeam(row: TeamRow): Team {
     currentCycle: row.current_cycle,
     counts: { ...Object.fromEntries(statuses.map((s) => [s.key, 0])), ...JSON.parse(row.counts) },
     docCount: row.doc_count,
+    private: row.private === 1,
+    member: row.member === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
 }
 
-/** A team of the request's workspace, by key. */
+/** A team of the request's workspace that you see, by key; anything else is 404, as if it didn't exist. */
 function teamRow(a: Actor, key: unknown): TeamRow {
   const workspace = requestWorkspace(a);
   const row =
     typeof key === "string"
-      ? db.query<TeamRow, [string, string]>(`${TEAM_SELECT} WHERE t.workspace = ? AND t.key = ?`).get(workspace, key.trim().toUpperCase())
+      ? db
+          .query<TeamRow, [string, string]>(`${teamSelect(a.id)} WHERE t.workspace = ?1 AND t.key = ?2 AND ${SEES_TEAM(String(a.id), "t")}`)
+          .get(workspace, key.trim().toUpperCase())
       : null;
   if (!row) throw new AppError(`Team ${key} not found`, 404);
   return row;
 }
 
+/** The teams of the request's workspace that you see. */
 export function listTeams(a: Actor): Team[] {
-  return db.query<TeamRow, [string]>(`${TEAM_SELECT} WHERE t.workspace = ? ORDER BY t.key`).all(requestWorkspace(a)).map(toTeam);
+  return db
+    .query<TeamRow, [string]>(`${teamSelect(a.id)} WHERE t.workspace = ? AND ${SEES_TEAM(String(a.id), "t")} ORDER BY t.key`)
+    .all(requestWorkspace(a))
+    .map(toTeam);
 }
 
 const NO_AGENT_TEAMS = "Agents can't create or change teams; ask a person";
 
+/**
+ * Guests work in their teams like members but set nothing up (Linear's guests): no teams, team settings, workflows,
+ * templates, workspace labels or membership changes (403). Called after the thing is found, so what they don't see is 404.
+ */
+function notGuest(a: Actor, what: string) {
+  if (isGuest(a)) throw new AppError(`Guests can't ${what}`, 403);
+}
+
 export function createTeam(a: Actor, input: TeamInput): Team {
   requirePerson(a, NO_AGENT_TEAMS);
+  notGuest(a, "create teams");
   const key = typeof input.key === "string" ? input.key.trim().toUpperCase() : "";
   if (!/^[A-Z]{2,5}$/.test(key)) throw new AppError("Team key must be 2–5 letters, e.g. BRD");
   const workspace = requestWorkspace(a);
@@ -495,6 +541,7 @@ export function createTeam(a: Actor, input: TeamInput): Team {
   const autoCloseChildren = checkFlag(input.autoCloseChildren ?? false, "autoCloseChildren");
   const autoArchiveDays = input.autoArchiveDays === undefined ? null : checkAutoArchiveDays(input.autoArchiveDays);
   const estimateScale = checkScale(input.estimateScale ?? null);
+  const isPrivate = checkFlag(input.private ?? false, "private");
   if (db.query("SELECT 1 FROM teams WHERE workspace = ? AND key = ?").get(workspace, key)) {
     throw new AppError(`Team key ${key} is taken in this workspace`, 409);
   }
@@ -502,12 +549,15 @@ export function createTeam(a: Actor, input: TeamInput): Team {
   db.transaction(() => {
     const { id } = db
       .query<{ id: number }, SQLQueryBindings[]>(
-        "INSERT INTO teams (key, workspace, name, description, auto_close_parent, auto_close_children, auto_archive_days, estimate_scale, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+        `INSERT INTO teams (key, workspace, name, description, auto_close_parent, auto_close_children, auto_archive_days, estimate_scale, private, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
       )
-      .get(key, workspace, name, description, autoCloseParent, autoCloseChildren, autoArchiveDays, estimateScale, time, time)!;
+      .get(key, workspace, name, description, autoCloseParent, autoCloseChildren, autoArchiveDays, estimateScale, isPrivate, time, time)!;
     const insert = db.query("INSERT INTO workflow_statuses (team_id, key, name, category, color, position) VALUES (?, ?, ?, ?, ?, ?)");
     for (const s of DEFAULT_WORKFLOW) insert.run(id, s.key, s.name, s.category, s.color, s.position);
+    db.query("INSERT INTO team_members (team_id, user_id, created_at) VALUES (?, ?, ?)").run(id, a.id, time); // its creator is its first member
   })();
+  if (isPrivate) revokeAccess([a.id]); // their sockets reconnect to hear it
   changed("team", workspace, key);
   return toTeam(teamRow(a, key));
 }
@@ -535,6 +585,7 @@ function checkAutoArchiveDays(value: unknown): number | null {
 export function updateTeam(a: Actor, key: string, patch: TeamPatch & { workspace?: unknown }): Team {
   requirePerson(a, NO_AGENT_TEAMS);
   const row = teamRow(a, key);
+  notGuest(a, "change a team's settings");
   syncCycles(row.id); // settings act on the cycles as they are now
   if (patch.workspace !== undefined && patch.workspace !== row.workspace) throw new AppError("Teams can't move between workspaces");
   const name = patch.name === undefined ? row.name : requireText(patch.name, "name");
@@ -549,19 +600,137 @@ export function updateTeam(a: Actor, key: string, patch: TeamPatch & { workspace
   const autoCloseChildren = patch.autoCloseChildren === undefined ? row.auto_close_children : checkFlag(patch.autoCloseChildren, "autoCloseChildren");
   const autoArchiveDays = patch.autoArchiveDays === undefined ? row.auto_archive_days : checkAutoArchiveDays(patch.autoArchiveDays);
   const estimateScale = patch.estimateScale === undefined ? row.estimate_scale : checkScale(patch.estimateScale);
+  const isPrivate = patch.private === undefined ? row.private : checkFlag(patch.private, "private");
+  if (isPrivate !== row.private) {
+    // Who sees the team is access: a workspace admin's, from a browser session.
+    requireSession(a);
+    if (a.workspaces.get(row.workspace) !== "admin") throw new AppError("Only workspace admins can make a team private or public", 403);
+    if (isPrivate && !teamMemberIds(row.id).length) throw new AppError("Add a member first", 409);
+  }
   const cycles = cycleSettings(row, patch);
   const time = now();
   const refs = db.transaction(() => {
     db.query(
       `UPDATE teams SET name = ?, description = ?, default_status = ?, auto_close_parent = ?, auto_close_children = ?, auto_archive_days = ?,
-         estimate_scale = ?, cycle_weeks = ?, upcoming_cycles = ?, updated_at = ? WHERE id = ?`,
-    ).run(name, description, defaultStatus, autoCloseParent, autoCloseChildren, autoArchiveDays, estimateScale, cycles.weeks, cycles.upcoming, time, row.id);
+         estimate_scale = ?, cycle_weeks = ?, upcoming_cycles = ?, private = ?, updated_at = ? WHERE id = ?`,
+    ).run(name, description, defaultStatus, autoCloseParent, autoCloseChildren, autoArchiveDays, estimateScale, cycles.weeks, cycles.upcoming, isPrivate, time, row.id);
     return scheduleCycles(a, row, cycles, time);
   }).immediate();
   syncCycles(row.id); // tops up the upcoming cycles
+  if (isPrivate !== row.private) {
+    // Everyone in the workspace gains or loses it: their sockets reconnect with what they see now, and the app refetches.
+    revokeAccess(db.query<{ user_id: number }, [string]>("SELECT user_id FROM workspace_members WHERE workspace = ?").all(row.workspace).map((m) => m.user_id));
+  }
   changed("team", row.workspace, row.key);
   for (const ref of refs) changed("issue", row.workspace, ref);
-  return toTeam(teamRow(a, row.key));
+  return toTeam(readTeam(a, row.id)); // an admin who made it private without being in it no longer sees it, but made this change
+}
+
+/** A team by id, as `a` sees its membership; no visibility check (see teamRow). */
+const readTeam = (a: Actor, id: number) => db.query<TeamRow, [number]>(`${teamSelect(a.id)} WHERE t.id = ?`).get(id)!;
+
+/** A team's active members' ids (suspended ones stay in team_members, for when they're reinstated). */
+const teamMemberIds = (teamId: number) =>
+  db
+    .query<{ user_id: number }, [number]>(
+      `SELECT tm.user_id FROM team_members tm JOIN teams t ON t.id = tm.team_id
+       JOIN workspace_members m ON m.user_id = tm.user_id AND m.workspace = t.workspace AND m.suspended_at IS NULL WHERE tm.team_id = ?`,
+    )
+    .all(teamId)
+    .map((r) => r.user_id);
+
+// --- Team membership (Linear's): members join public teams themselves; private teams only by being added ---
+
+/**
+ * A team for membership changes: one you see, or for a workspace admin any team of the workspace (they join a private
+ * team through its members dialog). Managing membership is managing access: a browser session only.
+ */
+function membershipTeam(a: Actor, key: unknown): TeamRow & { visible: boolean } {
+  requireSession(a);
+  const workspace = requestWorkspace(a);
+  const row =
+    typeof key === "string"
+      ? db.query<TeamRow, [string, string]>(`${teamSelect(a.id)} WHERE t.workspace = ? AND t.key = ?`).get(workspace, key.trim().toUpperCase())
+      : null;
+  const visible = !!row && seesTeam(a.id, row.id);
+  if (!row || (!visible && a.workspaces.get(workspace) !== "admin")) throw new AppError(`Team ${key} not found`, 404);
+  return { ...row, visible };
+}
+
+/** A team's active members, as UserRefs (people, then agents, by name). */
+export function listTeamMembers(a: Actor, key: string): UserRef[] {
+  const team = membershipTeam(a, key);
+  return db
+    .query<UserRef, [number]>(
+      `SELECT m.username, m.name, u.kind FROM team_members tm JOIN teams t ON t.id = tm.team_id
+       JOIN workspace_members m ON m.user_id = tm.user_id AND m.workspace = t.workspace AND m.suspended_at IS NULL JOIN users u ON u.id = tm.user_id
+       WHERE tm.team_id = ? ORDER BY u.kind DESC, m.name COLLATE NOCASE`,
+    )
+    .all(team.id);
+}
+
+/** An active member of the team's workspace, by username or "me" (404 otherwise). */
+function workspaceMember(a: Actor, workspace: string, username: unknown): { id: number; username: string; role: string } {
+  const given = typeof username === "string" ? username.trim().toLowerCase() : "";
+  const row = db
+    .query<{ id: number; username: string; role: string }, [string, string | number]>(
+      `SELECT user_id AS id, username, role FROM workspace_members WHERE workspace = ? AND ${given === "me" ? "user_id" : "username"} = ? AND suspended_at IS NULL`,
+    )
+    .get(workspace, given === "me" ? a.id : given);
+  if (!row) throw new AppError(`${username} isn't a member of this workspace`, 404);
+  return row;
+}
+
+/**
+ * Adds someone to a team ("me" to join): you join a public team yourself (not a guest: guests join by invitation); a
+ * workspace admin joins a private one; the team's members (not guests) and admins add people and agents, and only
+ * admins add guests. Adding an agent to a private team is how it gets access: agents never add themselves. Their
+ * sockets reconnect to hear it.
+ */
+export function addTeamMember(a: Actor, key: string, username: unknown): Team {
+  const team = membershipTeam(a, key);
+  const who = workspaceMember(a, team.workspace, username);
+  const admin = a.workspaces.get(team.workspace) === "admin";
+  if (who.id === a.id) notGuest(a, "join teams: an admin adds them");
+  else {
+    notGuest(a, "add people to teams");
+    if (!team.visible || (!team.member && !admin)) {
+      throw new AppError(team.visible ? "Only the team's members and workspace admins can add people to it" : "Join the team first", 403);
+    }
+    // A guest sees only the teams they're added to: that's the admins' call, as inviting them is.
+    if (who.role === "guest" && !admin) throw new AppError("Only workspace admins can add a guest to a team", 403);
+  }
+  db.query("INSERT OR IGNORE INTO team_members (team_id, user_id, created_at) VALUES (?, ?, ?)").run(team.id, who.id, now());
+  revokeAccess([who.id]);
+  changed("team", team.workspace, team.key);
+  changed("member", team.workspace, who.username);
+  return toTeam(readTeam(a, team.id));
+}
+
+/**
+ * Takes someone off a team: yourself (anyone), or others by the team's members (not guests) and admins. The last member of a
+ * private team stays (409), so it never ends up seen by no one.
+ */
+export function removeTeamMember(a: Actor, key: string, username: unknown): Team {
+  const team = membershipTeam(a, key);
+  if (!team.visible) throw new AppError(`Team ${key} not found`, 404);
+  const who = workspaceMember(a, team.workspace, username);
+  if (who.id !== a.id) {
+    notGuest(a, "remove people from teams");
+    if (!team.member && a.workspaces.get(team.workspace) !== "admin") {
+      throw new AppError("Only the team's members and workspace admins can remove people from it", 403);
+    }
+  }
+  const members = teamMemberIds(team.id);
+  if (!db.query("SELECT 1 FROM team_members WHERE team_id = ? AND user_id = ?").get(team.id, who.id)) {
+    throw new AppError(`${who.username} isn't in ${team.key}`, 404);
+  }
+  if (team.private && members.length === 1 && members[0] === who.id) throw new AppError("Add someone else first", 409);
+  db.query("DELETE FROM team_members WHERE team_id = ? AND user_id = ?").run(team.id, who.id);
+  revokeAccess([who.id]);
+  changed("team", team.workspace, team.key);
+  changed("member", team.workspace, who.username);
+  return toTeam(readTeam(a, team.id));
 }
 
 // --- Workflows: each team's statuses (Linear's), in fixed categories; issues hold a status's key ---
@@ -603,7 +772,9 @@ const CATEGORY_NAMES: Record<StatusCategory, string> = {
 /** A workflow change: people only (like the rest of team settings), in the request's workspace (else 404). */
 function workflowTeam(a: Actor, key: unknown): TeamRow {
   requirePerson(a, "Only people can change a workflow");
-  return teamRow(a, key);
+  const team = teamRow(a, key);
+  notGuest(a, "change a workflow");
+  return team;
 }
 
 function workflowStatus(team: TeamRow, key: unknown): StatusRow {
@@ -755,9 +926,9 @@ const toTemplate = (row: TemplateRow): IssueTemplate => ({
 
 const NO_AGENT_TEMPLATES = "Only people can manage issue templates";
 
-/** A template of the request's workspace, by id; anything else is 404. */
+/** A template of the request's workspace, in a team you see, by id; anything else is 404. */
 function templateRow(a: Actor, id: unknown): TemplateRow {
-  const row = db.query<TemplateRow, [number, string]>(`${TEMPLATE_SELECT} WHERE it.id = ? AND t.workspace = ?`).get(Number(id), requestWorkspace(a));
+  const row = db.query<TemplateRow, [number, string]>(`${TEMPLATE_SELECT} WHERE it.id = ? AND t.workspace = ? AND ${SEES_TEAM(String(a.id), "t")}`).get(Number(id), requestWorkspace(a));
   if (!row) throw new AppError(`Template ${id} not found`, 404);
   return row;
 }
@@ -765,7 +936,9 @@ function templateRow(a: Actor, id: unknown): TemplateRow {
 /** A template of the request's workspace, by id, for a person to manage (create/update/delete): anything else is 404. */
 function managedTemplate(a: Actor, id: unknown): TemplateRow {
   requirePerson(a, NO_AGENT_TEMPLATES);
-  return templateRow(a, id);
+  const row = templateRow(a, id);
+  notGuest(a, "manage issue templates");
+  return row;
 }
 
 /** Replaces a template's labels (see resolveLabels), in the caller's transaction. Returns the labels it created. */
@@ -782,11 +955,11 @@ function setTemplateLabels(templateId: number, workspace: string, team: TeamRef,
  */
 const checkTemplateStatus = (team: TeamRef, value: unknown): string | null => (value == null ? null : statusOf(team, value).key);
 
-/** The request's workspace's templates, by name; `team`: only that team's own (templates are always one team's). */
+/** The request's workspace's templates in teams you see, by name; `team`: only that team's own (templates are always one team's). */
 export function listTemplates(a: Actor, filter: { team?: string } = {}): IssueTemplate[] {
   const workspace = requestWorkspace(a);
   const params: SQLQueryBindings[] = [workspace];
-  let where = "t.workspace = ?";
+  let where = `t.workspace = ? AND ${SEES_TEAM(String(a.id), "t")}`;
   if (filter.team) {
     where += " AND t.id = ?";
     params.push(teamRow(a, filter.team).id);
@@ -801,6 +974,7 @@ export function listTemplates(a: Actor, filter: { team?: string } = {}): IssueTe
 export function createTemplate(a: Actor, input: IssueTemplateInput): IssueTemplate {
   requirePerson(a, NO_AGENT_TEMPLATES);
   const team = teamRow(a, input.team);
+  notGuest(a, "manage issue templates");
   const name = requireText(input.name, "name");
   const title = optionalText(input.title, "title");
   const description = optionalText(input.description, "description");
@@ -926,7 +1100,12 @@ type IssueRow = Record<string, unknown> & {
 /** An issue's identifier in SQL, from its team's alias and its own: BRD-12. */
 const ident = (team: string, issue: string) => `${team}.key || '-' || ${issue}.number`;
 
-const ISSUE_SELECT = `
+/**
+ * Issues as a reader who sees `seen` finds them: a parent, blocker, related or canonical issue in a team they don't see
+ * is left out (a parent reads as null), and so is an identifier the issue had in such a team. `ISSUE_SELECT` is
+ * Docket's own view (history, webhooks, before-and-after reads), which sees everything.
+ */
+const issueSelect = (seen: Seen) => `
   SELECT i.*, t.key AS team_key, t.workspace, t.estimate_scale, ws.category AS status_category, ws.position AS status_position, ${ident("pt", "p")} AS parent,
     pr.slug AS project, ms.name AS milestone, cy.number AS cycle,
     ${userCols("ua", "assignee")}, ${userCols("ud", "delegate")}, ${userCols("uc", "creator")},
@@ -936,17 +1115,18 @@ const ISSUE_SELECT = `
     )) AS label_paths,
     (SELECT json_group_array(ref) FROM (
       SELECT ${ident("bt", "b")} AS ref FROM issue_blocks x JOIN issues b ON b.id = x.blocker_id JOIN teams bt ON bt.id = b.team_id
-      WHERE x.blocked_id = i.id AND b.deleted_at IS NULL ORDER BY bt.key, b.number
+      WHERE x.blocked_id = i.id AND b.deleted_at IS NULL AND ${within("bt.id", seen)} ORDER BY bt.key, b.number
     )) AS blocked_by,
     (SELECT json_group_array(ref) FROM (
       SELECT ${ident("rt", "r")} AS ref FROM issue_relations x
       JOIN issues r ON r.id = CASE WHEN x.from_id = i.id THEN x.to_id ELSE x.from_id END JOIN teams rt ON rt.id = r.team_id
-      WHERE x.kind = 'related' AND (x.from_id = i.id OR x.to_id = i.id) AND r.deleted_at IS NULL ORDER BY rt.key, r.number
+      WHERE x.kind = 'related' AND (x.from_id = i.id OR x.to_id = i.id) AND r.deleted_at IS NULL AND ${within("rt.id", seen)} ORDER BY rt.key, r.number
     )) AS related_to,
     (SELECT ${ident("dt", "d")} FROM issue_relations x JOIN issues d ON d.id = x.to_id JOIN teams dt ON dt.id = d.team_id
-      WHERE x.kind = 'duplicate' AND x.from_id = i.id AND d.deleted_at IS NULL) AS duplicate_of,
+      WHERE x.kind = 'duplicate' AND x.from_id = i.id AND d.deleted_at IS NULL AND ${within("dt.id", seen)}) AS duplicate_of,
     (SELECT json_group_array(ref) FROM (
-      SELECT ${ident("at", "a")} AS ref FROM issue_aliases a JOIN teams at ON at.id = a.team_id WHERE a.issue_id = i.id ORDER BY a.created_at, at.key, a.number
+      SELECT ${ident("at", "a")} AS ref FROM issue_aliases a JOIN teams at ON at.id = a.team_id
+      WHERE a.issue_id = i.id AND ${within("at.id", seen)} ORDER BY a.created_at, at.key, a.number
     )) AS previous_identifiers
   FROM issues i
   JOIN teams t ON t.id = i.team_id
@@ -954,11 +1134,12 @@ const ISSUE_SELECT = `
   ${userJoin("uc", "i.creator_id", "t.workspace")}
   ${userJoin("ua", "i.assignee_id", "t.workspace")}
   ${userJoin("ud", "i.delegate_id", "t.workspace")}
-  LEFT JOIN issues p ON p.id = i.parent_id
+  LEFT JOIN issues p ON p.id = i.parent_id AND ${within("p.team_id", seen)}
   LEFT JOIN teams pt ON pt.id = p.team_id
   LEFT JOIN projects pr ON pr.id = i.project_id
   LEFT JOIN milestones ms ON ms.id = i.milestone_id
   LEFT JOIN cycles cy ON cy.id = i.cycle_id`;
+const ISSUE_SELECT = issueSelect(null);
 
 // Status category order, then the team's order within it, then priority 1→4 with 0 (none) last, then most
 // recently updated. The first three keys are also what a page cursor records (with updated_at and id), so pages
@@ -1002,23 +1183,25 @@ const toSummary = (row: IssueRow): IssueSummary => ({
 
 /**
  * An issue's row id by identifier parts in `workspace`: its current identifier, else one it had before it moved team
- * (numbers are never reused, so the two never clash).
+ * (numbers are never reused, so the two never clash). With `seen`, only an issue in a team the reader sees, and an old
+ * identifier only if its team is one too.
  */
-function findIssue(workspace: string, key: string, number: number): number | null {
+function findIssue(workspace: string, key: string, number: number, seen: Seen = null): number | null {
   return (
     db
       .query<{ id: number }, [string, string, number]>(
-        `SELECT i.id FROM issues i JOIN teams t ON t.id = i.team_id WHERE t.workspace = ?1 AND t.key = ?2 AND i.number = ?3
-         UNION ALL SELECT a.issue_id FROM issue_aliases a JOIN teams t ON t.id = a.team_id WHERE t.workspace = ?1 AND t.key = ?2 AND a.number = ?3`,
+        `SELECT i.id FROM issues i JOIN teams t ON t.id = i.team_id WHERE t.workspace = ?1 AND t.key = ?2 AND i.number = ?3 AND ${within("t.id", seen)}
+         UNION ALL SELECT a.issue_id FROM issue_aliases a JOIN teams t ON t.id = a.team_id JOIN issues i ON i.id = a.issue_id
+         WHERE t.workspace = ?1 AND t.key = ?2 AND a.number = ?3 AND ${within("t.id", seen)} AND ${within("i.team_id", seen)}`,
       )
       .get(workspace, key, number)?.id ?? null
   );
 }
 
 /**
- * Resolves an identifier like "brd-12" in the request's workspace to the issue's row id; 404 if it isn't there. An
- * identifier it had before it moved team resolves too; `ref` is always its current one. Trashed and archived issues
- * resolve too (to read, restore or unarchive them); `liveIssue` is for everything that changes one.
+ * Resolves an identifier like "brd-12" in the request's workspace to the issue's row id; 404 if it isn't there or is in
+ * a team you don't see. An identifier it had before it moved team resolves too; `ref` is always its current one.
+ * Trashed and archived issues resolve too (to read, restore or unarchive them); `liveIssue` is for everything that changes one.
  */
 function issueRef(
   a: Actor,
@@ -1028,7 +1211,7 @@ function issueRef(
   if (!match) throw new AppError(`Invalid issue identifier "${identifier}" (expected e.g. BRD-12)`);
   const key = match[1]!.toUpperCase();
   const number = Number(match[2]);
-  const id = findIssue(requestWorkspace(a), key, number);
+  const id = findIssue(requestWorkspace(a), key, number, seenBy(a));
   if (id === null) throw new AppError(`Issue ${key}-${number} not found`, 404);
   const row = db
     .query<{ workspace: string; deleted_at: string | null; archived_at: string | null; team_id: number; key: string; number: number }, [number]>(
@@ -1081,9 +1264,12 @@ function blockerIds(a: Actor, identifiers: unknown, self?: number): number[] {
   return ids;
 }
 
-/** Replaces an issue's blockers. Links to trashed blockers are hidden, not edited, so they stay for their restore. */
-function setBlockers(id: number, blockers: number[]) {
-  db.query("DELETE FROM issue_blocks WHERE blocked_id = ? AND blocker_id IN (SELECT id FROM issues WHERE deleted_at IS NULL)").run(id);
+/**
+ * Replaces an issue's blockers, of those the writer sees (`seen`). Links to trashed blockers, and to blockers in teams the
+ * writer doesn't see, are hidden, not edited: they stay (for a restore, for those who see them).
+ */
+function setBlockers(id: number, blockers: number[], seen: Seen) {
+  db.query(`DELETE FROM issue_blocks WHERE blocked_id = ? AND blocker_id IN (SELECT id FROM issues WHERE deleted_at IS NULL AND ${within("team_id", seen)})`).run(id);
   for (const blocker of blockers) db.query("INSERT OR IGNORE INTO issue_blocks (blocker_id, blocked_id) VALUES (?, ?)").run(blocker, id);
 }
 
@@ -1109,22 +1295,23 @@ function duplicateId(a: Actor, identifier: unknown, self?: number): number | nul
   return id;
 }
 
-/** An issue's live related issues, either direction. */
-const relatedOf = (id: number) =>
+/** An issue's live related issues, either direction, in teams `seen` covers. */
+const relatedOf = (id: number, seen: Seen) =>
   db
     .query<{ id: number }, [number]>(
       `SELECT r.id FROM issue_relations x JOIN issues r ON r.id = CASE WHEN x.from_id = ?1 THEN x.to_id ELSE x.from_id END
-       WHERE x.kind = 'related' AND (x.from_id = ?1 OR x.to_id = ?1) AND r.deleted_at IS NULL`,
+       WHERE x.kind = 'related' AND (x.from_id = ?1 OR x.to_id = ?1) AND r.deleted_at IS NULL AND ${within("r.team_id", seen)}`,
     )
     .all(id)
     .map((r) => r.id);
 
 /**
- * Replaces an issue's related issues, on both sides: a pair is one row, (lower id, higher id). Links to trashed
- * issues are hidden, not edited, as with blockers. Returns the issues that gained or lost the relation.
+ * Replaces an issue's related issues, of those the writer sees, on both sides: a pair is one row, (lower id, higher id).
+ * Links to trashed issues, and to issues in teams the writer doesn't see, are hidden, not edited, as with blockers.
+ * Returns the issues that gained or lost the relation.
  */
-function setRelated(id: number, related: number[], time: string): number[] {
-  const was = relatedOf(id);
+function setRelated(id: number, related: number[], time: string, seen: Seen): number[] {
+  const was = relatedOf(id, seen);
   const pair = (other: number) => [Math.min(id, other), Math.max(id, other)] as const;
   for (const other of was) {
     if (!related.includes(other)) db.query("DELETE FROM issue_relations WHERE from_id = ? AND to_id = ? AND kind = 'related'").run(...pair(other));
@@ -1156,7 +1343,7 @@ function issueColumns(a: Actor, workspace: string, team: TeamRef, patch: IssuePa
     const value = patch[field];
     if (value === undefined) continue;
     if (value !== null && typeof value !== "string") throw new AppError(`${field} must be a username or null`);
-    cols[`${field}_id`] = value?.trim() ? activeMemberId(a, workspace, value, kind, field) : null;
+    cols[`${field}_id`] = value?.trim() ? inTeam(activeMemberId(a, workspace, value, kind, field), team, workspace) : null;
   }
   if (patch.parent !== undefined) cols.parent_id = patch.parent === null ? null : relatedId(a, patch.parent, "parent");
   if (patch.dueOn !== undefined) cols.due_on = patch.dueOn === null ? null : checkDate(patch.dueOn, "dueOn");
@@ -1164,11 +1351,22 @@ function issueColumns(a: Actor, workspace: string, team: TeamRef, patch: IssuePa
   return cols;
 }
 
-/** A project of `workspace`, by slug, for a `project` field or filter (400 otherwise). */
-function projectIn(workspace: string, slug: unknown): { id: number; slug: string } {
+/** An assignee or delegate (by id) who sees the issue's team: anyone else would be handed work they can't open (400). */
+function inTeam(userId: number, team: TeamRef, workspace: string): number {
+  if (!seesTeam(userId, team.id)) {
+    const { username } = db.query<{ username: string }, [number, string]>("SELECT username FROM workspace_members WHERE user_id = ? AND workspace = ?").get(userId, workspace)!;
+    throw new AppError(`@${username} isn't in team ${team.key}`);
+  }
+  return userId;
+}
+
+/** A project of the request's workspace that you see (one of its teams is yours), by slug, for a `project` field or filter (400 otherwise). */
+function projectIn(a: Actor, slug: unknown): { id: number; slug: string } {
   const row =
     typeof slug === "string"
-      ? db.query<{ id: number; slug: string }, [string, string]>("SELECT id, slug FROM projects WHERE workspace = ? AND slug = ?").get(workspace, slug.trim().toLowerCase())
+      ? db
+          .query<{ id: number; slug: string }, [string, string]>(`SELECT p.id, p.slug FROM projects p WHERE p.workspace = ? AND p.slug = ? AND ${projectSeen(seenBy(a))}`)
+          .get(requestWorkspace(a), slug.trim().toLowerCase())
       : null;
   if (!row) throw new AppError(`Unknown project "${slug}"`);
   return row;
@@ -1180,10 +1378,10 @@ type InProject = { project_id: number | null; milestone_id: number | null };
  * An issue's project and milestone after `patch`, from `current` (its own; a new sub-issue's parent's). A new project
  * clears the milestone unless the patch names one of the new project's; a milestone is named within the project.
  */
-function projectColumns(workspace: string, patch: Pick<IssuePatch, "project" | "milestone">, current: InProject): InProject {
+function projectColumns(a: Actor, patch: Pick<IssuePatch, "project" | "milestone">, current: InProject): InProject {
   let { project_id, milestone_id } = current;
   if (patch.project !== undefined) {
-    const next = patch.project === null ? null : projectIn(workspace, patch.project).id;
+    const next = patch.project === null ? null : projectIn(a, patch.project).id;
     if (next !== project_id) [project_id, milestone_id] = [next, null];
   }
   if (patch.milestone === null) milestone_id = null;
@@ -1200,25 +1398,38 @@ function projectColumns(workspace: string, patch: Pick<IssuePatch, "project" | "
   return { project_id, milestone_id };
 }
 
+const ATTACHMENT_LINK = /\/api\/attachments\/([A-Za-z0-9_-]{22})\//g;
+
+/**
+ * An issue or doc moved from team `from` to `to`: the files its texts link that were uploaded in `from` move with it,
+ * so whoever reads it there can open them (files of other teams, and the workspace's, stay as they are).
+ */
+function moveAttachments(texts: string[], from: number, to: number) {
+  const ids = [...new Set(texts.flatMap((text) => [...text.matchAll(ATTACHMENT_LINK)].map((m) => m[1]!)))];
+  if (ids.length) db.query(`UPDATE attachments SET team_id = ? WHERE team_id = ? AND id IN (${inList(ids)})`).run(to, from, ...ids);
+}
+
 /** An issue's team takes part in its project (Linear shares a project across the teams working on it). */
 function joinProject(projectId: number | null, teamId: number) {
   if (projectId !== null) db.query("INSERT OR IGNORE INTO project_teams (project_id, team_id) VALUES (?, ?)").run(projectId, teamId);
 }
 
 /**
- * WHERE conditions shared by the issue and doc lists (both join their team as `t`): the request's workspace,
- * a team, and a substring search over `searched` (the query's own %, _ and \ match literally). Issues (alias
- * "i") also leave out archived ones by default, unless `archived` is passed or `q` is set (still searchable).
+ * WHERE conditions shared by the issue and doc lists (both join their team as `t`): the request's workspace and the
+ * teams you see in it (`seen`), a team, and a substring search over `searched` (the query's own %, _ and \ match
+ * literally). Issues (alias "i") also leave out archived ones by default, unless `archived` is passed or `q` is set
+ * (still searchable). A team you don't see is unknown, like another workspace's.
  */
 function listScope(a: Actor, alias: string, filter: { team?: string; q?: string; archived?: boolean }, searched: string[]) {
   const workspace = requestWorkspace(a);
-  const where = ["t.workspace = ?", `${alias}.deleted_at IS NULL`];
+  const seen = seenBy(a, workspace);
+  const where = ["t.workspace = ?", within("t.id", seen), `${alias}.deleted_at IS NULL`];
   if (alias === "i" && !filter.q && !filter.archived) where.push("i.archived_at IS NULL");
   const params: SQLQueryBindings[] = [workspace];
   let teamId: number | null = null;
   if (filter.team) {
     const team = db
-      .query<{ id: number }, [string, string]>("SELECT id FROM teams WHERE workspace = ? AND key = ?")
+      .query<{ id: number }, [string, string]>(`SELECT id FROM teams WHERE workspace = ? AND key = ? AND ${within("id", seen)}`)
       .get(workspace, filter.team.trim().toUpperCase());
     if (!team) throw new AppError(`Unknown team "${filter.team}"`);
     where.push(`${alias}.team_id = ?`);
@@ -1229,7 +1440,7 @@ function listScope(a: Actor, alias: string, filter: { team?: string; q?: string;
     where.push(`(${searched.map((column) => `${column} LIKE ? ESCAPE '\\'`).join(" OR ")})`);
     params.push(...searched.map(() => `%${filter.q!.trim().replace(/[\\%_]/g, "\\$&")}%`));
   }
-  return { where, params, workspace, teamId };
+  return { where, params, workspace, teamId, seen };
 }
 
 /** `listScope` always adds the workspace condition, so there's always a WHERE. */
@@ -1305,12 +1516,13 @@ const DUE_WHERE: Record<(typeof DUE_FILTERS)[number], string> = {
 };
 
 function queryIssues(a: Actor, filter: IssueFilter, after?: Cursor, limit?: number): IssueRow[] {
-  const { where, params, workspace, teamId } = listScope(a, "i", filter, ["i.title", "i.description", ident("t", "i")]);
+  const { where, params, workspace, teamId, seen } = listScope(a, "i", filter, ["i.title", "i.description", ident("t", "i")]);
   if (filter.status?.length) {
     // Each key must be a status of some team in scope: a typo shouldn't look like "no issues".
     const known = db
       .query<{ key: string }, SQLQueryBindings[]>(
-        `SELECT DISTINCT w.key FROM workflow_statuses w JOIN teams t ON t.id = w.team_id WHERE t.workspace = ?${teamId === null ? "" : " AND t.id = ?"}`,
+        `SELECT DISTINCT w.key FROM workflow_statuses w JOIN teams t ON t.id = w.team_id
+         WHERE t.workspace = ? AND ${within("t.id", seen)}${teamId === null ? "" : " AND t.id = ?"}`,
       )
       .all(workspace, ...(teamId === null ? [] : [teamId]))
       .map((r) => r.key);
@@ -1350,7 +1562,7 @@ function queryIssues(a: Actor, filter: IssueFilter, after?: Cursor, limit?: numb
   }
   if (filter.project) {
     where.push("i.project_id = ?");
-    params.push(projectIn(workspace, filter.project).id);
+    params.push(projectIn(a, filter.project).id);
   }
   if (filter.cycle) {
     const id = cycleFilter(teamId, filter.team, filter.cycle); // null: each team's current cycle
@@ -1380,7 +1592,7 @@ function queryIssues(a: Actor, filter: IssueFilter, after?: Cursor, limit?: numb
     params.push(...restParams);
   }
   return db
-    .query<IssueRow, SQLQueryBindings[]>(`${ISSUE_SELECT} ${whereClause(where)} ${byDue ? DUE_ORDER : ISSUE_ORDER}${limit ? ` LIMIT ${limit}` : ""}`)
+    .query<IssueRow, SQLQueryBindings[]>(`${issueSelect(seen)} ${whereClause(where)} ${byDue ? DUE_ORDER : ISSUE_ORDER}${limit ? ` LIMIT ${limit}` : ""}`)
     .all(...params);
 }
 
@@ -1500,6 +1712,39 @@ function changes(before: IssueRow, after: IssueRow): Change[] {
   return TRACKED.map(([kind, get]) => ({ kind, from: get(before), to: get(after) })).filter((c) => key(c.from) !== key(c.to));
 }
 
+/**
+ * An issue's history as a reader who sees `seen` finds it: identifiers of issues in teams they don't see (a parent,
+ * blocker, related or canonical issue, or where the issue moved from) are left out, and a change left with nothing to
+ * show goes, so the history never names what they can't open.
+ */
+function seenActivity(activity: Activity[], seen: string, workspace: string): Activity[] {
+  const keys = new Set(db.query<{ key: string }, []>(`SELECT key FROM teams WHERE id IN ${seen}`).all().map((t) => t.key));
+  const shown = (v: unknown) => typeof v !== "string" || keys.has(v.slice(0, v.lastIndexOf("-")));
+  // Labels of teams they don't see (an issue that moved out of a private team came with its labels' names).
+  const hidden = new Set(
+    db
+      .query<{ path: string }, [string]>(
+        `SELECT ${LABEL_PATH} AS path FROM labels l LEFT JOIN labels g ON g.id = l.parent_id WHERE l.workspace = ? AND l.team_id IS NOT NULL AND l.team_id NOT IN ${seen}`,
+      )
+      .all(workspace)
+      .map((l) => fold(l.path)),
+  );
+  const same = (x: unknown, y: unknown) => JSON.stringify(x) === JSON.stringify(y);
+  return activity.flatMap((x) => {
+    if (x.kind === "team") return shown(x.from) && shown(x.to) ? [x] : [];
+    if (x.kind === "parent" || x.kind === "duplicateOf") {
+      const [from, to] = [shown(x.from) ? x.from : null, shown(x.to) ? x.to : null];
+      return same(from, to) ? [] : [{ ...x, from, to }];
+    }
+    if (x.kind === "blockedBy" || x.kind === "relatedTo" || x.kind === "labels") {
+      const keep = x.kind === "labels" ? (path: string) => !hidden.has(fold(path)) : shown;
+      const [from, to] = [(x.from as string[] | null)?.filter(keep) ?? null, (x.to as string[] | null)?.filter(keep) ?? null];
+      return same(from, to) ? [] : [{ ...x, from, to }];
+    }
+    return [x];
+  });
+}
+
 /** An issue's history, oldest first; people by how they're known in `workspace` now, so renames show. */
 function listActivity(issueId: number, workspace: string): Activity[] {
   const rows = db
@@ -1529,27 +1774,33 @@ function listActivity(issueId: number, workspace: string): Activity[] {
   }));
 }
 
+/** An issue as you see it: its relations, docs and history leave out what's in teams you don't see. */
 export function getIssue(a: Actor, identifier: string): Issue {
   const { id } = issueRef(a, identifier);
-  const row = db.query<IssueRow, [number]>(`${ISSUE_SELECT} WHERE i.id = ?`).get(id)!;
-  const children = db.query<IssueRow, [number]>(`${ISSUE_SELECT} WHERE i.parent_id = ? AND ${LIVE} ${ISSUE_ORDER}`).all(id).map(toSummary);
+  const seen = seenBy(a);
+  const row = db.query<IssueRow, [number]>(`${issueSelect(seen)} WHERE i.id = ?`).get(id)!;
+  const children = db
+    .query<IssueRow, [number]>(`${issueSelect(seen)} WHERE i.parent_id = ? AND ${LIVE} AND ${within("t.id", seen)} ${ISSUE_ORDER}`)
+    .all(id)
+    .map(toSummary);
   const duplicates = db
     .query<{ ref: string }, [number]>(
       `SELECT ${ident("dt", "d")} AS ref FROM issue_relations x JOIN issues d ON d.id = x.from_id JOIN teams dt ON dt.id = d.team_id
-       WHERE x.kind = 'duplicate' AND x.to_id = ? AND d.deleted_at IS NULL ORDER BY dt.key, d.number`,
+       WHERE x.kind = 'duplicate' AND x.to_id = ? AND d.deleted_at IS NULL AND ${within("dt.id", seen)} ORDER BY dt.key, d.number`,
     )
     .all(id)
     .map((r) => r.ref);
   const blocks = db
     .query<{ ref: string }, [number]>(
       `SELECT ${ident("bt", "b")} AS ref FROM issue_blocks x JOIN issues b ON b.id = x.blocked_id JOIN teams bt ON bt.id = b.team_id
-       WHERE x.blocker_id = ? AND b.deleted_at IS NULL ORDER BY bt.key, b.number`,
+       WHERE x.blocker_id = ? AND b.deleted_at IS NULL AND ${within("bt.id", seen)} ORDER BY bt.key, b.number`,
     )
     .all(id)
     .map((r) => r.ref);
   const docs = db
     .query<DocumentRow, [number]>(
-      `${DOC_SELECT} JOIN document_refs r ON r.document_id = d.id WHERE r.issue_id = ? AND d.deleted_at IS NULL ORDER BY t.key, d.position, d.id`,
+      `${DOC_SELECT} JOIN document_refs r ON r.document_id = d.id WHERE r.issue_id = ? AND d.deleted_at IS NULL AND ${within("t.id", seen)}
+       ORDER BY t.key, d.position, d.id`,
     )
     .all(id)
     .map(toDocSummary);
@@ -1561,7 +1812,7 @@ export function getIssue(a: Actor, identifier: string): Issue {
     blocks,
     duplicates,
     comments: listComments("issue", id, row.workspace),
-    activity: listActivity(id, row.workspace),
+    activity: seenActivity(listActivity(id, row.workspace), seen, row.workspace),
     docs,
     subscribed: inbox.isSubscribed(a.id, { issueId: id }),
     reactions: listReactions(row.workspace, [`issue:${id}`]).get(`issue:${id}`) ?? [],
@@ -1603,7 +1854,7 @@ export function createIssue(a: Actor, rawInput: IssueInput): Issue {
     input.project === undefined && cols.parent_id !== null
       ? db.query<InProject, [number]>("SELECT project_id, milestone_id FROM issues WHERE id = ?").get(cols.parent_id as number)!
       : { project_id: null, milestone_id: null };
-  const inProject = projectColumns(team.workspace, input, inherited);
+  const inProject = projectColumns(a, input, inherited);
   if (duplicate !== null) cols.status = duplicateStatus(team.id); // a duplicate is closed, as in Linear
   const { category } = statusOf(team, cols.status);
   const closed = isClosed(category);
@@ -1632,8 +1883,8 @@ export function createIssue(a: Actor, rawInput: IssueInput): Issue {
       .get(...Object.values(row))!;
     joinProject(inProject.project_id, team.id);
     const created = setIssueLabels(id, team.workspace, team, labels, time);
-    setBlockers(id, blockers);
-    setRelated(id, related, time);
+    setBlockers(id, blockers, null); // a new issue has none yet
+    setRelated(id, related, time, null);
     setDuplicate(id, duplicate, time);
     // Its parent, blockers, related and canonical issues change too (they gain a sub-issue, something they block, a relation).
     const refs = bumpIssues(new Set([cols.parent_id as number | null, ...blockers, ...related, duplicate].filter((r): r is number => r !== null)), time);
@@ -1689,6 +1940,12 @@ export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Is
   const team = patch.team === undefined ? from : moveTarget(a, patch.team);
   const moving = team.id !== from.id;
   const cols = issueColumns(a, workspace, team, patch);
+  const seen = seenBy(a, workspace);
+  if (moving) {
+    // Whoever it stays assigned or delegated to must see the team it moves to.
+    const held = db.query<{ assignee_id: number | null; delegate_id: number | null }, [number]>("SELECT assignee_id, delegate_id FROM issues WHERE id = ?").get(id)!;
+    for (const slot of ["assignee_id", "delegate_id"] as const) if (cols[slot] === undefined && held[slot] !== null) inTeam(held[slot], team, workspace);
+  }
   // A new parent must not be the issue itself or one of its descendants.
   for (let p = cols.parent_id as number | null | undefined; p != null; ) {
     if (p === id) throw new AppError("An issue can't be its own parent or ancestor");
@@ -1707,7 +1964,7 @@ export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Is
     if (patch.baseUpdatedAt !== undefined && patch.baseUpdatedAt !== before.updated_at) {
       throw new AppError("Issue changed since you read it", 409);
     }
-    if (patch.project !== undefined || patch.milestone !== undefined) Object.assign(cols, projectColumns(workspace, patch, before));
+    if (patch.project !== undefined || patch.milestone !== undefined) Object.assign(cols, projectColumns(a, patch, before));
     if (moving) {
       db.query("INSERT INTO issue_aliases (team_id, number, issue_id, created_at) VALUES (?, ?, ?, ?)").run(from.id, before.number, id, time);
       cols.team_id = team.id;
@@ -1717,6 +1974,8 @@ export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Is
       cols.status ??= carriedStatus(team as TeamRow, before.status, before.status_category);
       if (patch.cycle === undefined) cols.cycle_id = null; // cycles are per team
       if (!labels) db.query("DELETE FROM issue_labels WHERE issue_id = ? AND label_id IN (SELECT id FROM labels WHERE team_id = ?)").run(id, from.id);
+      const comments = db.query<{ body: string }, [number]>("SELECT body FROM comments WHERE issue_id = ?").all(id);
+      moveAttachments([(cols.description as string | undefined) ?? before.description, ...comments.map((c) => c.body)], from.id, team.id);
     }
     const closing = cols.status === undefined ? undefined : isClosed(statusOf(team, cols.status).category);
     // completedAt follows the category, not the key: it changes only when entering or leaving completed/canceled.
@@ -1730,7 +1989,9 @@ export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Is
     }
     if (blockers) {
       const was = db
-        .query<{ blocker_id: number }, [number]>("SELECT blocker_id FROM issue_blocks WHERE blocked_id = ?")
+        .query<{ blocker_id: number }, [number]>(
+          `SELECT x.blocker_id FROM issue_blocks x JOIN issues b ON b.id = x.blocker_id WHERE x.blocked_id = ? AND ${within("b.team_id", seen)}`,
+        )
         .all(id)
         .map((b) => b.blocker_id);
       for (const b of was) if (!blockers.includes(b)) related.add(b);
@@ -1741,8 +2002,8 @@ export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Is
     // A moved issue keeps its project and milestone; its new team joins the project.
     joinProject((cols.project_id ?? before.project_id) as number | null, team.id);
     const created = labels ? setIssueLabels(id, workspace, team, labels, time) : [];
-    if (blockers) setBlockers(id, blockers);
-    if (relatedTo) for (const r of setRelated(id, relatedTo, time)) related.add(r);
+    if (blockers) setBlockers(id, blockers, seen);
+    if (relatedTo) for (const r of setRelated(id, relatedTo, time, seen)) related.add(r);
     if (duplicate !== undefined) for (const r of setDuplicate(id, duplicate, time)) related.add(r);
     const refs = bumpIssues(related, time);
     if (cols.description !== undefined) saveMentions(a, workspace, `issue:${id}`, { issueId: id }, cols.description as string, time);
@@ -2066,7 +2327,7 @@ export function listTrash(a: Actor, team: string): Trash {
   const { id } = teamRow(a, team);
   purgeTrash();
   const issues = db
-    .query<IssueRow, [number]>(`${ISSUE_SELECT} WHERE i.team_id = ? AND i.deleted_at IS NOT NULL ORDER BY i.deleted_at DESC, i.id DESC`)
+    .query<IssueRow, [number]>(`${issueSelect(seenBy(a))} WHERE i.team_id = ? AND i.deleted_at IS NOT NULL ORDER BY i.deleted_at DESC, i.id DESC`)
     .all(id)
     .map(toSummary);
   const documents = db
@@ -2179,20 +2440,26 @@ type LabelRow = {
   path: string;
   color: string;
   is_group: number;
+  team_private: number | null; // its team's private flag
   created_at: string;
 };
 
 const LABEL_COLUMNS = `l.id, l.workspace, l.team_id, t.key AS team_key, l.parent_id, l.name, g.name AS group_name, ${LABEL_PATH} AS path,
-  l.color, l.is_group, l.created_at`;
+  l.color, l.is_group, t.private AS team_private, l.created_at`;
 const LABEL_FROM = "FROM labels l LEFT JOIN labels g ON g.id = l.parent_id LEFT JOIN teams t ON t.id = l.team_id";
 const LABEL_SELECT = `SELECT ${LABEL_COLUMNS} ${LABEL_FROM}`;
-// Plus `open`: live issues outside the completed and canceled categories carrying it (a group: any of its labels).
-const LABEL_SELECT_OPEN = `SELECT ${LABEL_COLUMNS},
+/**
+ * Plus `open`: live issues outside the completed and canceled categories carrying it (a group: any of its labels), of
+ * the teams the reader sees.
+ */
+const labelSelectOpen = (seen: Seen) => `SELECT ${LABEL_COLUMNS},
     (SELECT COUNT(DISTINCT x.issue_id) FROM issue_labels x JOIN labels o ON o.id = x.label_id JOIN issues i ON i.id = x.issue_id
      LEFT JOIN workflow_statuses ws ON ws.team_id = i.team_id AND ws.key = i.status
-     WHERE (o.id = l.id OR o.parent_id = l.id) AND i.deleted_at IS NULL
+     WHERE (o.id = l.id OR o.parent_id = l.id) AND i.deleted_at IS NULL AND ${within("i.team_id", seen)}
        AND COALESCE(ws.category, '') NOT IN (${CLOSED_CATEGORIES.map((c) => `'${c}'`).join(", ")})) AS open
   ${LABEL_FROM}`;
+/** SQL: label `l` is the workspace's, or its team is one the reader sees. */
+const labelSeen = (seen: Seen) => `(l.team_id IS NULL OR ${within("l.team_id", seen)})`;
 
 /** Names and paths compare case-insensitively. */
 const fold = (s: string) => s.toLowerCase();
@@ -2211,8 +2478,8 @@ const toLabel = (r: LabelRow & { open: number }): Label => ({
 });
 
 const workspaceLabels = (workspace: string) => db.query<LabelRow, [string]>(`${LABEL_SELECT} WHERE l.workspace = ? ORDER BY l.id`).all(workspace);
-const readLabel = (id: number) =>
-  toLabel(db.query<LabelRow & { open: number }, [number]>(`${LABEL_SELECT_OPEN} WHERE l.id = ?`).get(id)!);
+const readLabel = (a: Actor, id: number) =>
+  toLabel(db.query<LabelRow & { open: number }, [number]>(`${labelSelectOpen(seenBy(a))} WHERE l.id = ?`).get(id)!);
 
 /** Adds a label; its color defaults to the next of LABEL_COLORS, by how many the workspace has. */
 function insertLabel(workspace: string, l: { teamId: number | null; parentId: number | null; name: string; color?: string; isGroup?: boolean }, time: string): number {
@@ -2247,7 +2514,7 @@ function resolveLabels(workspace: string, team: TeamRef, names: string[], time: 
       const child = all.find((c) => c.parent_id === l.id);
       throw new AppError(`${l.name} is a label group: pick one of its labels${child ? `, e.g. ${child.path}` : ""}`);
     }
-    if (!usable(l)) throw new AppError(`Label "${l.path}" belongs to team ${l.team_key}`);
+    if (!usable(l)) throw new AppError(`Label "${l.path}" belongs to ${ownerOf(l)}`);
     return l;
   };
   const pick = (given: string): LabelRow => {
@@ -2263,7 +2530,7 @@ function resolveLabels(workspace: string, team: TeamRef, names: string[], time: 
     if (!groupName || !name || name.includes("/")) throw new AppError(`Invalid label "${given}": use a name, or Group/Label`);
     const group = all.find((l) => l.parent_id === null && fold(l.name) === fold(groupName));
     if (group && !group.is_group) throw new AppError(`${group.name} is a label, not a group`);
-    if (group && !usable(group)) throw new AppError(`Label group ${group.name} belongs to team ${group.team_key}`);
+    if (group && !usable(group)) throw new AppError(`Label group ${group.name} belongs to ${ownerOf(group)}`);
     return create(name, group ?? create(groupName, null, true));
   };
   const picked = [...new Map(names.map(pick).map((l) => [l.id, l])).values()];
@@ -2274,6 +2541,9 @@ function resolveLabels(workspace: string, team: TeamRef, names: string[], time: 
   return { ids: picked.map((l) => l.id), created };
 }
 
+/** Whose own label this is, for an error: a private team goes unnamed (its key would say it exists). */
+const ownerOf = (l: LabelRow) => (l.team_private ? "another team" : `team ${l.team_key}`);
+
 /** Replaces an issue's labels (see resolveLabels), in the caller's transaction. Returns the labels it created. */
 function setIssueLabels(issueId: number, workspace: string, team: TeamRef, names: string[], time: string): number[] {
   const { ids, created } = resolveLabels(workspace, team, names, time);
@@ -2282,18 +2552,18 @@ function setIssueLabels(issueId: number, workspace: string, team: TeamRef, names
   return created;
 }
 
-/** The request's workspace's labels and groups, by path; `team`: only those usable on its issues (the workspace's and its own). */
+/**
+ * The request's workspace's labels and groups you see (the workspace's, and your teams' own), by path, counting open
+ * issues in your teams; `team`: only those usable on its issues (the workspace's and its own).
+ */
 export function listLabels(a: Actor, filter: { team?: string } = {}): Label[] {
   const workspace = requestWorkspace(a);
+  const seen = seenBy(a, workspace);
   const params: SQLQueryBindings[] = [workspace];
-  if (filter.team) {
-    const team = db.query<{ id: number }, [string, string]>("SELECT id FROM teams WHERE workspace = ? AND key = ?").get(workspace, filter.team.trim().toUpperCase());
-    if (!team) throw new AppError(`Unknown team "${filter.team}"`);
-    params.push(team.id);
-  }
+  if (filter.team) params.push(knownTeam(a, filter.team).id);
   return db
     .query<LabelRow & { open: number }, SQLQueryBindings[]>(
-      `${LABEL_SELECT_OPEN} WHERE l.workspace = ?${filter.team ? " AND (l.team_id IS NULL OR l.team_id = ?)" : ""}
+      `${labelSelectOpen(seen)} WHERE l.workspace = ? AND ${labelSeen(seen)}${filter.team ? " AND (l.team_id IS NULL OR l.team_id = ?)" : ""}
        ORDER BY path COLLATE NOCASE, l.id`,
     )
     .all(...params)
@@ -2302,11 +2572,17 @@ export function listLabels(a: Actor, filter: { team?: string } = {}): Label[] {
 
 const NO_AGENT_LABELS = "Only people can manage labels";
 
-/** A label of the request's workspace, by id, for a person to manage; anything else is 404. */
+/**
+ * A label of the request's workspace you see, by id, for a person to manage; anything else is 404. The workspace's own
+ * labels are workspace-wide: not a guest's to manage (403).
+ */
 function managedLabel(a: Actor, id: unknown): LabelRow {
   requirePerson(a, NO_AGENT_LABELS);
-  const row = db.query<LabelRow, [number, string]>(`${LABEL_SELECT} WHERE l.id = ? AND l.workspace = ?`).get(Number(id), requestWorkspace(a));
+  const row = db
+    .query<LabelRow, [number, string]>(`${LABEL_SELECT} WHERE l.id = ? AND l.workspace = ? AND ${labelSeen(seenBy(a))}`)
+    .get(Number(id), requestWorkspace(a));
   if (!row) throw new AppError(`Label ${id} not found`, 404);
+  if (row.team_id === null) notGuest(a, "manage workspace labels");
   return row;
 }
 
@@ -2351,12 +2627,13 @@ export function createLabel(a: Actor, input: LabelInput): Label {
   const group = input.group == null ? null : labelGroup(workspace, input.group);
   if (group && input.isGroup) throw new AppError("A group can't be in a group");
   const teamId = input.team === undefined ? (group?.team_id ?? null) : labelScope(a, input.team);
+  if (teamId === null) notGuest(a, "manage workspace labels");
   if (group) sameScope(teamId, group);
   const color = input.color === undefined ? undefined : checkColor(input.color);
   freePath(workspace, group ? `${group.name}/${name}` : name);
   const id = insertLabel(workspace, { teamId, parentId: group?.id ?? null, name, color, isGroup: input.isGroup }, now());
   changed("label", workspace, String(id));
-  return readLabel(id);
+  return readLabel(a, id);
 }
 
 /** Issues carrying any of these labels (trashed ones too). */
@@ -2381,6 +2658,7 @@ export function updateLabel(a: Actor, id: unknown, patch: LabelPatch): Label {
     group = patch.group === null ? null : labelGroup(label.workspace, patch.group);
   }
   const teamId = patch.team === undefined ? label.team_id : labelScope(a, patch.team);
+  if (teamId === null) notGuest(a, "manage workspace labels");
   if (group) sameScope(teamId, group);
   const color = patch.color === undefined ? label.color : checkColor(patch.color);
   const regrouped = (group?.id ?? null) !== label.parent_id;
@@ -2411,7 +2689,7 @@ export function updateLabel(a: Actor, id: unknown, patch: LabelPatch): Label {
   }).immediate();
   changed("label", label.workspace, String(label.id));
   for (const ref of refs) changed("issue", label.workspace, ref);
-  return readLabel(label.id);
+  return readLabel(a, label.id);
 }
 
 /**
@@ -2421,7 +2699,7 @@ export function updateLabel(a: Actor, id: unknown, patch: LabelPatch): Label {
 export function deleteLabel(a: Actor, id: unknown): Label {
   const label = managedLabel(a, id);
   if (label.is_group && db.query("SELECT 1 FROM labels WHERE parent_id = ?").get(label.id)) throw new AppError("Move or delete its labels first", 409);
-  const deleted = readLabel(label.id);
+  const deleted = readLabel(a, label.id);
   const time = now();
   const read = db.query<IssueRow, [number]>(`${ISSUE_SELECT} WHERE i.id = ?`);
   const refs = db.transaction(() => {
@@ -2473,9 +2751,23 @@ const toView = (r: ViewRow): CustomView => ({
 
 /** A view of the request's workspace, by id, as the caller sees it; anything else is 404. */
 function viewRow(a: Actor, id: unknown): ViewRow {
-  const row = db.query<ViewRow, SQLQueryBindings[]>(`${VIEW_SELECT} WHERE v.id = ? AND v.workspace = ?`).get(a.id, Number(id), requestWorkspace(a));
-  if (!row) throw new AppError(`View ${id} not found`, 404);
+  // Views are workspace-wide, which guests don't see (Linear's guests: only their teams).
+  const row = isGuest(a) ? null : db.query<ViewRow, SQLQueryBindings[]>(`${VIEW_SELECT} WHERE v.id = ? AND v.workspace = ?`).get(a.id, Number(id), requestWorkspace(a));
+  if (!row || !viewSeen(row, seenBy(a))) throw new AppError(`View ${id} not found`, 404);
   return row;
+}
+
+/**
+ * Whether a view's filter names only what the reader sees: a view on a team, project or parent issue they don't see is
+ * left out (its name and filter would say it exists), like the thing itself.
+ */
+function viewSeen(row: ViewRow, seen: string): boolean {
+  const { team, project, parent } = JSON.parse(row.filter) as ViewFilter;
+  const known = (sql: string, value: string) => db.query(sql).get(row.workspace, value) !== null;
+  if (team && !known(`SELECT 1 FROM teams t WHERE t.workspace = ? AND t.key = ? AND t.id IN ${seen}`, team.trim().toUpperCase())) return false;
+  if (project && !known(`SELECT 1 FROM projects p WHERE p.workspace = ? AND p.slug = ? AND ${projectSeen(seen)}`, project.trim().toLowerCase())) return false;
+  const issue = parent ? /^([a-z]{2,5})-(\d+)$/i.exec(parent.trim()) : null;
+  return !parent || (!!issue && findIssue(row.workspace, issue[1]!.toUpperCase(), Number(issue[2]), seen) !== null);
 }
 
 /** A view the caller may change: its creator's, or any for a workspace admin (403 otherwise). */
@@ -2530,9 +2822,12 @@ function checkDisplay(value: unknown, current: ViewDisplay): ViewDisplay {
 
 /** The request's workspace's views, by name, each with whether the caller starred it. */
 export function listViews(a: Actor): CustomView[] {
+  if (isGuest(a)) return []; // workspace-wide: not for guests
+  const seen = seenBy(a);
   return db
     .query<ViewRow, SQLQueryBindings[]>(`${VIEW_SELECT} WHERE v.workspace = ? ORDER BY v.name COLLATE NOCASE, v.id`)
     .all(a.id, requestWorkspace(a))
+    .filter((row) => viewSeen(row, seen))
     .map(toView);
 }
 
@@ -2544,6 +2839,7 @@ export function createView(a: Actor, input: CustomViewInput): CustomView {
   if (input.workspace !== undefined && String(input.workspace).trim().toLowerCase() !== workspace) {
     throw new AppError("Views are created in the workspace you're in");
   }
+  if (isGuest(a)) throw new AppError("Guests can't save workspace views", 403);
   const name = requireText(input.name, "name");
   const filter = checkViewFilter(a, input.filter ?? {});
   const d = checkDisplay(input.display ?? {}, DEFAULT_DISPLAY);
@@ -2639,13 +2935,15 @@ function documentEvent(a: Actor, doc: { id: number; slug: string; workspace: str
   enqueue({ workspace: doc.workspace, type: "Document", action, entity: doc.slug, actorId: a.id, time, data, updatedFrom });
 }
 
-/** A doc of the request's workspace, by slug. */
+/** A doc of the request's workspace in a team you see, by slug; anything else is 404. */
 function documentRow(a: Actor, slug: unknown): DocumentRow {
   const workspace = requestWorkspace(a);
   const row =
     typeof slug === "string"
       ? db
-          .query<DocumentRow, [string, string]>(`SELECT d.content, ${DOC_COLUMNS} ${DOC_FROM} WHERE d.workspace = ? AND d.slug = ?`)
+          .query<DocumentRow, [string, string]>(
+            `SELECT d.content, ${DOC_COLUMNS} ${DOC_FROM} WHERE d.workspace = ? AND d.slug = ? AND ${SEES_TEAM(String(a.id), "t")}`,
+          )
           .get(workspace, slug.trim().toLowerCase())
       : null;
   if (!row) throw new AppError(`Document ${slug} not found`, 404);
@@ -2735,10 +3033,10 @@ function saveRefs(documentId: number, content: string, workspace: string) {
 }
 
 export function listDocuments(a: Actor, filter: DocumentFilter): DocumentSummary[] {
-  const { where, params, workspace } = listScope(a, "d", filter, ["d.title", "d.content"]);
+  const { where, params } = listScope(a, "d", filter, ["d.title", "d.content"]);
   if (filter.project) {
     where.push("d.project_id = ?");
-    params.push(projectIn(workspace, filter.project).id);
+    params.push(projectIn(a, filter.project).id);
   }
   return db
     .query<DocumentRow, SQLQueryBindings[]>(`${DOC_SELECT} ${whereClause(where)} ORDER BY t.key, d.position, d.id`)
@@ -2746,10 +3044,14 @@ export function listDocuments(a: Actor, filter: DocumentFilter): DocumentSummary
     .map(toDocSummary);
 }
 
+/** A doc as you see it: the issues it mentions leave out those in teams you don't see (their chips stay plain text). */
 export function getDocument(a: Actor, slug: string): Document {
   const row = documentRow(a, slug);
+  const seen = seenBy(a);
   const issues = db
-    .query<IssueRow, [number]>(`${ISSUE_SELECT} JOIN document_refs r ON r.issue_id = i.id WHERE r.document_id = ? AND ${LIVE} ORDER BY r.ord`)
+    .query<IssueRow, [number]>(
+      `${issueSelect(seen)} JOIN document_refs r ON r.issue_id = i.id WHERE r.document_id = ? AND ${LIVE} AND ${within("t.id", seen)} ORDER BY r.ord`,
+    )
     .all(row.id)
     .map(toSummary);
   const { n: versionCount } = db.query<{ n: number }, [number]>("SELECT COUNT(*) AS n FROM document_versions WHERE document_id = ?").get(row.id)!;
@@ -2762,7 +3064,7 @@ export function createDocument(a: Actor, input: DocumentInput): Document {
   const title = requireText(input.title, "title");
   const content = input.content === undefined ? "" : checkContent(input.content);
   const position = input.position === undefined ? undefined : checkPosition(input.position);
-  const project = input.project == null ? null : projectIn(team.workspace, input.project);
+  const project = input.project == null ? null : projectIn(a, input.project);
   const time = now();
   const slug = db.transaction(() => {
     const taken = (s: string) => db.query("SELECT 1 FROM documents WHERE workspace = ? AND slug = ?").get(team.workspace, s) !== null;
@@ -2803,7 +3105,7 @@ export function updateDocument(a: Actor, slug: string, patch: DocumentPatch): Do
     if (team.id !== row.team_id && patch.position === undefined) cols.position = nextPosition(team.id);
   }
   if (patch.position !== undefined) cols.position = checkPosition(patch.position);
-  if (patch.project !== undefined) cols.project_id = patch.project === null ? null : projectIn(row.workspace, patch.project).id;
+  if (patch.project !== undefined) cols.project_id = patch.project === null ? null : projectIn(a, patch.project).id;
   for (const [name, value] of Object.entries(cols)) if (row[name] === value) delete cols[name];
   if (Object.keys(cols).length === 0) return getDocument(a, row.slug);
 
@@ -2814,6 +3116,10 @@ export function updateDocument(a: Actor, slug: string, patch: DocumentPatch): Do
     const next: Record<string, SQLQueryBindings> = { ...cols, updated_at: time, updated_by_id: a.id };
     db.query(`UPDATE documents SET ${Object.keys(next).map((n) => `${n} = ?`).join(", ")} WHERE id = ?`).run(...Object.values(next), row.id);
     if (cols.title !== undefined || cols.content !== undefined) saveVersion(row.id, title, content, a.id, time, patch.checkpoint === true);
+    if (cols.team_id !== undefined) {
+      const comments = db.query<{ body: string }, [number]>("SELECT body FROM document_comments WHERE document_id = ?").all(row.id);
+      moveAttachments([content, ...comments.map((c) => c.body)], row.team_id, cols.team_id as number);
+    }
     if (cols.content !== undefined) {
       saveRefs(row.id, content, row.workspace);
       saveMentions(a, row.workspace, `document:${row.id}`, { documentId: row.id }, content, time, { typing: true });
@@ -2939,12 +3245,19 @@ function progressOf(json: string): { progress: number; issueCount: number } {
   return { progress: counted > 0 ? (t.completed + t.started / 2) / counted : 0, issueCount: t.n };
 }
 
-const PROJECT_SELECT = `
-  SELECT p.*, ${userCols("ul", "lead")}, ${userCols("uc", "creator")}, ${tally("i.project_id = p.id")} AS tally,
+/**
+ * Projects as a reader who sees `seen` finds them: a project spanning several teams shows only the teams they see, and
+ * its progress counts only those teams' issues.
+ */
+const projectSelect = (seen: Seen) => `
+  SELECT p.*, ${userCols("ul", "lead")}, ${userCols("uc", "creator")}, ${tally(`i.project_id = p.id AND ${within("i.team_id", seen)}`)} AS tally,
     (SELECT json_group_array(key) FROM (
-      SELECT t.key FROM project_teams x JOIN teams t ON t.id = x.team_id WHERE x.project_id = p.id ORDER BY t.key
+      SELECT t.key FROM project_teams x JOIN teams t ON t.id = x.team_id WHERE x.project_id = p.id AND ${within("t.id", seen)} ORDER BY t.key
     )) AS team_keys
   FROM projects p ${userJoin("ul", "p.lead_id", "p.workspace")} ${userJoin("uc", "p.creator_id", "p.workspace")}`;
+
+/** SQL: project `p` is one the reader sees: any of its teams is. */
+const projectSeen = (seen: Seen) => `EXISTS (SELECT 1 FROM project_teams px WHERE px.project_id = p.id AND ${within("px.team_id", seen)})`;
 
 // Lifecycle order (PROJECT_STATUSES), then the nearest target date (none last), then name.
 const PROJECT_ORDER = `ORDER BY CASE p.status ${PROJECT_STATUSES.map((s, n) => `WHEN '${s}' THEN ${n}`).join(" ")} END,
@@ -2963,30 +3276,35 @@ const toProjectSummary = (row: ProjectRow): ProjectSummary => ({
   updatedAt: row.updated_at,
 });
 
-/** A project of the request's workspace, by slug; anything else is 404. */
+/** A project of the request's workspace that you see (any of its teams), by slug; anything else is 404. */
 function projectRow(a: Actor, slug: unknown): ProjectRow {
+  const seen = seenBy(a);
   const row =
     typeof slug === "string"
-      ? db.query<ProjectRow, [string, string]>(`${PROJECT_SELECT} WHERE p.workspace = ? AND p.slug = ?`).get(requestWorkspace(a), slug.trim().toLowerCase())
+      ? db
+          .query<ProjectRow, [string, string]>(`${projectSelect(seen)} WHERE p.workspace = ? AND p.slug = ? AND ${projectSeen(seen)}`)
+          .get(requestWorkspace(a), slug.trim().toLowerCase())
       : null;
   if (!row) throw new AppError(`Project ${slug} not found`, 404);
   return row;
 }
 
-/** A team of `workspace` by key, for a project's teams or filter: another workspace's is unknown here (400). */
-function knownTeam(workspace: string, key: unknown): TeamRef {
+/** A team of the request's workspace that you see, by key, for a project's teams or filter: any other is unknown here (400). */
+function knownTeam(a: Actor, key: unknown): TeamRef {
   const row =
     typeof key === "string"
-      ? db.query<TeamRef, [string, string]>("SELECT id, key FROM teams WHERE workspace = ? AND key = ?").get(workspace, key.trim().toUpperCase())
+      ? db
+          .query<TeamRef, [string, string]>(`SELECT id, key FROM teams t WHERE t.workspace = ? AND t.key = ? AND ${SEES_TEAM(String(a.id), "t")}`)
+          .get(requestWorkspace(a), key.trim().toUpperCase())
       : null;
   if (!row) throw new AppError(`Unknown team "${key}"`);
   return row;
 }
 
-/** A project's teams: at least one, each of its workspace. */
-function projectTeams(workspace: string, value: unknown): number[] {
+/** A project's teams: at least one, each of the request's workspace and one you see. */
+function projectTeams(a: Actor, value: unknown): number[] {
   if (!Array.isArray(value) || !value.length) throw new AppError('teams must name at least one team, e.g. ["BRD"]');
-  return [...new Set(value.map((key) => knownTeam(workspace, key).id))];
+  return [...new Set(value.map((key) => knownTeam(a, key).id))];
 }
 
 /** A project's lead: a person who is an active member (or "me"), or null. */
@@ -2998,34 +3316,39 @@ function leadId(a: Actor, workspace: string, value: unknown): number | null {
 
 const checkTargetDate = (value: unknown) => (value === null ? null : checkDate(value, "targetDate"));
 
+/** The projects you see: those with a team you see (a project spanning a private team shows only your teams' part). */
 export function listProjects(a: Actor, filter: { team?: string; status?: string[] } = {}): ProjectSummary[] {
   const workspace = requestWorkspace(a);
-  const where = ["p.workspace = ?"];
+  const seen = seenBy(a, workspace);
+  const where = ["p.workspace = ?", projectSeen(seen)];
   const params: SQLQueryBindings[] = [workspace];
   if (filter.team) {
     where.push("EXISTS (SELECT 1 FROM project_teams x WHERE x.project_id = p.id AND x.team_id = ?)");
-    params.push(knownTeam(workspace, filter.team).id);
+    params.push(knownTeam(a, filter.team).id);
   }
   if (filter.status?.length) {
     where.push(`p.status IN (${inList(filter.status)})`);
     params.push(...filter.status.map((s) => checkOneOf(s, PROJECT_STATUSES, "status")));
   }
   return db
-    .query<ProjectRow, SQLQueryBindings[]>(`${PROJECT_SELECT} ${whereClause(where)} ${PROJECT_ORDER}`)
+    .query<ProjectRow, SQLQueryBindings[]>(`${projectSelect(seen)} ${whereClause(where)} ${PROJECT_ORDER}`)
     .all(...params)
     .map(toProjectSummary);
 }
 
 export function getProject(a: Actor, slug: string): Project {
   const row = projectRow(a, slug);
+  const seen = seenBy(a);
   const milestones = db
-    .query<MilestoneRow & { tally: string }, [number]>(`SELECT m.*, ${tally("i.milestone_id = m.id")} AS tally FROM milestones m WHERE m.project_id = ? ORDER BY m.position, m.id`)
+    .query<MilestoneRow & { tally: string }, [number]>(
+      `SELECT m.*, ${tally(`i.milestone_id = m.id AND ${within("i.team_id", seen)}`)} AS tally FROM milestones m WHERE m.project_id = ? ORDER BY m.position, m.id`,
+    )
     .all(row.id)
     .map(
       (m): Milestone => ({ id: m.id, name: m.name, description: m.description, targetDate: m.target_date, position: m.position, ...progressOf(m.tally) }),
     );
   const docs = db
-    .query<DocumentRow, [number]>(`${DOC_SELECT} WHERE d.project_id = ? AND d.deleted_at IS NULL ORDER BY t.key, d.position, d.id`)
+    .query<DocumentRow, [number]>(`${DOC_SELECT} WHERE d.project_id = ? AND d.deleted_at IS NULL AND ${within("t.id", seen)} ORDER BY t.key, d.position, d.id`)
     .all(row.id)
     .map(toDocSummary);
   return { ...toProjectSummary(row), description: row.description, creator: ref(row, "creator")!, milestones, docs };
@@ -3039,7 +3362,7 @@ const setProjectTeams = (projectId: number, teamIds: number[]) => {
 /** Creates a project (any member, people and agents alike) over teams of the request's workspace, its workspace. */
 export function createProject(a: Actor, input: ProjectInput): Project {
   const workspace = requestWorkspace(a);
-  const teams = projectTeams(workspace, input.teams);
+  const teams = projectTeams(a, input.teams);
   const name = requireText(input.name, "name");
   const description = optionalText(input.description, "description");
   const status = input.status === undefined ? "backlog" : checkOneOf(input.status, PROJECT_STATUSES, "status");
@@ -3063,8 +3386,8 @@ export function createProject(a: Actor, input: ProjectInput): Project {
 }
 
 /**
- * Changes a project; `teams` replaces the list, but a team with issues in the project (trashed ones too) stays (409).
- * `baseUpdatedAt` works as for issues. There's no delete: a project is canceled instead.
+ * Changes a project; `teams` replaces the list of teams you see (the ones you don't stay), but a team with issues in the
+ * project (trashed ones too) stays (409). `baseUpdatedAt` works as for issues. There's no delete: a project is canceled instead.
  */
 export function updateProject(a: Actor, slug: string, patch: ProjectPatch): Project {
   const row = projectRow(a, slug);
@@ -3074,7 +3397,11 @@ export function updateProject(a: Actor, slug: string, patch: ProjectPatch): Proj
   if (patch.status !== undefined) cols.status = checkOneOf(patch.status, PROJECT_STATUSES, "status");
   if (patch.lead !== undefined) cols.lead_id = leadId(a, row.workspace, patch.lead);
   if (patch.targetDate !== undefined) cols.target_date = checkTargetDate(patch.targetDate);
-  const teams = patch.teams === undefined ? undefined : projectTeams(row.workspace, patch.teams);
+  const unseen = db
+    .query<{ team_id: number }, [number]>(`SELECT team_id FROM project_teams WHERE project_id = ? AND NOT ${within("team_id", seenBy(a))}`)
+    .all(row.id)
+    .map((t) => t.team_id);
+  const teams = patch.teams === undefined ? undefined : [...projectTeams(a, patch.teams), ...unseen];
   db.transaction(() => {
     const { updated_at } = db.query<{ updated_at: string }, [number]>("SELECT updated_at FROM projects WHERE id = ?").get(row.id)!;
     if (patch.baseUpdatedAt !== undefined && patch.baseUpdatedAt !== updated_at) throw new AppError("Project changed since you read it", 409);
@@ -3347,40 +3674,67 @@ export function listCycles(a: Actor, key: string): Cycle[] {
     );
 }
 
+// --- Realtime: which teams a change is about ---
+
+/**
+ * The teams a change event is about, so /ws sends it only to sockets that see one: an issue's (by its identifier's
+ * key), a doc's, a team, a team's own label, a project's teams. null: not about a team (the workspace, its members,
+ * views, the workspace's own labels), so everyone in the workspace hears it.
+ */
+export function eventTeams(event: ServerEvent): { id: number; private: boolean }[] | null {
+  const { entity, workspace, id } = event;
+  const teams = (sql: string, key: SQLQueryBindings) =>
+    db
+      .query<{ id: number; private: number }, [string, SQLQueryBindings]>(`SELECT t.id, t.private ${sql}`)
+      .all(workspace, key)
+      .map((t) => ({ id: t.id, private: t.private === 1 }));
+  if (entity === "team") return teams("FROM teams t WHERE t.workspace = ? AND t.key = ?", id);
+  if (entity === "issue") return teams("FROM teams t WHERE t.workspace = ? AND t.key = ?", id.slice(0, id.lastIndexOf("-")));
+  if (entity === "document") return teams("FROM documents d JOIN teams t ON t.id = d.team_id WHERE d.workspace = ? AND d.slug = ?", id);
+  if (entity === "project") {
+    return teams("FROM projects p JOIN project_teams x ON x.project_id = p.id JOIN teams t ON t.id = x.team_id WHERE p.workspace = ? AND p.slug = ?", id);
+  }
+  if (entity === "label") {
+    const own = teams("FROM labels l JOIN teams t ON t.id = l.team_id WHERE l.workspace = ? AND l.id = ?", Number(id));
+    return own.length ? own : null;
+  }
+  return null;
+}
+
 // --- Links made before URLs carried the workspace ---
 
 /**
- * Which of your workspaces an issue, doc or team (exactly one) is in, ignoring the request's. When several
- * match, the oldest team or doc wins: keys and slugs were unique across workspaces before, so old links meant it.
+ * Which of your workspaces an issue, doc or team (exactly one) is in, ignoring the request's: only teams you see there
+ * count. When several match, the oldest team or doc wins: keys and slugs were unique across workspaces before, so old
+ * links meant it.
  */
 export function locate(a: Actor, query: { issue?: string; doc?: string; team?: string }): { workspace: string } {
   const given = Object.entries(query).filter(([, value]) => value !== undefined);
   if (given.length !== 1) throw new AppError("Pass exactly one of issue, doc or team");
   const [kind, value] = given[0]! as [string, string];
-  const mine = [...a.workspaces.keys()];
-  const within = `IN (${inList(mine)})`;
-  const numbered = `IN (${mine.map((_, n) => `?${n + 3}`).join(", ") || "NULL"})`; // after ?1 and ?2, used twice
+  // The teams you see across your workspaces, so outside them (another workspace, a private team) nothing matches.
+  const seen = `(${[...a.workspaces.keys()].flatMap((w) => visibleTeamIds(a, w)).join(", ") || "NULL"})`;
   const issue = /^([a-z]{2,5})-(\d+)$/i.exec(value.trim());
   const row =
     kind === "doc"
       ? db
-          .query<{ workspace: string }, SQLQueryBindings[]>(`SELECT workspace FROM documents WHERE slug = ? AND workspace ${within} ORDER BY created_at, id`)
-          .get(value.trim().toLowerCase(), ...mine)
+          .query<{ workspace: string }, [string]>(`SELECT workspace FROM documents WHERE slug = ? AND team_id IN ${seen} ORDER BY created_at, id`)
+          .get(value.trim().toLowerCase())
       : kind === "team"
         ? db
-            .query<{ workspace: string }, SQLQueryBindings[]>(`SELECT workspace FROM teams WHERE key = ? AND workspace ${within} ORDER BY created_at, id`)
-            .get(value.trim().toUpperCase(), ...mine)
+            .query<{ workspace: string }, [string]>(`SELECT workspace FROM teams WHERE key = ? AND id IN ${seen} ORDER BY created_at, id`)
+            .get(value.trim().toUpperCase())
         : issue
           ? db
-              .query<{ workspace: string }, SQLQueryBindings[]>(
+              .query<{ workspace: string }, [string, number]>(
                 // Its current identifier, or one it had before it moved team.
                 `SELECT t.workspace, t.created_at, t.id FROM issues i JOIN teams t ON t.id = i.team_id
-                 WHERE t.key = ?1 AND i.number = ?2 AND t.workspace ${numbered}
-                 UNION ALL SELECT t.workspace, t.created_at, t.id FROM issue_aliases a JOIN teams t ON t.id = a.team_id
-                 WHERE t.key = ?1 AND a.number = ?2 AND t.workspace ${numbered}
+                 WHERE t.key = ?1 AND i.number = ?2 AND t.id IN ${seen}
+                 UNION ALL SELECT t.workspace, t.created_at, t.id FROM issue_aliases a JOIN teams t ON t.id = a.team_id JOIN issues i ON i.id = a.issue_id
+                 WHERE t.key = ?1 AND a.number = ?2 AND t.id IN ${seen} AND i.team_id IN ${seen}
                  ORDER BY 2, 3`,
               )
-              .get(issue[1]!.toUpperCase(), Number(issue[2]), ...mine)
+              .get(issue[1]!.toUpperCase(), Number(issue[2]))
           : null;
   if (!row) throw new AppError("Not found", 404);
   return { workspace: row.workspace };

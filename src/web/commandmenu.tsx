@@ -19,6 +19,7 @@ import {
   IssueStatusIcon,
   StarIcon,
   TeamMark,
+  TeamsIcon,
   ViewsIcon,
   cls,
   navigate,
@@ -136,7 +137,7 @@ export function CommandMenu() {
   const items = useMemo((): Item[] => {
     if (!open) return [];
     const q = query.trim().toLowerCase();
-    const actions: Item[] = [
+    const all: Item[] = [
       { key: "new-issue", label: "New issue", icon: <ComposeIcon />, group: "Actions", run: act(() => app.newIssue()) },
       { key: "new-doc", label: "New doc", icon: <DocIcon />, group: "Actions", run: act(() => app.newDoc()) },
       { key: "new-project", label: "New project", icon: <ProjectIcon />, group: "Actions", run: act(() => app.newProject()) },
@@ -156,8 +157,11 @@ export function CommandMenu() {
       { key: "go-docs", label: "Go to All docs", icon: <DocIcon />, group: "Actions", run: go("/docs") },
       { key: "go-projects", label: "Go to Projects", icon: <ProjectIcon />, group: "Actions", run: go("/projects") },
       { key: "go-views", label: "Go to Views", icon: <ViewsIcon />, group: "Actions", run: go("/views") },
+      { key: "go-teams", label: "Go to Teams", icon: <TeamsIcon />, group: "Actions", run: go("/teams") },
       { key: "go-settings", label: "Go to Settings", icon: <SettingsIcon />, group: "Actions", run: go("/settings/account") },
     ];
+    // Guests see only their teams: no new teams, no workspace views.
+    const actions = app.workspace?.role === "guest" ? all.filter((a) => !["new-team", "new-view", "go-views"].includes(a.key)) : all;
     for (const t of app.teams ?? [])
       if (t.cycleWeeks) actions.push({ key: `go-cycles-${t.key}`, label: `Go to Cycles: ${t.name}`, icon: <CycleIcon />, group: "Actions", run: go(`/t/${t.key}/cycles`) });
     if (app.workspace?.role === "admin")

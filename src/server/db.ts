@@ -704,6 +704,24 @@ const MIGRATIONS: (string | (() => void))[] = [
     PRIMARY KEY (issue_id, url)
   );
   `,
+  // Team membership, private teams and guests (Linear's): who is in which team, and teams only their members see. A
+  // guest invite names its teams. An attachment may belong to the team it was uploaded in (NULL: the workspace's).
+  // Everyone is in every team today, so nothing changes for anyone: every workspace member (people, agents and
+  // integrations; suspended ones too, for when they're reinstated) joins every team of their workspace, all public.
+  `
+  CREATE TABLE team_members (
+    team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (team_id, user_id)
+  );
+  CREATE INDEX team_members_user ON team_members(user_id);
+  ALTER TABLE teams ADD COLUMN private INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0, 1));
+  ALTER TABLE codes ADD COLUMN teams TEXT; -- an invite's teams: JSON array of team ids
+  ALTER TABLE attachments ADD COLUMN team_id INTEGER REFERENCES teams(id);
+  INSERT INTO team_members (team_id, user_id, created_at)
+    SELECT t.id, m.user_id, MAX(t.created_at, m.created_at) FROM teams t JOIN workspace_members m ON m.workspace = t.workspace;
+  `,
 ];
 
 db.run("PRAGMA foreign_keys = OFF"); // a migration may rebuild a table (SQLite's 12-step ALTER); checked before each commit

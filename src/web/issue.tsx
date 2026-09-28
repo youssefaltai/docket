@@ -23,6 +23,7 @@ import {
 } from "./pickers";
 import {
   ArchivedBanner,
+  EditorTeam,
   Avatar,
   ago,
   BranchIcon,
@@ -263,6 +264,7 @@ export function IssuePage({ id }: { id: string }) {
           )}
         </>,
       )}
+      <EditorTeam.Provider value={issue.team}>
       <div className="issue">
         <div className="issue-main">
           <div className="issue-inner">
@@ -306,6 +308,7 @@ export function IssuePage({ id }: { id: string }) {
           </fieldset>
         </aside>
       </div>
+      </EditorTeam.Provider>
     </>
   );
 }
@@ -475,7 +478,7 @@ function SubIssues({ issue, onPatch }: { issue: Issue; onPatch: (id: string, p: 
               </Link>
               <span className="grow" />
               <PriorityPicker value={c.priority} onChange={(priority) => onPatch(c.id, { priority })} className="row-btn" />
-              <AssigneePicker value={c.assignee} onChange={(assignee) => onPatch(c.id, { assignee })} className="row-btn" align="end" />
+              <AssigneePicker team={c.team} value={c.assignee} onChange={(assignee) => onPatch(c.id, { assignee })} className="row-btn" align="end" />
             </div>
           ))}
         </div>
@@ -656,13 +659,13 @@ function Properties({ issue, patch }: { issue: Issue; patch: (p: IssueChange) =>
         </Prop>
       )}
       <Prop label="Assignee" cmd="assignee">
-        <AssigneePicker value={issue.assignee} onChange={(assignee) => patch({ assignee })} className="prop-btn">
+        <AssigneePicker team={issue.team} value={issue.assignee} onChange={(assignee) => patch({ assignee })} className="prop-btn">
           <Avatar user={issue.assignee} />
           {issue.assignee ? <span dir="auto">{issue.assignee.name}</span> : <span className="muted">Unassigned</span>}
         </AssigneePicker>
       </Prop>
       <Prop label="Delegate" cmd="delegate">
-        <DelegatePicker value={issue.delegate} onChange={(delegate) => patch({ delegate })} className="prop-btn">
+        <DelegatePicker team={issue.team} value={issue.delegate} onChange={(delegate) => patch({ delegate })} className="prop-btn">
           <Avatar user={issue.delegate} />
           {issue.delegate ? <span dir="auto">{issue.delegate.name}</span> : none}
         </DelegatePicker>

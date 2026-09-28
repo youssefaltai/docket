@@ -65,7 +65,7 @@ export const auth = {
 
   updateMember: (workspace: string, username: string, patch: { role?: Exclude<Role, "agent">; suspended?: boolean }) =>
     request<WorkspaceMember>("PATCH", `${ws(workspace)}/members/${enc(username)}`, patch),
-  invite: (workspace: string, role: Exclude<Role, "agent">) => request<CodeLink>("POST", `${ws(workspace)}/invites`, { role }),
+  invite: (workspace: string, role: Exclude<Role, "agent">, teams?: string[]) => request<CodeLink>("POST", `${ws(workspace)}/invites`, { role, teams }),
   createAgent: (workspace: string, name: string, username: string) =>
     request<{ agent: UserRef; token: string }>("POST", `${ws(workspace)}/agents`, { name, username }),
   rotateAgentToken: (workspace: string, username: string) => request<{ token: string }>("POST", `${ws(workspace)}/agents/${enc(username)}/token`),

@@ -36,9 +36,11 @@ import type {
   Team,
   Cycle,
   TeamInput,
+  TeamListing,
   TeamPatch,
   ServerEvent,
   Trash,
+  UserRef,
   WorkflowStatusInput,
   WorkflowStatusPatch,
   Workspace,
@@ -157,8 +159,9 @@ function inOrder<T>(key: string, send: () => Promise<T>): Promise<T> {
 }
 
 export const api = {
-  /** Uploads a file to this tab's workspace, as raw bytes (see SPEC: Attachments). */
-  upload: (file: File) => send<Attachment>("POST", `/api/attachments?name=${enc(file.name)}`, file, "application/octet-stream"),
+  /** Uploads a file to this tab's workspace, as raw bytes (see SPEC: Attachments); in `team`, only those who see it get it. */
+  upload: (file: File, team?: string | null) =>
+    send<Attachment>("POST", `/api/attachments?name=${enc(file.name)}${team ? `&team=${enc(team)}` : ""}`, file, "application/octet-stream"),
   workspaces: () => request<Workspace[]>("GET", "/api/workspaces"),
   createWorkspace: (input: WorkspaceInput) => request<Workspace>("POST", "/api/workspaces", input),
   updateWorkspace: (key: string, patch: WorkspacePatch) =>
@@ -169,6 +172,12 @@ export const api = {
   createTeam: (input: TeamInput) => request<Team>("POST", "/api/teams", input),
   updateTeam: (key: string, patch: TeamPatch) =>
     request<Team>("PATCH", `/api/teams/${enc(key)}`, patch),
+  teamMembers: (key: string) => request<UserRef[]>("GET", `/api/teams/${enc(key)}/members`),
+  /** `username` "me" joins it. */
+  addTeamMember: (key: string, username: string) => request<Team>("POST", `/api/teams/${enc(key)}/members`, { username }),
+  removeTeamMember: (key: string, username: string) => request<Team>("DELETE", `/api/teams/${enc(key)}/members/${enc(username)}`),
+  /** Every team of the workspace, private ones you aren't in too (admins, to find one to join). */
+  teamListings: (workspace: string) => request<TeamListing[]>("GET", `/api/workspaces/${enc(workspace)}/teams`),
   createStatus: (team: string, input: WorkflowStatusInput) => request<Team>("POST", `/api/teams/${enc(team)}/statuses`, input),
   updateStatus: (team: string, key: string, patch: WorkflowStatusPatch) =>
     request<Team>("PATCH", `/api/teams/${enc(team)}/statuses/${enc(key)}`, patch),

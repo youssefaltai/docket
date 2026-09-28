@@ -142,11 +142,11 @@ const Uploads = Extension.create({
 });
 
 /** Uploads files, each shown as a placeholder at `at` (else the caret), then linked where the placeholder is. */
-function insertFiles(editor: Editor, files: File[], at: number | null) {
+function insertFiles(editor: Editor, files: File[], at: number | null, team: string | null | undefined) {
   for (const file of files) {
     const id = {};
     editor.view.dispatch(editor.state.tr.setMeta(uploadsKey, { add: { id, pos: at ?? editor.state.selection.from, name: file.name } }));
-    upload(file).then((markdown) => {
+    upload(file, team).then((markdown) => {
       if (editor.isDestroyed) return;
       const pos = uploadsKey.getState(editor.state)!.find(undefined, undefined, (spec) => spec.id === id)[0]?.from;
       editor.view.dispatch(editor.state.tr.setMeta(uploadsKey, { done: id }));
@@ -193,7 +193,7 @@ export function Rich(props: EditorProps & { onReject: () => void }) {
     if (!admits(props.value)) return props.onReject();
     const editor = new Editor({
       element: host.current,
-      extensions: extensions([Chips.configure({ source }), Placeholder, Uploads], (files, at) => insertFiles(editor, files, at)),
+      extensions: extensions([Chips.configure({ source }), Placeholder, Uploads], (files, at) => insertFiles(editor, files, at, latest.current.team)),
       content: props.value,
       contentType: "markdown",
       injectCSS: false, // styles.css has them (the CSP allows no inline styles)
@@ -302,7 +302,7 @@ export function Rich(props: EditorProps & { onReject: () => void }) {
     return editorKey(event, latest.current);
   };
 
-  if (props.attach) props.attach.current = (files) => editor && insertFiles(editor, files, null);
+  if (props.attach) props.attach.current = (files) => editor && insertFiles(editor, files, null, props.team);
 
   return (
     <>

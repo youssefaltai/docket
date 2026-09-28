@@ -49,7 +49,7 @@ async function patch<T = Record<string, unknown>>(req: Request, what: string, fi
 }
 
 const ISSUE_FIELDS = ["title", "description", "team", "status", "priority", "labels", "assignee", "delegate", "parent", "blockedBy", "relatedTo", "duplicateOf", "dueOn", "estimate", "project", "milestone", "cycle", "baseUpdatedAt"];
-const TEAM_FIELDS = ["name", "description", "defaultStatus", "autoCloseParent", "autoCloseChildren", "autoArchiveDays", "estimateScale", "cycleWeeks", "upcomingCycles", "cycleStartsOn"];
+const TEAM_FIELDS = ["name", "description", "defaultStatus", "autoCloseParent", "autoCloseChildren", "autoArchiveDays", "estimateScale", "cycleWeeks", "upcomingCycles", "cycleStartsOn", "private"];
 const DOCUMENT_FIELDS = ["title", "content", "edits", "team", "position", "checkpoint", "project", "baseUpdatedAt"];
 const PROJECT_FIELDS = ["name", "description", "status", "lead", "targetDate", "teams", "baseUpdatedAt"];
 const MILESTONE_FIELDS = ["name", "description", "targetDate", "position"];
@@ -135,6 +135,9 @@ export const apiRoutes = {
       access.updateMember(actorOf(req), req.params.key, req.params.username, await patch(req, "a member", ["role", "suspended"])),
     ),
   },
+  "/api/workspaces/:key/teams": {
+    GET: handle<"/api/workspaces/:key/teams">((req) => access.listTeamListings(actorOf(req), req.params.key)),
+  },
   "/api/workspaces/:key/invites": {
     POST: handle<"/api/workspaces/:key/invites">(async (req) => link(req, access.invite(actorOf(req), req.params.key, await body(req))), 201),
   },
@@ -192,6 +195,15 @@ export const apiRoutes = {
         }),
       ),
     ),
+  },
+  "/api/teams/:key/members": {
+    GET: handle<"/api/teams/:key/members">((req) => tracker.listTeamMembers(actorOf(req), req.params.key)),
+    POST: handle<"/api/teams/:key/members">(async (req) =>
+      tracker.addTeamMember(actorOf(req), req.params.key, (await patch(req, "a team member", ["username"])).username),
+    ),
+  },
+  "/api/teams/:key/members/:username": {
+    DELETE: handle<"/api/teams/:key/members/:username">((req) => tracker.removeTeamMember(actorOf(req), req.params.key, req.params.username)),
   },
   "/api/teams/:key/statuses": {
     POST: handle<"/api/teams/:key/statuses">(

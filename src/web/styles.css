@@ -3481,3 +3481,18 @@ textarea.input {
   opacity: 0.6;
   pointer-events: none;
 }
+
+/* ---------- Teams: private teams' lock, the Browse teams page ---------- */
+
+.team-lock {
+  width: 12px;
+  height: 12px;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.workflow-switch .team-lock {
+  vertical-align: -1px;
+}
+.row.dim .row-title {
+  color: var(--muted);
+}

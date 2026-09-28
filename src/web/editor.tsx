@@ -1,11 +1,11 @@
 // Editing markdown. RichEditor edits it as rich text (Tiptap, in tiptap.tsx: its own chunk, fetched on first edit)
 // or as its markdown source. Both have @mention autocomplete: a small popover at the caret that inserts `@username `.
-import { useEffect, useLayoutEffect, useRef, useState, type DragEvent, type ReactNode, type RefObject } from "react";
+import { useContext, useEffect, useLayoutEffect, useRef, useState, type DragEvent, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { MAX_UPLOAD_BYTES, attachmentMarkdown, type UserRef } from "../shared/types";
 import { api } from "./api";
 import { Avatar, isMe } from "./components";
-import { useApp } from "./context";
+import { EditorTeam, seesTeam, useApp } from "./context";
 import { PaperclipIcon } from "./icons";
 import { Markdown } from "./markdown";
 import { toast } from "./toast";
@@ -46,12 +46,16 @@ function caretBox(el: HTMLTextAreaElement, index: number): CaretBox {
   return at;
 }
 
-/** Who `@query` offers: the workspace's active members (people, then agents; not you) whose username or name starts with it. */
+/**
+ * Who `@query` offers: the workspace's active members who see the team being written in (people, then agents; not you)
+ * whose username or name starts with it.
+ */
 export function useMentionable(query: string | undefined): UserRef[] {
-  const { members } = useApp();
+  const { members, teams } = useApp();
+  const team = teams?.find((t) => t.key === useContext(EditorTeam));
   if (query === undefined) return [];
   return members
-    .filter((m) => !m.suspendedAt && !m.integration && !isMe(m.user))
+    .filter((m) => !m.suspendedAt && !m.integration && !isMe(m.user) && seesTeam(m, team))
     .map((m) => m.user)
     .filter((u) => u.username.startsWith(query) || u.name.toLowerCase().startsWith(query))
     .sort((a, b) => Number(a.kind === "agent") - Number(b.kind === "agent"))
@@ -229,6 +233,8 @@ export interface EditorProps {
   onAttach?: () => void;
   /** Where RichEditor's picked files go: the mode shown sets it to insert them at its caret. */
   attach?: RefObject<((files: File[]) => void) | null>;
+  /** The team files upload to (RichEditor sets it from EditorTeam). */
+  team?: string | null;
 }
 
 /** ⌘↵, ⌘S, ⌘⇧A and Esc, the same in both modes: true when one was used. */
@@ -252,14 +258,14 @@ export function editorKey(e: Key, { onSubmit, onSave, onCancel, onAttach }: Edit
 
 // ---------- Attachments: paste, drop or pick files; each uploads to the workspace shown and is linked where it went ----------
 
-/** Uploads a file: the markdown that shows it (an image, or a link), or null when it can't (a toast says why). */
-export async function upload(file: File): Promise<string | null> {
+/** Uploads a file (to `team`, see EditorTeam): the markdown that shows it (an image, or a link), or null when it can't (a toast says why). */
+export async function upload(file: File, team?: string | null): Promise<string | null> {
   if (file.size > MAX_UPLOAD_BYTES) {
     toast(`${file.name} is over ${MAX_UPLOAD_BYTES / 1024 / 1024} MB`);
     return null;
   }
   try {
-    return attachmentMarkdown(await api.upload(file));
+    return attachmentMarkdown(await api.upload(file, team));
   } catch (err) {
     toast(`Couldn’t upload ${file.name}: ${err instanceof Error ? err.message : err}`);
     return null;
@@ -305,7 +311,7 @@ export function RichEditor({
   const attach = useRef<((files: File[]) => void) | null>(null);
   const picker = useRef<HTMLInputElement>(null);
   const pick = () => picker.current?.click();
-  props = { ...props, attach, onAttach: pick };
+  props = { ...props, attach, onAttach: pick, team: useContext(EditorTeam) };
 
   useEffect(() => {
     if (!kit) loadTiptap().then(setKit, () => setFailed(true)); // offline, say: the source still works
@@ -395,7 +401,7 @@ function SourceEditor(props: EditorProps) {
     caret.current = start + added.length;
     set(text.current.slice(0, start) + added + text.current.slice(el.selectionEnd));
     files.forEach((file, i) =>
-      upload(file).then((markdown) => {
+      upload(file, latest.current.team).then((markdown) => {
         const at = text.current.indexOf(holders[i]!);
         if (at < 0) return; // edited away meanwhile
         const shift = (markdown ?? "").length - holders[i]!.length;

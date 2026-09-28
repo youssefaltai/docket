@@ -1,8 +1,8 @@
 import "./config.ts";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
-import { formatCode, needsSetup, onRevoke, purgeExpiredKeys, setupCode } from "./access.ts";
-import { MAX_UPLOAD_BYTES } from "../shared/types.ts";
+import { type Actor, formatCode, heardTeams, needsSetup, onRevoke, purgeExpiredKeys, setupCode } from "./access.ts";
+import { MAX_UPLOAD_BYTES, type ServerEvent } from "../shared/types.ts";
 import { apiRoutes } from "./api.ts";
 import { attachmentRoutes } from "./attachments.ts";
 import { actorOf, authRoutes, guard } from "./auth.ts";
@@ -11,20 +11,41 @@ import { receive as receiveGitHub } from "./github.ts";
 import { onChange } from "./db.ts";
 import { HARD_MAX_BODY, http, publicFile, secure, webApp } from "./http.ts";
 import { handleMcp } from "./mcp.ts";
-import { autoArchive, syncCycles } from "./tracker.ts";
+import { autoArchive, eventTeams, syncCycles } from "./tracker.ts";
 import { startWebhooks } from "./webhooks.ts";
 
-/** Whose credentials each socket rides on, so signing out, revoking or suspending closes it. */
+/** Whose credentials each socket rides on, so signing out, revoking or suspending closes it; and what it hears. */
 interface SocketData {
   userId: number;
   sessionId: number | null;
   keyId: number | null;
-  workspaces: string[];
+  topics: string[];
 }
 const sockets = new Map<number, Set<Bun.ServerWebSocket<SocketData>>>();
+// What isn't about a team (the workspace, members, views, workspace labels): everyone in the workspace.
 const topic = (workspace: string) => `workspace:${workspace}`;
+// Public teams' events: everyone in the workspace but guests, who hear only their teams.
+const publicTopic = (workspace: string) => `public:${workspace}`;
+// One team's events: a private team's members, and a public team's guests.
+const teamTopic = (teamId: number) => `team:${teamId}`;
 // Events for one user (their inbox, their subscriptions), per workspace: a key's socket hears only its own.
 const userTopic = (userId: number, workspace: string) => `user:${userId}:${workspace}`;
+
+/** A socket's topics as of when it opens; any change to what its user sees closes it (revokeAccess), and it reconnects. */
+const topicsOf = (a: Actor) =>
+  [...a.workspaces].flatMap(([workspace, role]) => [
+    topic(workspace),
+    userTopic(a.id, workspace),
+    ...(role === "guest" ? [] : [publicTopic(workspace)]),
+    ...heardTeams(a, workspace).map(teamTopic),
+  ]);
+
+/** Where a change goes: a team's to those who see it (see eventTeams), anything else to the whole workspace. */
+function topicsFor(event: ServerEvent): string[] {
+  const teams = eventTeams(event);
+  if (teams === null) return [topic(event.workspace)];
+  return [...new Set(teams.flatMap((t) => (t.private ? [teamTopic(t.id)] : [publicTopic(event.workspace), teamTopic(t.id)])))];
+}
 
 const publicDir = join(import.meta.dir, "..", "..", "public");
 const iconsDir = join(publicDir, "icons");
@@ -66,7 +87,7 @@ const server = Bun.serve({
     "/ws": http(
       guard((req: Request, server: Bun.Server<SocketData>) => {
         const a = actorOf(req);
-        const data = { userId: a.id, sessionId: a.sessionId, keyId: a.keyId, workspaces: [...a.workspaces.keys()] };
+        const data = { userId: a.id, sessionId: a.sessionId, keyId: a.keyId, topics: topicsOf(a) };
         return server.upgrade(req, { data }) ? undefined : new Response("Expected a WebSocket", { status: 400 });
       }),
     ),
@@ -76,10 +97,7 @@ const server = Bun.serve({
   websocket: {
     data: {} as SocketData,
     open(ws) {
-      for (const workspace of ws.data.workspaces) {
-        ws.subscribe(topic(workspace));
-        ws.subscribe(userTopic(ws.data.userId, workspace));
-      }
+      for (const t of ws.data.topics) ws.subscribe(t);
       sockets.set(ws.data.userId, (sockets.get(ws.data.userId) ?? new Set()).add(ws));
     },
     close(ws) {
@@ -93,9 +111,10 @@ setInterval(purgeExpiredKeys, 60 * 60 * 1000);
 setInterval(autoArchive, 60 * 60 * 1000);
 setInterval(() => syncCycles(), 60 * 1000); // a cycle ends within a minute of midnight UTC
 
-onChange((event, userId) =>
-  server.publish(userId === undefined ? topic(event.workspace) : userTopic(userId, event.workspace), JSON.stringify(event)),
-);
+onChange((event, userId) => {
+  const message = JSON.stringify(event);
+  for (const t of userId === undefined ? topicsFor(event) : [userTopic(userId, event.workspace)]) server.publish(t, message);
+});
 
 // A socket only hears its workspaces as of when it opened, so any change to a user's access closes
 // theirs (or just the one riding on a revoked session or key); clients reconnect with what's current.
