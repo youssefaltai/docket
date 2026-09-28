@@ -4,7 +4,7 @@ import type { Document, DocumentPatch, DocumentSummary, DocumentVersion, Documen
 import { HttpError, api } from "./api";
 import { RichEditor } from "./editor";
 import { SubscribeButton } from "./inbox";
-import { TeamPicker } from "./pickers";
+import { ProjectPicker, TeamPicker, useProjects } from "./pickers";
 import {
   Avatar,
   ChevronRightIcon,
@@ -20,6 +20,8 @@ import {
   Markdown,
   MenuButton,
   PlusIcon,
+  ProjectIcon,
+  ProjectStatusIcon,
   TeamMark,
   TeamNotFound,
   SearchIcon,
@@ -166,6 +168,18 @@ function DocRow({ doc }: { doc: DocumentSummary }) {
 }
 
 // ---------- Doc page ----------
+
+/** The meta line's project: the one the doc is attached to, or "No project". */
+function DocProject({ value, onChange }: { value: string | null; onChange: (slug: string | null) => void }) {
+  const projects = useProjects();
+  const project = projects.find((p) => p.slug === value);
+  return (
+    <ProjectPicker projects={projects} value={value} onChange={onChange} className="doc-meta-btn">
+      {project ? <ProjectStatusIcon status={project.status} /> : <ProjectIcon />}
+      <span dir="auto">{value ? (project?.name ?? value) : "No project"}</span>
+    </ProjectPicker>
+  );
+}
 
 type SaveState = "idle" | "saving" | "saved" | "error";
 const SAVE_LABELS: Record<SaveState, string> = { idle: "", saving: "Saving…", saved: "Saved", error: "Not saved" };
@@ -368,6 +382,8 @@ export function DocPage({ slug }: { slug: string }) {
                     <TeamMark id={doc.team} />
                     <span dir="auto">{team?.name ?? doc.team}</span>
                   </TeamPicker>
+                  <span aria-hidden="true">·</span>
+                  <DocProject value={doc.project} onChange={(project) => patch({ project })} />
                   <span aria-hidden="true">·</span>
                   <span title={fullDate(doc.updatedAt)}>
                     Updated {ago(doc.updatedAt)} by <span dir="auto">{doc.updatedBy.name}</span>

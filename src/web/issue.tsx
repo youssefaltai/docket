@@ -11,11 +11,14 @@ import {
   DuplicatePicker,
   EstimatePicker,
   LabelsPicker,
+  MilestonePicker,
   ParentPicker,
+  ProjectPicker,
   PriorityPicker,
   RelatedPicker,
   StatusPicker,
   TeamPicker,
+  useProjects,
 } from "./pickers";
 import {
   ArchivedBanner,
@@ -41,6 +44,8 @@ import {
   PencilIcon,
   PlusIcon,
   PriorityIcon,
+  ProjectIcon,
+  ProjectStatusIcon,
   Reactions,
   TeamMark,
   Section,
@@ -297,10 +302,11 @@ export function IssuePage({ id }: { id: string }) {
   );
 }
 
-/** What an edit started from: the description, and the issue's updatedAt to send as baseUpdatedAt. */
-type Edit = { value: string; base: string };
+/** What an edit started from: the description, and the issue's (or project's) updatedAt to send as baseUpdatedAt. */
+export type Edit = { value: string; base: string };
 
-function Description({
+/** A markdown description edited in place and saved with baseUpdatedAt: an issue's, or a project's (no reactions). */
+export function Description({
   value,
   updatedAt,
   onSave,
@@ -310,8 +316,8 @@ function Description({
   value: string;
   updatedAt: string;
   onSave: (v: string, start: Edit) => Promise<void>;
-  reactions: Issue["reactions"];
-  onReact: (emoji: string, on: boolean) => void;
+  reactions?: Issue["reactions"];
+  onReact?: (emoji: string, on: boolean) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
@@ -413,7 +419,7 @@ function Description({
       <button className="icon-btn sm desc-edit" onClick={start} aria-label="Edit description" title="Edit description">
         <PencilIcon />
       </button>
-      <Reactions reactions={reactions} onToggle={onReact} />
+      {reactions && onReact && <Reactions reactions={reactions} onToggle={onReact} />}
     </div>
   );
 }
@@ -555,6 +561,8 @@ function Properties({ issue, patch }: { issue: Issue; patch: (p: IssueChange) =>
   const team = app.teams?.find((t) => t.key === issue.team);
   const none = <span className="muted">None</span>;
   const resolved = useResolved();
+  const projects = useProjects();
+  const project = projects.find((p) => p.slug === issue.project);
   return (
     <>
       <Prop label="Status" cmd="status">
@@ -597,6 +605,19 @@ function Properties({ issue, patch }: { issue: Issue; patch: (p: IssueChange) =>
       <Prop label="Due date">
         <DueDate issue={issue} patch={patch} />
       </Prop>
+      <Prop label="Project" cmd="project">
+        <ProjectPicker projects={projects} value={issue.project} onChange={(project) => patch({ project, milestone: null })} className="prop-btn">
+          {project ? <ProjectStatusIcon status={project.status} /> : <ProjectIcon />}
+          {issue.project ? <span dir="auto">{project?.name ?? issue.project}</span> : <span className="muted">No project</span>}
+        </ProjectPicker>
+      </Prop>
+      {issue.project && (
+        <Prop label="Milestone" cmd="milestone">
+          <MilestonePicker project={issue.project} value={issue.milestone} onChange={(milestone) => patch({ milestone })} className="prop-btn">
+            {issue.milestone ? <span dir="auto">{issue.milestone}</span> : <span className="muted">No milestone</span>}
+          </MilestonePicker>
+        </Prop>
+      )}
       <Prop label="Team" cmd="team">
         <TeamPicker value={issue.team} onChange={(key) => key !== issue.team && patch({ team: key })} className="prop-btn">
           <TeamMark id={issue.team} />

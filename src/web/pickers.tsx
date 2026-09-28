@@ -5,9 +5,14 @@ import {
   ESTIMATE_VALUES,
   PRIORITIES,
   PRIORITY_LABELS,
+  PROJECT_STATUSES,
+  PROJECT_STATUS_LABELS,
   type EstimateScale,
   type IssueSummary,
+  type Milestone,
   type Priority,
+  type ProjectStatus,
+  type ProjectSummary,
   type UserKind,
   type UserRef,
 } from "../shared/types";
@@ -18,9 +23,12 @@ import {
   CloseIcon,
   EstimateIcon,
   LabelDot,
+  MoreIcon,
   PlusIcon,
   PriorityIcon,
+  ProjectStatusIcon,
   TeamMark,
+  useFetch,
   IssueStatusIcon,
   StatusIcon,
   cls,
@@ -375,6 +383,105 @@ export function TeamPicker({ value, onChange, children, ...rest }: Trigger & { v
   const options = (teams ?? []).map((t) => ({ value: t.key, label: t.name, icon: <TeamMark id={t.key} /> }));
   return (
     <Picker label="Team" options={options} selected={[value]} onPick={onChange} {...rest}>
+      {children}
+    </Picker>
+  );
+}
+
+/** Several teams of the workspace: a project's (at least one stays). */
+export function TeamsPicker({ value, onChange, children, ...rest }: Trigger & { value: string[]; onChange: (keys: string[]) => void }) {
+  const { teams } = useApp();
+  const options = (teams ?? []).map((t) => ({ value: t.key, label: t.name, icon: <TeamMark id={t.key} /> }));
+  const pick = (key: string) => {
+    const next = toggle(value, key);
+    if (next.length) onChange(next);
+  };
+  return (
+    <Picker label="Teams" multi options={options} selected={value} onPick={pick} {...rest}>
+      {children}
+    </Picker>
+  );
+}
+
+/** A row's "…" menu. */
+export function RowMenu({ label, actions }: { label: string; actions: [label: string, run: () => void][] }) {
+  return (
+    <Picker
+      label={label}
+      options={actions.map(([label]) => ({ value: label, label }))}
+      selected={[]}
+      onPick={(picked) => actions.find(([label]) => label === picked)?.[1]()}
+      className="icon-btn sm"
+      align="end"
+    >
+      <MoreIcon />
+    </Picker>
+  );
+}
+
+export const LeadPicker = (props: UserPickerProps) => <UserPicker kind="person" label="Set lead" none="No lead" {...props} />;
+
+export function ProjectStatusPicker({ value, onChange, children, ...rest }: Trigger & { value: ProjectStatus; onChange: (s: ProjectStatus) => void }) {
+  return (
+    <Picker
+      label="Project status"
+      valueText={PROJECT_STATUS_LABELS[value]}
+      options={PROJECT_STATUSES.map((s) => ({ value: s, label: PROJECT_STATUS_LABELS[s], icon: <ProjectStatusIcon status={s} /> }))}
+      selected={[value]}
+      onPick={(v) => v !== value && onChange(v as ProjectStatus)}
+      {...rest}
+    >
+      {children ?? <ProjectStatusIcon status={value} />}
+    </Picker>
+  );
+}
+
+/** The current workspace's projects (reloaded on live updates), for pickers that show a project by name. */
+export const useProjects = () => useFetch(() => api.projects(), []).data ?? [];
+
+/** One project of the workspace, or none (by slug). */
+export function ProjectPicker({
+  projects,
+  value,
+  onChange,
+  children,
+  ...rest
+}: Trigger & { projects: ProjectSummary[]; value: string | null; onChange: (slug: string | null) => void }) {
+  return (
+    <Picker
+      label="Set project"
+      options={[
+        { value: "", label: "No project", icon: <CloseIcon className="muted" /> },
+        ...projects.map((p) => ({ value: p.slug, label: p.name, icon: <ProjectStatusIcon status={p.status} /> })),
+      ]}
+      selected={[value ?? ""]}
+      onPick={(v) => (v || null) !== value && onChange(v || null)}
+      {...rest}
+    >
+      {children}
+    </Picker>
+  );
+}
+
+/** One milestone of `project`, or none (by name); its milestones load when it opens. */
+export function MilestonePicker({
+  project,
+  value,
+  onChange,
+  children,
+  ...rest
+}: Trigger & { project: string; value: string | null; onChange: (name: string | null) => void }) {
+  const [milestones, setMilestones] = useState<Milestone[]>([]);
+  const load = () => void api.project(project).then((p) => setMilestones(p.milestones), errorToast);
+  return (
+    <Picker
+      label="Set milestone"
+      options={[{ value: "", label: "No milestone", icon: <CloseIcon className="muted" /> }, ...milestones.map((m) => ({ value: m.name, label: m.name }))]}
+      selected={[value ?? ""]}
+      onPick={(v) => (v || null) !== value && onChange(v || null)}
+      onOpen={load}
+      {...rest}
+    >
       {children}
     </Picker>
   );

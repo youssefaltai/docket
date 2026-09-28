@@ -1,5 +1,5 @@
 import type { BunRequest } from "bun";
-import type { DocumentInput, IssueFilter, IssueInput, LabelInput, TeamInput, WebhookInput, WorkflowStatusInput, WorkspaceInput } from "../shared/types.ts";
+import type { DocumentInput, IssueFilter, IssueInput, LabelInput, MilestoneInput, ProjectInput, TeamInput, WebhookInput, WorkflowStatusInput, WorkspaceInput } from "../shared/types.ts";
 import * as access from "./access.ts";
 import { actorOf, isJson } from "./auth.ts";
 import { AppError } from "./db.ts";
@@ -47,8 +47,10 @@ async function patch(req: Request, what: string, fields: readonly string[], why:
   return data;
 }
 
-const ISSUE_FIELDS = ["title", "description", "team", "status", "priority", "labels", "assignee", "delegate", "parent", "blockedBy", "relatedTo", "duplicateOf", "dueOn", "estimate", "baseUpdatedAt"];
-const DOCUMENT_FIELDS = ["title", "content", "edits", "team", "position", "checkpoint", "baseUpdatedAt"];
+const ISSUE_FIELDS = ["title", "description", "team", "status", "priority", "labels", "assignee", "delegate", "parent", "blockedBy", "relatedTo", "duplicateOf", "dueOn", "estimate", "project", "milestone", "baseUpdatedAt"];
+const DOCUMENT_FIELDS = ["title", "content", "edits", "team", "position", "checkpoint", "project", "baseUpdatedAt"];
+const PROJECT_FIELDS = ["name", "description", "status", "lead", "targetDate", "teams", "baseUpdatedAt"];
+const MILESTONE_FIELDS = ["name", "description", "targetDate", "position"];
 
 const param = (req: Request, name: string) => new URL(req.url).searchParams.get(name) || undefined;
 
@@ -61,6 +63,7 @@ const issueFilter = (req: Request): IssueFilter => ({
   delegate: param(req, "delegate"),
   creator: param(req, "creator"),
   parent: param(req, "parent"),
+  project: param(req, "project"),
   q: param(req, "q"),
   subscribed: param(req, "subscribed") === "true" || undefined,
   due: param(req, "due") as IssueFilter["due"],
@@ -291,6 +294,34 @@ export const apiRoutes = {
     DELETE: handle<"/api/labels/:id">((req) => tracker.deleteLabel(actorOf(req), req.params.id)),
   },
 
+  // --- Projects ---
+  "/api/projects": {
+    GET: handle((req) => tracker.listProjects(actorOf(req), { team: param(req, "team"), status: param(req, "status")?.split(",") })),
+    POST: handle(async (req) => tracker.createProject(actorOf(req), await body<ProjectInput>(req)), 201),
+  },
+  "/api/projects/:slug": {
+    GET: handle<"/api/projects/:slug">((req) => tracker.getProject(actorOf(req), req.params.slug)),
+    PATCH: handle<"/api/projects/:slug">(async (req) =>
+      tracker.updateProject(
+        actorOf(req),
+        req.params.slug,
+        await patch(req, "a project", PROJECT_FIELDS, { slug: "A project's slug never changes", workspace: "Projects can't move between workspaces" }),
+      ),
+    ),
+  },
+  "/api/projects/:slug/milestones": {
+    POST: handle<"/api/projects/:slug/milestones">(
+      async (req) => tracker.createMilestone(actorOf(req), req.params.slug, await body<MilestoneInput>(req)),
+      201,
+    ),
+  },
+  "/api/projects/:slug/milestones/:id": {
+    PATCH: handle<"/api/projects/:slug/milestones/:id">(async (req) =>
+      tracker.updateMilestone(actorOf(req), req.params.slug, req.params.id, await patch(req, "a milestone", MILESTONE_FIELDS)),
+    ),
+    DELETE: handle<"/api/projects/:slug/milestones/:id">((req) => tracker.deleteMilestone(actorOf(req), req.params.slug, req.params.id)),
+  },
+
   // --- Inbox ---
   "/api/notifications": {
     GET: handle((req) => inbox.listInbox(actorOf(req), { unread: param(req, "unread") === "true" })),
@@ -303,7 +334,7 @@ export const apiRoutes = {
   // --- Documents ---
   "/api/documents": {
     GET: handle((req) =>
-      tracker.listDocuments(actorOf(req), { team: param(req, "team"), q: param(req, "q") }),
+      tracker.listDocuments(actorOf(req), { team: param(req, "team"), project: param(req, "project"), q: param(req, "q") }),
     ),
     POST: handle(async (req) => tracker.createDocument(actorOf(req), await body<DocumentInput>(req)), 201),
   },

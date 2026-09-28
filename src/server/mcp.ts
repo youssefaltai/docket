@@ -14,6 +14,7 @@ import {
   attachmentMarkdown,
   PRIORITIES,
   PRIORITY_LABELS,
+  PROJECT_STATUSES,
   STATUS_CATEGORIES,
   type Activity,
   type Comment,
@@ -24,6 +25,8 @@ import {
   type IssueSummary,
   type Notification,
   type Priority,
+  type Project,
+  type ProjectSummary,
   type Reaction,
   type UserRef,
 } from "../shared/types.ts";
@@ -52,6 +55,7 @@ ${
     : "- Working on an issue: get_issue, then claim_issue (an agent becomes its delegate, a person its assignee, and it moves to the team's first started status, in_progress by default; if someone else holds it, pick another), post progress notes with comment_issue, then set in_review when it's ready for review or done when finished (or the team's own statuses in those categories). There is no delete: set status canceled instead."
 }
 - Documents (specs, plans, notes) live in teams and are identified by a slug, e.g. "architecture". They are markdown: mention issues by identifier (BRD-2) and they auto-link; link other docs with [Title](/doc/slug). Change a long doc with update_document's \`edits\` rather than rewriting it.
+- Projects (list_projects) group issues from one or more teams toward a goal, with a lead, status, target date and milestones (stages); an issue is in at most one project and one of its milestones. Identified by slug.
 - Mention people or agents as @username (see list_members) in descriptions, comments and docs.
 - Your inbox (list_notifications) is what needs you: issues delegated or assigned to you, @mentions of you, and new comments or status changes on issues and docs you're subscribed to (you're subscribed to what you create, claim, are assigned, delegated, mentioned in, or comment on). Check it when you start; mark items read once handled.`;
 
@@ -85,6 +89,13 @@ const assignee = z.string().describe('A person\'s username (see list_members), o
 const delegate = z.string().describe('An agent\'s username (see list_members), or "me" if you are one');
 
 const slug = z.string().describe('Document slug, e.g. "architecture" (see list_documents)');
+const projectSlug = z.string().describe('Project slug, e.g. "launch" (see list_projects)');
+const milestone = z.string().describe("A milestone's name in the issue's project (get_project lists them)");
+const docProject = projectSlug.describe("Attach the doc to a project (slug) of its workspace; null to detach");
+const targetDate = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/)
+  .describe('Target date, a calendar date like "2026-12-01"');
 const MENTION = "Mention people or agents as @username (list_members has usernames).";
 const docContent = z
   .string()
@@ -142,6 +153,8 @@ function details(issue: Issue, scale: EstimateScale | null): string {
     `team ${issue.team}`,
     issue.estimate !== null && `estimate ${estimateValue(scale, issue.estimate)}`,
     issue.previousIdentifiers.length > 0 && `previously ${issue.previousIdentifiers.join(", ")}`,
+    issue.project && `project ${issue.project}`,
+    issue.milestone && `milestone ${issue.milestone}`,
     `created by ${at(issue.creator)}`,
     issue.parent && `parent ${issue.parent}`,
     issue.blockedBy.length > 0 && `blocked by ${issue.blockedBy.join(", ")}`,
@@ -274,7 +287,7 @@ function docDetails(doc: Document): string {
   const parts = [
     doc.deletedAt && `**In the trash** since ${doc.deletedAt}: read-only until someone restores it.`,
     `# ${doc.title}`,
-    `slug ${doc.slug} · team ${doc.team} · updated ${doc.updatedAt} by ${at(doc.updatedBy)} · ${doc.versionCount} version${doc.versionCount === 1 ? "" : "s"}`,
+    `slug ${doc.slug} · team ${doc.team}${doc.project ? ` · project ${doc.project}` : ""} · updated ${doc.updatedAt} by ${at(doc.updatedBy)} · ${doc.versionCount} version${doc.versionCount === 1 ? "" : "s"}`,
     "---",
     doc.content || "_Empty._",
     "---",
@@ -282,6 +295,33 @@ function docDetails(doc: Document): string {
   if (doc.issues.length) parts.push(`## Mentioned issues\n${doc.issues.map(line).join("\n")}`);
   if (doc.comments.length) parts.push(commentsSection(doc.comments));
   return parts.filter(Boolean).join("\n\n");
+}
+
+const percent = (progress: number) => `${Math.round(progress * 100)}%`;
+
+/** One line per project: `launch · Launch · in_progress · 42% · @ana · target 2026-12-01 · teams APP, WEB`. */
+function projectLine(p: ProjectSummary): string {
+  return [p.slug, p.name, p.status, percent(p.progress), p.lead && at(p.lead), p.targetDate && `target ${p.targetDate}`, `teams ${p.teams.join(", ")}`]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+function projectDetails(p: Project): string {
+  const milestones = p.milestones.map((m) =>
+    [`${m.name} · ${percent(m.progress)} of ${m.issueCount} issue${m.issueCount === 1 ? "" : "s"}`, m.targetDate && `target ${m.targetDate}`, m.description]
+      .filter(Boolean)
+      .join(" · "),
+  );
+  const parts = [
+    `# ${p.name}`,
+    `${projectLine(p)} · ${p.issueCount} issue${p.issueCount === 1 ? "" : "s"} · created by ${at(p.creator)} · updated ${p.updatedAt}`,
+    "---",
+    p.description || "_No description._",
+    "---",
+    `## Milestones\n${milestones.join("\n") || "None yet."}`,
+  ];
+  if (p.docs.length) parts.push(`## Docs\n${p.docs.map(docLine).join("\n")}`);
+  return parts.join("\n\n");
 }
 
 /** One line per notification: `#41 · unread · delegated · BRD-12 Fix login · by @ana · 5m ago · "excerpt"`. */
@@ -466,6 +506,7 @@ function createServer(a: Actor, origin: string): McpServer {
         delegate: delegate.optional(),
         creator: assignee.optional().describe('Who filed it: a username, or "me"'),
         parent: identifier.optional().describe("Only sub-issues of this issue, e.g. BRD-12"),
+        project: projectSlug.optional().describe("Only issues in this project (slug, see list_projects)"),
         query: z.string().optional().describe("Text to find in identifier, title or description"),
         subscribed: z.boolean().optional().describe("true: only issues you're subscribed to"),
         due: z
@@ -507,7 +548,7 @@ function createServer(a: Actor, origin: string): McpServer {
     "create_issue",
     {
       description:
-        "Create an issue in a team; returns its identifier (e.g. BRD-13). Defaults: the team's default status (backlog unless the team changed it; list_teams marks it; pass todo when it's ready to be picked up, or triage to leave it for the team to accept, in teams with Triage), priority 0 (none). Set parent to make it a sub-issue, blockedBy for issues that must be finished first. Mark an issue a duplicate with duplicateOf: it's set to its team's Duplicate status and the relation is recorded; use relatedTo for issues that are connected but not duplicates or blockers.",
+        "Create an issue in a team; returns its identifier (e.g. BRD-13). Defaults: the team's default status (backlog unless the team changed it; list_teams marks it; pass todo when it's ready to be picked up, or triage to leave it for the team to accept, in teams with Triage), priority 0 (none). Set parent to make it a sub-issue, blockedBy for issues that must be finished first. Mark an issue a duplicate with duplicateOf: it's set to its team's Duplicate status and the relation is recorded; use relatedTo for issues that are connected but not duplicates or blockers. A sub-issue joins its parent's project unless you pass one.",
       inputSchema: {
         team: teamKey,
         title,
@@ -523,6 +564,8 @@ function createServer(a: Actor, origin: string): McpServer {
         relatedTo: relatedTo.optional(),
         duplicateOf: duplicateOf.optional(),
         dueOn: dueOn.optional(),
+        project: projectSlug.optional().describe("Project slug (see list_projects); its team joins the project"),
+        milestone: milestone.optional(),
       },
     },
     writes((input) => {
@@ -556,6 +599,11 @@ function createServer(a: Actor, origin: string): McpServer {
         relatedTo: relatedTo.optional(),
         duplicateOf: duplicateOf.nullable().optional().describe("The issue this one duplicates (it's set to its team's Duplicate status); null to clear"),
         dueOn: dueOn.nullable().optional().describe('Due date, a calendar date like "2026-09-30"; null to clear'),
+        project: projectSlug
+          .nullable()
+          .optional()
+          .describe("Project slug (see list_projects); null to take it out. A new project clears the milestone unless you pass one of its own"),
+        milestone: milestone.nullable().optional().describe("A milestone's name in the issue's project; null to clear"),
         baseUpdatedAt: z
           .string()
           .optional()
@@ -603,12 +651,13 @@ function createServer(a: Actor, origin: string): McpServer {
         "List documents (specs, plans, notes), one line each: slug · title · team · updated time and author. Ordered by team, then position. Use get_document with the slug to read one.",
       inputSchema: {
         team: teamKey.optional(),
+        project: projectSlug.optional().describe("Only docs attached to this project"),
         query: z.string().optional().describe("Text to find in title or content"),
       },
       annotations: { readOnlyHint: true },
     },
-    ({ team, query }) => {
-      const documents = tracker.listDocuments(a, { team, q: query });
+    ({ team, project, query }) => {
+      const documents = tracker.listDocuments(a, { team, project, q: query });
       return result(documents.map(docLine).join("\n") || "No matching documents.", { documents });
     },
   );
@@ -638,6 +687,7 @@ function createServer(a: Actor, origin: string): McpServer {
         content: docContent,
         slug: z.string().optional().describe("URL-safe id (a-z, 0-9, dashes); default derived from the title"),
         position: z.number().optional().describe("Order within the team, ascending; default last"),
+        project: docProject.optional(),
       },
     },
     writes((input) => {
@@ -666,6 +716,7 @@ function createServer(a: Actor, origin: string): McpServer {
           .describe("Targeted find/replace edits, applied in order, all or nothing"),
         team: teamKey.optional().describe("Move the doc to this team (same workspace)"),
         position: z.number().optional().describe("Order within the team, ascending"),
+        project: docProject.nullable().optional(),
         baseUpdatedAt: z
           .string()
           .optional()
@@ -780,6 +831,124 @@ function createServer(a: Actor, origin: string): McpServer {
     writes(({ slug }) => {
       tracker.deleteDocument(a, slug);
       return result(`Moved document ${slug} to the trash`, { ok: true });
+    }),
+  );
+
+  register(
+    "list_projects",
+    {
+      description:
+        "List projects, one line each: slug · name · status · progress % · @lead · target date · teams. Use get_project for its description, milestones and docs, and list_issues with `project` for its issues.",
+      inputSchema: {
+        team: teamKey.optional().describe("Only projects this team takes part in"),
+        status: z.array(z.enum(PROJECT_STATUSES)).optional().describe("Only projects in these statuses"),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    (filter) => {
+      const projects = tracker.listProjects(a, filter);
+      return result(projects.map(projectLine).join("\n") || "No projects yet.", { projects });
+    },
+  );
+
+  register(
+    "get_project",
+    {
+      description:
+        "Get a project by slug: its markdown description, status, lead, target date, teams, progress, milestones (each with progress and target date) and attached docs. For its issues use list_issues with project.",
+      inputSchema: { slug: projectSlug },
+      annotations: { readOnlyHint: true },
+    },
+    ({ slug }) => {
+      const project = tracker.getProject(a, slug);
+      return result(projectDetails(project), { project });
+    },
+  );
+
+  const projectStatus = z.enum(PROJECT_STATUSES).describe("backlog, planned, in_progress, paused, completed or canceled");
+  const lead = z.string().describe('The person leading it: a username (see list_members), or "me"');
+
+  register(
+    "create_project",
+    {
+      description:
+        'Create a project, a body of work toward a goal that spans one or more teams of a workspace; returns its slug. Check list_projects first and only create one when asked to. Status: backlog (default), planned, in_progress, paused, completed, canceled. The lead is a person\'s username or "me". targetDate is YYYY-MM-DD.',
+      inputSchema: {
+        teams: z.array(teamKey).min(1).describe('Keys of the teams taking part, e.g. ["WEB", "APP"]'),
+        name: z.string(),
+        description: description.optional(),
+        status: projectStatus.optional(),
+        lead: lead.optional(),
+        targetDate: targetDate.optional(),
+        slug: z.string().optional().describe("URL-safe id (a-z, 0-9, dashes); default derived from the name"),
+      },
+    },
+    writes((input) => {
+      const project = tracker.createProject(a, input);
+      return result(`Created project ${project.slug}\n${projectLine(project)}`, { project });
+    }),
+  );
+
+  register(
+    "update_project",
+    {
+      description:
+        "Update a project; only the fields you pass change. `teams` replaces the list (a team with issues in the project can't be dropped). Pass baseUpdatedAt from get_project when replacing the description. There is no delete: set status canceled. The slug never changes.",
+      inputSchema: {
+        slug: projectSlug,
+        name: z.string().optional(),
+        description: description.optional(),
+        status: projectStatus.optional(),
+        lead: lead.nullable().optional().describe('The person leading it, or "me"; null to clear'),
+        targetDate: targetDate.nullable().optional().describe('A calendar date like "2026-12-01"; null to clear'),
+        teams: z.array(teamKey).min(1).optional().describe("Keys of the teams taking part; replaces the list"),
+        baseUpdatedAt: z
+          .string()
+          .optional()
+          .describe("The updatedAt you read with get_project. If the project changed since, nothing is applied (reread and retry)."),
+      },
+    },
+    writes(({ slug, ...patch }) => {
+      const project = tracker.updateProject(a, slug, patch);
+      return result(`Updated project ${project.slug}\n${projectLine(project)}`, { project });
+    }),
+  );
+
+  register(
+    "create_milestone",
+    {
+      description:
+        'Add a milestone (a stage such as "Beta", with an optional target date) to a project. Put an issue in it with update_issue\'s milestone.',
+      inputSchema: {
+        project: projectSlug,
+        name: z.string().describe('Unique within the project, e.g. "Beta"'),
+        description: z.string().optional(),
+        targetDate: targetDate.optional(),
+      },
+    },
+    writes(({ project: slug, ...input }) => {
+      const project = tracker.createMilestone(a, slug, input);
+      return result(`Added milestone ${input.name.trim()} to ${project.slug}`, { project });
+    }),
+  );
+
+  register(
+    "update_milestone",
+    {
+      description: "Rename a project's milestone or change its description or target date.",
+      inputSchema: {
+        project: projectSlug,
+        milestone: z.string().describe("The milestone's current name"),
+        name: z.string().optional(),
+        description: z.string().optional(),
+        targetDate: targetDate.nullable().optional().describe('A calendar date like "2026-12-01"; null to clear'),
+      },
+    },
+    writes(({ project: slug, milestone: name, ...patch }) => {
+      const found = tracker.getProject(a, slug).milestones.find((m) => m.name.toLowerCase() === name.trim().toLowerCase());
+      if (!found) throw new AppError(`Unknown milestone "${name}" in ${slug}`);
+      const project = tracker.updateMilestone(a, slug, found.id, patch);
+      return result(`Updated milestone ${patch.name?.trim() ?? found.name} in ${project.slug}`, { project });
     }),
   );
 

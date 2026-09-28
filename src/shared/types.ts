@@ -243,6 +243,8 @@ export interface IssueSummary {
   deletedAt: string | null; // in the trash since then; purged 30 days later
   previousIdentifiers: string[]; // identifiers it had before it moved team, oldest first; each still resolves to it
   archivedAt: string | null; // hidden from default lists since then (manually, or by the team's auto-archive period); still searchable and openable
+  project: string | null; // its project's slug: an issue is in at most one
+  milestone: string | null; // the name of one of its project's milestones
 }
 
 /** One page of a list, Linear-style: pass `endCursor` as `after` for the next. */
@@ -333,12 +335,15 @@ export const ACTIVITY_KINDS = [
   "restored",
   "archived",
   "unarchived",
+  "project",
+  "milestone",
 ] as const;
 export type ActivityKind = (typeof ACTIVITY_KINDS)[number];
 
 /**
  * One change to an issue. from/to by kind: team (its identifier before and after a move), title, parent and duplicateOf (identifiers), status and claimed (status keys), dueOn
- * ("YYYY-MM-DD") are strings; priority and estimate (a position) numbers; assignee, delegate a UserRef; labels, blockedBy, relatedTo string arrays; null when unset, and both
+ * ("YYYY-MM-DD"), project (a slug) and milestone (its name then) are strings; priority and estimate (a position) numbers; assignee, delegate a UserRef; labels, blockedBy,
+ * relatedTo string arrays; null when unset, and both
  * null for created, description, trashed, restored, archived, unarchived.
  */
 export type ActivityValue = string | number | string[] | UserRef | null;
@@ -375,6 +380,7 @@ export interface DocumentSummary {
   updatedAt: string;
   updatedBy: UserRef;
   deletedAt: string | null; // in the trash since then; purged 30 days later
+  project: string | null; // the project it's attached to (slug), if any; it keeps its team either way
 }
 
 export interface Document extends DocumentSummary {
@@ -398,6 +404,7 @@ export interface DocumentVersion extends DocumentVersionSummary {
 
 export interface DocumentFilter {
   team?: string;
+  project?: string; // slug: docs attached to it
   q?: string; // matches title and content
 }
 
@@ -407,14 +414,16 @@ export interface DocumentInput {
   content?: string;
   slug?: string; // default: slugified title (a-z, 0-9, "-"), deduped with -2, -3…; "doc-<n>" if empty
   position?: number; // default: last in the team
+  project?: string | null; // attach it to a project (slug) of its workspace
 }
 
 export interface DocumentPatch {
   title?: string;
   content?: string; // full replacement; mutually exclusive with edits
   edits?: { oldText: string; newText: string }[]; // exact find/replace, applied in order; each oldText must match once
-  team?: string; // docs can move between teams of the same workspace; the slug stays
+  team?: string; // docs can move between teams of the same workspace; the slug (and the project) stays
   position?: number;
+  project?: string | null; // a project (slug) of its workspace; null detaches it
   checkpoint?: boolean; // always record a new version instead of merging into the latest (e.g. a restore)
   baseUpdatedAt?: string; // the updatedAt this edit started from; if the doc has changed since, 409 and nothing is applied
 }
@@ -434,6 +443,8 @@ export interface IssueInput {
   relatedTo?: string[]; // replaces the whole list, on both sides
   duplicateOf?: string | null; // marks it a duplicate of that issue and sets its team's Duplicate status; null clears (status stays)
   dueOn?: string | null; // "YYYY-MM-DD"; null clears
+  project?: string | null; // a project's slug (its team joins the project); a sub-issue defaults to its parent's, and its milestone
+  milestone?: string | null; // a milestone's name in its project; changing the project clears it unless one is named too
 }
 
 export type IssuePatch = Partial<Omit<IssueInput, "team">> & {
@@ -473,6 +484,7 @@ export interface IssueFilter {
   delegate?: string; // username or "me"
   creator?: string; // username or "me" -- who filed it
   parent?: string;
+  project?: string; // slug
   q?: string; // matches identifier, title, description
   subscribed?: boolean; // true: only issues you're subscribed to
   due?: DueFilter;
@@ -600,13 +612,81 @@ const label = (name: string) => name.replace(/[[\]\\]/g, "").replace(/[*_`<>]/g,
 export const attachmentMarkdown = (a: Pick<Attachment, "name" | "url" | "contentType">) =>
   `${INLINE_IMAGE_TYPES.includes(a.contentType) ? "!" : ""}[${label(a.name)}](${a.url})`;
 
+// --- Projects (Linear's): a body of work toward a goal, spanning one or more teams of a workspace ---
+
+/** Linear's project lifecycle, fixed (not customizable). */
+export const PROJECT_STATUSES = ["backlog", "planned", "in_progress", "paused", "completed", "canceled"] as const;
+export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
+export const PROJECT_STATUS_LABELS: Record<ProjectStatus, string> = {
+  backlog: "Backlog",
+  planned: "Planned",
+  in_progress: "In Progress",
+  paused: "Paused",
+  completed: "Completed",
+  canceled: "Canceled",
+};
+
+export interface ProjectSummary {
+  slug: string; // unique within its workspace, stable, URL-safe, like a doc's
+  workspace: string;
+  name: string;
+  status: ProjectStatus;
+  lead: UserRef | null; // a person
+  teams: string[]; // keys of the teams taking part (at least one), sorted
+  targetDate: string | null; // "YYYY-MM-DD"
+  progress: number; // 0–1 over its live issues: a completed one counts 1, a started one ½; canceled ones are left out
+  issueCount: number; // its live issues
+  createdAt: string;
+  updatedAt: string; // version token for baseUpdatedAt
+}
+
+export interface Milestone {
+  id: number;
+  name: string; // unique within its project, case-insensitively
+  description: string;
+  targetDate: string | null;
+  position: number; // order within the project
+  progress: number; // as the project's, over its issues
+  issueCount: number;
+}
+
+export interface Project extends ProjectSummary {
+  description: string; // markdown
+  creator: UserRef;
+  milestones: Milestone[]; // by position
+  docs: DocumentSummary[]; // attached docs
+}
+
+export interface ProjectInput {
+  teams: string[]; // keys of teams of the request's workspace
+  name: string;
+  description?: string;
+  status?: ProjectStatus; // default backlog
+  lead?: string | null; // a person's username, or "me"
+  targetDate?: string | null; // "YYYY-MM-DD"
+  slug?: string; // default: slugified name, deduped; "project-<n>" if empty
+}
+
+export type ProjectPatch = Partial<Omit<ProjectInput, "slug">> & {
+  baseUpdatedAt?: string; // the updatedAt you read; if the project changed since, the patch is refused (409)
+};
+
+export interface MilestoneInput {
+  name: string;
+  description?: string;
+  targetDate?: string | null; // "YYYY-MM-DD"
+  position?: number; // default: last
+}
+
+export type MilestonePatch = Partial<MilestoneInput>;
+
 // Pushed over the WebSocket at /ws after every mutation, to the workspace's members. "inbox" events (and
 // subscription changes) go only to that one user's sockets in that workspace.
 export interface ServerEvent {
   type: "changed";
-  entity: "workspace" | "member" | "team" | "issue" | "document" | "label" | "inbox";
+  entity: "workspace" | "member" | "team" | "issue" | "document" | "label" | "project" | "inbox";
   workspace: string;
-  id: string; // workspace key, username, team key, issue identifier, document slug or label id; inbox: the recipient's username
+  id: string; // workspace key, username, team key, issue identifier, document or project slug, or label id; inbox: the recipient's username
 }
 
 export interface ApiError {

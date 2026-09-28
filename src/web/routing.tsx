@@ -11,6 +11,8 @@ export type MyTab = (typeof MY_TABS)[number];
 type Page =
   | { view: "issues"; team: string | null }
   | { view: "docs"; team: string | null }
+  | { view: "projects"; team: string | null }
+  | { view: "project"; slug: string }
   | { view: "trash"; team: string }
   | { view: "triage"; team: string }
   | { view: "team-settings"; team: string }
@@ -42,11 +44,15 @@ function parsePage(path: string): Page {
   if (issue) return { view: "issue", id: decodeURIComponent(issue[1]!).toUpperCase() };
   const doc = /^\/doc\/([^/]+)/.exec(path);
   if (doc) return { view: "doc", slug: decodeURIComponent(doc[1]!) };
-  const team = /^\/t\/([^/]+)(\/docs|\/trash|\/triage|\/settings)?/.exec(path);
+  const project = /^\/project\/([^/]+)/.exec(path);
+  if (project) return { view: "project", slug: decodeURIComponent(project[1]!) };
+  if (/^\/projects\/?$/.test(path)) return { view: "projects", team: null };
+  const team = /^\/t\/([^/]+)(\/docs|\/projects|\/trash|\/triage|\/settings)?/.exec(path);
   const key = team ? decodeURIComponent(team[1]!).toUpperCase() : null;
   if (key && team?.[2] === "/trash") return { view: "trash", team: key };
   if (key && team?.[2] === "/triage") return { view: "triage", team: key };
   if (key && team?.[2] === "/settings") return { view: "team-settings", team: key };
+  if (key && team?.[2] === "/projects") return { view: "projects", team: key };
   return { view: team?.[2] || /^\/docs\/?$/.test(path) ? "docs" : "issues", team: key };
 }
 
@@ -54,11 +60,11 @@ const routeListeners = new Set<() => void>();
 const emitRoute = () => routeListeners.forEach((l) => l());
 window.addEventListener("popstate", emitRoute);
 
-/** Where Esc / breadcrumbs go back to from an issue or doc page; a new doc opens in edit mode. */
-export const nav = { lastList: "/", lastDocs: "/docs", editDoc: "" };
+/** Where Esc / breadcrumbs go back to from an issue, doc or project page; a new doc opens in edit mode. */
+export const nav = { lastList: "/", lastDocs: "/docs", lastProjects: "/projects", editDoc: "" };
 
-// App pages written without a workspace: /, /issue/…, /doc/…, /docs, /t/…, /settings/…, /inbox, /my
-const PAGE = /^\/(?:$|(?:issue|doc|docs|t|settings|inbox|my)(?:[/?#]|$))/;
+// App pages written without a workspace: /, /issue/…, /doc/…, /docs, /project/…, /projects, /t/…, /settings/…, /inbox, /my
+const PAGE = /^\/(?:$|(?:issue|doc|docs|project|projects|t|settings|inbox|my)(?:[/?#]|$))/;
 
 /** An app path in the current workspace: "/issue/BRD-1" → "/acme/issue/BRD-1". Anything else stays as it is. */
 export function wsPath(path: string): string {
