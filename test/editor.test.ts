@@ -50,7 +50,7 @@ test("what the guard admits survives a one-character edit: nothing lost, and sta
     expect([name, plainText(saved.replace("✱", ""))]).toEqual([name, plainText(markdown)]);
     expect([name, roundtrip(saved)]).toEqual([name, saved]);
   }
-});
+}, 30_000); // the whole corpus through the editor: CI runners take up to 10 s
 
 test("opening without an edit changes nothing the editor would save", () => {
   for (const { markdown } of corpus.filter((f) => admits(f.markdown))) {
@@ -60,7 +60,7 @@ test("opening without an edit changes nothing the editor would save", () => {
     expect(toMarkdown(editor)).toBe(before);
     editor.destroy();
   }
-});
+}, 30_000);
 
 test("pipes in table cells stay escaped, so no cell is lost", () => {
   const table = [
