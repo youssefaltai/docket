@@ -55,6 +55,7 @@ export const HistoryIcon = icon("M2 8a6 6 0 1 0 6-6 6.5 6.5 0 0 0-4.5 1.8L2 5.3M
 export const SettingsIcon = icon("M2.5 4.5h6M12 4.5h1.5M2.5 11.5h1.5M7.5 11.5h6M10 3v3M6 10v3");
 export const InboxIcon = icon("M2.5 9.5l1.6-5.3a1 1 0 0 1 1-.7h5.8a1 1 0 0 1 1 .7l1.6 5.3v3a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1zM2.5 9.5h3l1 1.5h3l1-1.5h3");
 export const BellIcon = icon("M4 11.5V7a4 4 0 0 1 8 0v4.5l1 1.5H3zM6.5 13.5a1.5 1.5 0 0 0 3 0");
+export const InfoIcon = icon("M8 14A6 6 0 1 0 8 2a6 6 0 0 0 0 12zM8 7v3.5M8 5.4h.01");
 export const ComposeIcon =icon("M13.5 8.5v4a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1h4M11.5 2.5l2 2L8 10H6V8z");
 export const PaperclipIcon = icon("M13 7.5l-5.2 5.2a3 3 0 0 1-4.3-4.2L9 3a2 2 0 0 1 2.9 2.8L6.6 11a1 1 0 0 1-1.4-1.4L10 4.8");
 export const StarIcon = icon("M8 2l1.8 3.7 4.1.6-3 2.9.7 4.1L8 11.4l-3.6 1.9.7-4.1-3-2.9 4.1-.6z");

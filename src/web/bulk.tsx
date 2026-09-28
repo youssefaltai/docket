@@ -2,14 +2,16 @@
 // Esc, and a bottom bar that sets status, priority, assignee, delegate or labels on every selected issue, or
 // moves them all to the trash, through POST /api/issues/bulk.
 import { useEffect, useRef, useState, type MouseEvent } from "react";
-import type { BulkIssuePatch, BulkIssueResult, IssueSummary, Priority, UserRef } from "../shared/types";
+import { ESTIMATE_VALUES, type BulkIssuePatch, type BulkIssueResult, type IssueSummary, type Priority, type UserRef } from "../shared/types";
 import { api } from "./api";
-import { PRIORITY_OPTIONS, Picker, statusOptions, useMembers, userOption } from "./pickers";
+import { PRIORITY_OPTIONS, Picker, statusOptions, useMembers, useProjects, userOption } from "./pickers";
 import {
   Avatar,
   CheckIcon,
   CloseIcon,
+  EstimateIcon,
   LabelDot,
+  ProjectStatusIcon,
   labelColor,
   labelGroupOf,
   PriorityIcon,
@@ -211,6 +213,10 @@ function BulkBar({
   const statuses = statusGroups((teams ?? []).filter((t) => issues.some((i) => i.team === t.key)));
   const people = useMembers("person");
   const agents = useMembers("agent");
+  const projects = useProjects();
+  // Estimates only make sense where a selected issue's team has them on; picking a team without them fails for its
+  // issues (400) and the rest still apply, as any bulk field does.
+  const estimateScale = (teams ?? []).find((t) => t.estimateScale && issues.some((i) => i.team === t.key))?.estimateScale;
   // Labels usable on every selected issue: the workspace's, and a team's own when they're all that team's.
   const selectedTeams = new Set(issues.map((i) => i.team));
   const usable = labels.filter((l) => !l.isGroup && (l.team === null || (selectedTeams.size === 1 && selectedTeams.has(l.team))));
@@ -267,8 +273,36 @@ function BulkBar({
         <PriorityIcon priority={3} />
         <span className="bulkbar-text">Priority</span>
       </Picker>
+      {estimateScale && (
+        <Picker
+          label="Set estimate"
+          className="bulkbar-btn"
+          options={[
+            { value: "", label: "No estimate" },
+            ...ESTIMATE_VALUES[estimateScale].map((v, i) => ({ value: String(i + 1), label: v, icon: <EstimateIcon /> })),
+          ]}
+          selected={shared(issues, (i) => i.estimate)}
+          onPick={(v) => apply({ estimate: Number(v) || null }, (i) => ({ ...i, estimate: Number(v) || null }))}
+        >
+          <EstimateIcon />
+          <span className="bulkbar-text">Estimate</span>
+        </Picker>
+      )}
       {userPicker("assignee", "Assign to", "No assignee", people, "Assignee")}
       {userPicker("delegate", "Delegate to", "No delegate", agents, "Delegate")}
+      <Picker
+        label="Set project"
+        className="bulkbar-btn"
+        options={[
+          { value: "", label: "No project", icon: <CloseIcon className="muted" /> },
+          ...projects.map((p) => ({ value: p.slug, label: p.name, icon: <ProjectStatusIcon status={p.status} /> })),
+        ]}
+        selected={shared(issues, (i) => i.project)}
+        onPick={(v) => apply({ project: v || null }, (i) => ({ ...i, project: v || null }))}
+      >
+        <ProjectStatusIcon status="backlog" />
+        <span className="bulkbar-text">Project</span>
+      </Picker>
       <Picker
         label="Labels"
         cmd="labels"

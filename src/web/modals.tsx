@@ -1,11 +1,22 @@
 // New issue, doc, team and workspace dialogs.
 import { useState, type ReactNode } from "react";
-import { PRIORITY_LABELS, PROJECT_STATUS_LABELS, type CustomViewInput, type IssueInput, type IssueTemplate, type ProjectStatus, type UserRef, type Workspace } from "../shared/types";
+import {
+  ESTIMATE_VALUES,
+  PRIORITY_LABELS,
+  PROJECT_STATUS_LABELS,
+  type CustomViewInput,
+  type IssueInput,
+  type IssueTemplate,
+  type ProjectStatus,
+  type UserRef,
+  type Workspace,
+} from "../shared/types";
 import { api } from "./api";
 import { RichEditor } from "./editor";
 import {
   AssigneePicker,
   CyclePicker,
+  EstimatePicker,
   LabelsPicker,
   LeadPicker,
   ParentPicker,
@@ -16,6 +27,7 @@ import {
   TeamsPicker,
   TemplatePicker,
   StatusPicker,
+  useMembers,
   useProjects,
   useTemplates,
 } from "./pickers";
@@ -25,6 +37,7 @@ import {
   CloseIcon,
   CycleIcon,
   DateButton,
+  EstimateIcon,
   Field,
   Kbd,
   findLabel,
@@ -94,7 +107,7 @@ function TeamCrumb({
 }
 
 type Draft = Required<
-  Omit<IssueInput, "blockedBy" | "relatedTo" | "duplicateOf" | "dueOn" | "estimate" | "assignee" | "delegate" | "milestone" | "cycle" | "template">
+  Omit<IssueInput, "blockedBy" | "relatedTo" | "duplicateOf" | "dueOn" | "assignee" | "delegate" | "milestone" | "cycle" | "template">
 > & {
   assignee: UserRef | null;
   cycle: number | null;
@@ -107,21 +120,24 @@ export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueIn
     const team = teams?.find((t) => t.key === key);
     return status && (!team || team.statuses.some((s) => s.key === status)) ? status : (team?.defaultStatus ?? "backlog");
   };
+  const people = useMembers("person");
   const [draft, setDraft] = useState<Draft>(() => ({
     team: defaults.team ?? "",
     title: defaults.title ?? "",
     description: defaults.description ?? "",
     status: startIn(defaults.team ?? "", defaults.status),
     priority: defaults.priority ?? 0,
+    estimate: defaults.estimate ?? null,
     labels: defaults.labels ?? [],
-    assignee: null,
+    assignee: defaults.assignee ? (people.find((u) => u.username === defaults.assignee) ?? null) : null,
     parent: defaults.parent ?? null,
     project: defaults.project ?? null,
     cycle: typeof defaults.cycle === "number" ? defaults.cycle : null,
   }));
   const set = <K extends keyof Draft>(key: K) => (value: Draft[K]) => setDraft((d) => ({ ...d, [key]: value }));
-  const { team, title, description, status, priority, labels, assignee, parent, project, cycle } = draft;
+  const { team, title, description, status, priority, estimate, labels, assignee, parent, project, cycle } = draft;
   const projects = useProjects();
+  const teamEstimateScale = teams?.find((t) => t.key === team)?.estimateScale;
   const inProject = projects.find((p) => p.slug === project);
   const templates = useTemplates(team);
   // The description's editor loads on first use (focused then), or at once for a given description.
@@ -159,7 +175,16 @@ export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueIn
           onChange={(key) => {
             if (key === team) return;
             const usable = (path: string) => (findLabel(allLabels, path)?.team ?? key) === key;
-            setDraft((d) => ({ ...d, team: key, parent: null, cycle: null, status: startIn(key, d.status), labels: d.labels.filter(usable) }));
+            const keepsEstimate = teams?.find((t) => t.key === key)?.estimateScale;
+            setDraft((d) => ({
+              ...d,
+              team: key,
+              parent: null,
+              cycle: null,
+              estimate: keepsEstimate ? d.estimate : null,
+              status: startIn(key, d.status),
+              labels: d.labels.filter(usable),
+            }));
           }}
           templates={templates}
           onPickTemplate={applyTemplate}
@@ -211,6 +236,12 @@ export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueIn
           <PriorityIcon priority={priority} />
           {priority ? PRIORITY_LABELS[priority] : "Priority"}
         </PriorityPicker>
+        {teamEstimateScale && (
+          <EstimatePicker scale={teamEstimateScale} value={estimate} onChange={set("estimate")} className="chip">
+            <EstimateIcon />
+            {estimate ? ESTIMATE_VALUES[teamEstimateScale][estimate - 1] : "Estimate"}
+          </EstimatePicker>
+        )}
         <AssigneePicker team={team} value={assignee} onChange={set("assignee")} className="chip">
           <Avatar user={assignee} />
           <span dir="auto">{assignee?.name ?? "Assignee"}</span>

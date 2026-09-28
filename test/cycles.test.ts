@@ -16,7 +16,7 @@ let bot: Caller;
 beforeAll(async () => {
   s = await startServer({ env: { DOCKET_WEBHOOK_ALLOW_PRIVATE: "true" } });
   await s.api("POST", "/api/workspaces/acme/webhooks", { url: `http://127.0.0.1:${receiver.port}/`, resourceTypes: ["Issue"] });
-  for (const key of ["CYC", "OFF", "FUT", "DUO"]) expect((await s.api("POST", "/api/teams", { key, name: key })).status).toBe(201);
+  for (const key of ["CYC", "OFF", "FUT", "DUO", "MCY"]) expect((await s.api("POST", "/api/teams", { key, name: key })).status).toBe(201);
   expect((await s.api("POST", "/api/workspaces", { name: "Side", key: "side" })).status).toBe(201);
   expect((await s.as("admin", "cookie", "side").api("POST", "/api/teams", { key: "SID", name: "Side" })).status).toBe(201);
   ana = await s.user("ana");
@@ -264,7 +264,8 @@ test("MCP: list_cycles, list_teams and get_issue show cycles; list_issues and up
   expect(await s.tool("list_teams")).toMatch(/^OFF · OFF · workspace acme · member · \d+ open · statuses: [^·]+$/m);
   const text = await bot.tool("list_cycles", { team: "cyc" });
   expect(text.split("\n")[0]).toMatch(/^Cycle 1 · completed · \d{4}-\d{2}-\d{2} – \d{4}-\d{2}-\d{2} · 1\/3 done · 50%$/);
-  expect(text).toContain(`Cycle 5 · current · ${today().slice(0, 10)} – ${plus(today(), 14).slice(0, 10)} · 0/0 done · 0%`);
+  // Shows the last day (endsAt minus one), not the exclusive end.
+  expect(text).toContain(`Cycle 5 · current · ${today().slice(0, 10)} – ${plus(today(), 13).slice(0, 10)} · 0/0 done · 0%`);
   expect(await bot.tool("list_cycles", { team: "OFF" })).toBe("OFF has no cycles.");
   const issue = await create("CYC", { status: "todo" });
   expect(await bot.tool("update_issue", { id: issue.id, cycle: "current" })).toContain(`Updated ${issue.id}`);
@@ -273,6 +274,32 @@ test("MCP: list_cycles, list_teams and get_issue show cycles; list_issues and up
   expect(await bot.tool("list_issues", { cycle: 5, team: "CYC" })).toContain(issue.id);
   expect(await bot.tool("create_issue", { team: "CYC", title: "Planned", cycle: "next" })).toMatch(/^Created CYC-\d+/);
   expect(await bot.instructions()).toContain("A team may use cycles, repeating 1–8 week planning periods (list_cycles)");
+});
+
+test("MCP update_team turns cycles on and off with the same validation as REST; agents can't", async () => {
+  expect(await team("MCY")).toMatchObject({ cycleWeeks: null, currentCycle: null });
+  const start = today();
+  expect(await s.tool("update_team", { key: "MCY", cycleWeeks: 2, upcomingCycles: 3, cycleStartsOn: start.slice(0, 10) })).toContain("Updated team MCY");
+  expect(await team("MCY")).toMatchObject({ cycleWeeks: 2, upcomingCycles: 3, currentCycle: 1 });
+  // 1 current + upcomingCycles (3) kept ready.
+  expect(await cycles("MCY")).toEqual([
+    { team: "MCY", number: 1, startsAt: start, endsAt: plus(start, 14), state: "current", issueCount: 0, completedCount: 0, progress: 0 },
+    { team: "MCY", number: 2, startsAt: plus(start, 14), endsAt: plus(start, 28), state: "upcoming", issueCount: 0, completedCount: 0, progress: 0 },
+    { team: "MCY", number: 3, startsAt: plus(start, 28), endsAt: plus(start, 42), state: "upcoming", issueCount: 0, completedCount: 0, progress: 0 },
+    { team: "MCY", number: 4, startsAt: plus(start, 42), endsAt: plus(start, 56), state: "upcoming", issueCount: 0, completedCount: 0, progress: 0 },
+  ]);
+
+  // Same validation as REST: rejects a bad length, and a start date only when turning cycles on.
+  let bad = await s.admin.toolResult("update_team", { key: "MCY", cycleWeeks: 9 });
+  expect(bad.isError).toBeTrue();
+  bad = await s.admin.toolResult("update_team", { key: "MCY", cycleStartsOn: start.slice(0, 10) });
+  expect(bad.isError).toBeTrue();
+  bad = await bot.toolResult("update_team", { key: "MCY", cycleWeeks: 3 });
+  expect(bad.isError).toBeTrue(); // agents can't change team settings
+
+  // Off ends the current cycle now and drops the upcoming ones.
+  expect(await s.tool("update_team", { key: "MCY", cycleWeeks: null })).toContain("Updated team MCY");
+  expect(await team("MCY")).toMatchObject({ cycleWeeks: null, currentCycle: null });
 });
 
 /** Polls until `find` returns something (webhook deliveries are sent by a background loop). */

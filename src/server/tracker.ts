@@ -2249,7 +2249,7 @@ export function autoArchive() {
 }
 
 const MAX_BULK = 100;
-const BULK_FIELDS = ["status", "priority", "assignee", "delegate", "labels", "addLabels", "removeLabels"];
+const BULK_FIELDS = ["status", "priority", "estimate", "assignee", "delegate", "project", "labels", "addLabels", "removeLabels"];
 
 /**
  * One change for many issues (the list's multi-select). Each goes through `updateIssue`/`deleteIssue` on its

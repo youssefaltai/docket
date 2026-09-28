@@ -1,6 +1,6 @@
 // Saved views (Linear's custom views): the workspace's list of them, and one view's issues, filtered, grouped, ordered
 // and laid out as saved. Its creator or an admin changes it right here; everyone else uses it as it is.
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { GROUP_BYS, ORDER_BYS, type CustomView, type CustomViewPatch, type GroupBy, type OrderBy, type ViewDisplay, type ViewFilter } from "../shared/types";
 import { api } from "./api";
 import { getYou } from "./auth";
@@ -12,6 +12,7 @@ import {
   ChevronDownIcon,
   EmptyState,
   GroupIcon,
+  InfoIcon,
   InlineInput,
   Link,
   ListHeader,
@@ -40,6 +41,10 @@ import {
 
 const GROUP_LABELS: Record<GroupBy, string> = { status: "Status", assignee: "Assignee", priority: "Priority", label: "Label" };
 const ORDER_LABELS: Record<OrderBy, string> = { priority: "Priority", updated: "Last updated", created: "Last created" };
+
+// A saved filter's username fields: if whoever it names has since changed their username or left, drop it rather
+// than 400 the whole view (a rename leaves no trace: workspace_members holds only the current username).
+const USER_FILTER_FIELDS = ["assignee", "delegate", "creator"] as const;
 
 /** Stars a view into your sidebar, or unstars it: yours alone. */
 function Star({ view, onChange }: { view: CustomView; onChange?: (view: CustomView) => void }) {
@@ -182,7 +187,21 @@ export function CustomViewPage({ id }: { id: number }) {
     if (view && canEdit && search !== null && q !== (view.filter.q ?? "")) change({ filter: { ...view.filter, q: q || undefined } });
   }, [q]);
 
+  // Fields naming someone who no longer resolves (members loaded, and not "me"): drop them and note it, instead
+  // of letting GET /api/issues 400 the whole view. A guest's own member list is narrowed to shared teams (DKT-27),
+  // so it can't tell "renamed or left" from "exists, just not someone I share a team with": skip it for them,
+  // same as before (a guest's own filter naming a workspace member outside their teams still runs, unchanged).
+  const isGuest = app.workspace?.role === "guest";
+  const unresolved = useMemo(() => {
+    if (!view || isGuest || !app.members.length) return [];
+    const known = new Set(app.members.map((m) => m.user.username.toLowerCase()));
+    return USER_FILTER_FIELDS.filter((f) => {
+      const v = view.filter[f];
+      return v && v !== "me" && !known.has(v.toLowerCase());
+    });
+  }, [view, app.members, isGuest]);
   const filter = view && { category: LISTED, ...view.filter, q };
+  for (const field of unresolved) if (filter) delete filter[field];
   const key = JSON.stringify(filter);
   const {
     data: issues,
@@ -275,6 +294,15 @@ export function CustomViewPage({ id }: { id: number }) {
           </>
         )}
       </ListHeader>
+      {unresolved.length > 0 && (
+        <div className="doc-banner" role="status">
+          <InfoIcon />
+          <span className="doc-banner-text">
+            {unresolved.map((field) => `${field} "${view!.filter[field]}"`).join(", ")} {unresolved.length === 1 ? "no longer exists" : "no longer exist"} in this
+            workspace; that filter isn’t applied.
+          </span>
+        </div>
+      )}
       <div className={cls("content", view?.display.layout === "board" && !!issues?.length && "content-board")}>{body}</div>
       {bar}
     </>

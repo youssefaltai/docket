@@ -53,8 +53,17 @@ test("PATCH /api/teams/:key { autoArchiveDays } round-trips through GET /api/tea
   for (const bad of [0, -5, 1.5, "30"]) {
     expect((await s.api("PATCH", "/api/teams/ARC", { autoArchiveDays: bad })).status).toBe(400);
   }
-  // MCP update_team doesn't take it (no new MCP tool or field for this housekeeping setting).
+  // No dedicated MCP tool for archiving/unarchiving by hand (REST-only): only update_team's autoArchiveDays.
   expect(await s.as("claude").tools()).not.toContain("archive_issue");
+});
+
+test("MCP update_team sets autoArchiveDays with the same validation as REST", async () => {
+  expect(await s.tool("update_team", { key: "ARC", autoArchiveDays: 60 })).toContain("Updated team ARC");
+  expect((await s.api("GET", "/api/teams")).body.find((t: any) => t.key === "ARC").autoArchiveDays).toBe(60);
+  expect(await s.tool("update_team", { key: "ARC", autoArchiveDays: null })).toContain("Updated team ARC");
+  expect((await s.api("GET", "/api/teams")).body.find((t: any) => t.key === "ARC").autoArchiveDays).toBeNull();
+  const bad = await s.admin.toolResult("update_team", { key: "ARC", autoArchiveDays: 0 });
+  expect(bad.isError).toBeTrue();
 });
 
 test("a team with autoArchiveDays unset (the default) never archives, no matter how old", async () => {

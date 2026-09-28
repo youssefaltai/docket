@@ -56,6 +56,9 @@ const PROPS: [string, string][] = [
   ["cycle", "Set cycle"],
 ];
 
+/** One-off issue-page actions, same context-aware [data-cmd] click-through as PROPS above. */
+const ISSUE_ACTIONS: [string, string][] = [["archive", "Archive issue"]];
+
 /** Filters `items` on `q` against `fields`, exact matches first, capped at `cap`. Same substring+exact-boost
  * approach as `<Picker>` (`pickers.tsx`) — no fuzzy-matching library, per project rules. */
 function pick<T>(items: T[], q: string, fields: (t: T) => string[], cap: number): T[] {
@@ -191,10 +194,14 @@ export function CommandMenu() {
         });
       }
     }
-    // Context-aware: on an issue page, open its existing property pickers rather than a new interaction.
+    // Context-aware: on an issue page, open its existing property pickers, or run a one-off action, rather than
+    // a new interaction. A picker's [data-cmd] wraps its trigger button; an action's is the button itself.
     if (route.view === "issue")
-      for (const [prop, label] of PROPS) {
-        const button = () => visibleCmd(document, prop)?.querySelector<HTMLButtonElement>("button");
+      for (const [prop, label] of [...PROPS, ...ISSUE_ACTIONS]) {
+        const button = () => {
+          const el = visibleCmd(document, prop);
+          return el instanceof HTMLButtonElement ? el : (el?.querySelector<HTMLButtonElement>("button") ?? null);
+        };
         if (button())
           actions.push({
             key: `set-${prop}`,

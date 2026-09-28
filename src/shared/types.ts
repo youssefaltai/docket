@@ -262,6 +262,11 @@ export interface Cycle {
   progress: number; // 0–1, as a project's: completed issues count 1, started ½; canceled are left out
 }
 
+/** The cycle's last day (its exclusive `endsAt` minus one day) as "YYYY-MM-DD", for display: "Sep 28 – Oct 11", never the exclusive end. */
+export function cycleLastDay(endsAt: string): string {
+  return new Date(Date.parse(endsAt) - 86400000).toISOString().slice(0, 10);
+}
+
 export interface IssueSummary {
   id: string; // identifier, e.g. "BRD-12"
   team: string; // team key
@@ -552,7 +557,7 @@ export type IssueTemplatePatch = Partial<Omit<IssueTemplateInput, "team">>;
  * or DELETE would be. `addLabels`/`removeLabels` edit each issue's own labels (after `labels`, if given).
  */
 export type BulkIssuePatch =
-  | (Pick<IssuePatch, "status" | "priority" | "assignee" | "delegate" | "labels"> & { addLabels?: string[]; removeLabels?: string[] })
+  | (Pick<IssuePatch, "status" | "priority" | "estimate" | "assignee" | "delegate" | "project" | "labels"> & { addLabels?: string[]; removeLabels?: string[] })
   | { delete: true };
 
 export interface BulkIssueInput {
