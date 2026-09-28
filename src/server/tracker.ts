@@ -28,7 +28,10 @@ import {
   type IssuePage,
   type IssuePatch,
   type IssueSummary,
-  type LabelCount,
+  LABEL_COLORS,
+  type Label,
+  type LabelInput,
+  type LabelPatch,
   type Priority,
   type Reaction,
   type StatusCategory,
@@ -78,6 +81,9 @@ function checkLabels(value: unknown): string[] {
   }
   return [...new Set(value.map((l) => l.trim()).filter(Boolean))];
 }
+
+/** A label's path in SQL, from its alias and its group's (LEFT JOINed): "Type/Bug" in a group, else the name. */
+const LABEL_PATH = "CASE WHEN g.id IS NULL THEN l.name ELSE g.name || '/' || l.name END";
 
 /** Placeholders for `IN (…)`; never empty, so the SQL stays valid. */
 const inList = (values: unknown[]) => (values.length ? values.map(() => "?").join(", ") : "NULL");
@@ -643,7 +649,7 @@ type IssueRow = Record<string, unknown> & {
   status_category: StatusCategory;
   status_position: number;
   priority: Priority;
-  labels: string; // JSON array
+  label_paths: string; // JSON array of its labels' paths (issues.labels is legacy: migration 17 moved it to issue_labels)
   parent: string | null; // identifier
   blocked_by: string; // JSON array of identifiers
   related_to: string; // JSON array of identifiers
@@ -661,6 +667,10 @@ const ident = (team: string, issue: string) => `${team}.key || '-' || ${issue}.n
 const ISSUE_SELECT = `
   SELECT i.*, t.key AS team_key, t.workspace, ws.category AS status_category, ws.position AS status_position, ${ident("pt", "p")} AS parent,
     ${userCols("ua", "assignee")}, ${userCols("ud", "delegate")}, ${userCols("uc", "creator")},
+    (SELECT json_group_array(path) FROM (
+      SELECT ${LABEL_PATH} AS path FROM issue_labels x JOIN labels l ON l.id = x.label_id LEFT JOIN labels g ON g.id = l.parent_id
+      WHERE x.issue_id = i.id ORDER BY path COLLATE NOCASE
+    )) AS label_paths,
     (SELECT json_group_array(ref) FROM (
       SELECT ${ident("bt", "b")} AS ref FROM issue_blocks x JOIN issues b ON b.id = x.blocker_id JOIN teams bt ON bt.id = b.team_id
       WHERE x.blocked_id = i.id AND b.deleted_at IS NULL ORDER BY bt.key, b.number
@@ -701,7 +711,7 @@ const toSummary = (row: IssueRow): IssueSummary => ({
   status: row.status,
   statusCategory: row.status_category,
   priority: row.priority,
-  labels: JSON.parse(row.labels),
+  labels: JSON.parse(row.label_paths),
   assignee: ref(row, "assignee"),
   delegate: ref(row, "delegate"),
   parent: row.parent,
@@ -839,7 +849,6 @@ function issueColumns(a: Actor, workspace: string, team: TeamRef, patch: IssuePa
   if (patch.description !== undefined) cols.description = optionalText(patch.description, "description");
   if (patch.status !== undefined) cols.status = statusOf(team, patch.status).key;
   if (patch.priority !== undefined) cols.priority = checkPriority(patch.priority);
-  if (patch.labels !== undefined) cols.labels = JSON.stringify(checkLabels(patch.labels));
   for (const [field, kind] of [["assignee", "person"], ["delegate", "agent"]] as const) {
     const value = patch[field];
     if (value === undefined) continue;
@@ -969,8 +978,12 @@ function queryIssues(a: Actor, filter: IssueFilter, after?: Cursor, limit?: numb
     params.push(...filter.category.map((c) => checkOneOf(c, STATUS_CATEGORIES, "category")));
   }
   if (filter.label) {
-    where.push("EXISTS (SELECT 1 FROM json_each(i.labels) WHERE value = ? COLLATE NOCASE)");
-    params.push(filter.label);
+    // A label's name or path, or a group's name (any of its labels).
+    where.push(
+      `EXISTS (SELECT 1 FROM issue_labels x JOIN labels l ON l.id = x.label_id LEFT JOIN labels g ON g.id = l.parent_id
+       WHERE x.issue_id = i.id AND (l.name = ? COLLATE NOCASE OR g.name = ? COLLATE NOCASE OR ${LABEL_PATH} = ? COLLATE NOCASE))`,
+    );
+    params.push(filter.label, filter.label, filter.label);
   }
   for (const field of ["assignee", "delegate", "creator"] as const) {
     if (!filter[field]) continue;
@@ -1105,7 +1118,7 @@ const TRACKED: [ActivityKind, (row: IssueRow) => unknown][] = [
   ["priority", (r) => r.priority],
   ["assignee", (r) => r.assignee_id],
   ["delegate", (r) => r.delegate_id],
-  ["labels", (r) => JSON.parse(r.labels)],
+  ["labels", (r) => JSON.parse(r.label_paths)],
   ["parent", (r) => r.parent],
   ["blockedBy", (r) => JSON.parse(r.blocked_by)],
   ["relatedTo", (r) => JSON.parse(r.related_to)],
@@ -1201,7 +1214,6 @@ export function createIssue(a: Actor, input: IssueInput): Issue {
     description: "",
     status: team.default_status,
     priority: 0,
-    labels: "[]",
     assignee_id: null,
     delegate_id: null,
     parent_id: null,
@@ -1212,10 +1224,11 @@ export function createIssue(a: Actor, input: IssueInput): Issue {
   const blockers = input.blockedBy === undefined ? [] : blockerIds(a, input.blockedBy);
   const related = input.relatedTo === undefined ? [] : relatedIds(a, input.relatedTo);
   const duplicate = input.duplicateOf === undefined ? null : duplicateId(a, input.duplicateOf);
+  const labels = input.labels === undefined ? [] : checkLabels(input.labels);
   if (duplicate !== null) cols.status = duplicateStatus(team.id); // a duplicate is closed, as in Linear
   const closed = isClosed(statusOf(team, cols.status).category);
   const time = now();
-  const { identifier, docs, refs } = db.transaction(() => {
+  const { identifier, docs, refs, created } = db.transaction(() => {
     const { number } = db
       .query<{ number: number }, [number]>("UPDATE teams SET next_number = next_number + 1 WHERE id = ? RETURNING next_number - 1 AS number")
       .get(team.id)!;
@@ -1232,6 +1245,7 @@ export function createIssue(a: Actor, input: IssueInput): Issue {
     const { id } = db
       .query<{ id: number }, SQLQueryBindings[]>(`INSERT INTO issues (${names.join(", ")}) VALUES (${names.map(() => "?").join(", ")}) RETURNING id`)
       .get(...Object.values(row))!;
+    const created = setIssueLabels(id, team.workspace, team, labels, time);
     setBlockers(id, blockers);
     setRelated(id, related, time);
     setDuplicate(id, duplicate, time);
@@ -1250,8 +1264,9 @@ export function createIssue(a: Actor, input: IssueInput): Issue {
     saveMentions(a, team.workspace, `issue:${id}`, { issueId: id }, cols.description as string, time);
     const people = (["assignee", "delegate"] as const).filter((f) => cols[`${f}_id`] !== null);
     logActivity(a, id, team.workspace, [{ kind: "created" }, ...people.map((kind) => ({ kind, from: null, to: cols[`${kind}_id`] }))], time);
-    return { identifier, docs, refs };
+    return { identifier, docs, refs, created };
   })();
+  for (const id of created) changed("label", team.workspace, String(id));
   changed("issue", team.workspace, identifier);
   for (const r of refs) changed("issue", team.workspace, r);
   for (const doc of docs) changed("document", team.workspace, doc.slug);
@@ -1269,12 +1284,13 @@ export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Is
   const blockers = patch.blockedBy === undefined ? undefined : blockerIds(a, patch.blockedBy, id);
   const relatedTo = patch.relatedTo === undefined ? undefined : relatedIds(a, patch.relatedTo, id);
   const duplicate = patch.duplicateOf === undefined ? undefined : duplicateId(a, patch.duplicateOf, id);
+  const labels = patch.labels === undefined ? undefined : checkLabels(patch.labels);
   if (duplicate != null) cols.status = duplicateStatus(team.id); // marking a duplicate closes it; clearing leaves the status alone
   const closing = cols.status === undefined ? undefined : isClosed(statusOf(team, cols.status).category);
   const time = now();
   const read = db.query<IssueRow, [number]>(`${ISSUE_SELECT} WHERE i.id = ?`);
   // IMMEDIATE holds the write lock from the read (the version check, the history's "before") to the write.
-  const refs = db.transaction(() => {
+  const { refs, created } = db.transaction(() => {
     const before = read.get(id)!;
     if (patch.baseUpdatedAt !== undefined && patch.baseUpdatedAt !== before.updated_at) {
       throw new AppError("Issue changed since you read it", 409);
@@ -1298,6 +1314,7 @@ export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Is
     }
     const assignments = [...Object.keys(cols).map((c) => `${c} = ?`), BUMPED_AT];
     db.query(`UPDATE issues SET ${assignments.join(", ")} WHERE id = ?`).run(...Object.values(cols), time, time, id);
+    const created = labels ? setIssueLabels(id, workspace, team, labels, time) : [];
     if (blockers) setBlockers(id, blockers);
     if (relatedTo) for (const r of setRelated(id, relatedTo, time)) related.add(r);
     if (duplicate !== undefined) for (const r of setDuplicate(id, duplicate, time)) related.add(r);
@@ -1305,9 +1322,10 @@ export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Is
     if (cols.description !== undefined) saveMentions(a, workspace, `issue:${id}`, { issueId: id }, cols.description as string, time);
     logActivity(a, id, workspace, changes(before, read.get(id)!), time);
     const closed = closing === true && !isClosed(before.status_category) ? autoClose(a.id, id, workspace, time) : [];
-    return [...refs, ...closed.map((c) => ownerRef("issue", c))];
+    return { refs: [...refs, ...closed.map((c) => ownerRef("issue", c))], created };
   }).immediate();
   const issue = getIssue(a, identifier);
+  for (const label of created) changed("label", workspace, String(label));
   changed("issue", workspace, issue.id);
   for (const r of new Set(refs)) changed("issue", workspace, r);
   return issue;
@@ -1423,11 +1441,21 @@ export function bulkUpdateIssues(a: Actor, ids: unknown, patch: unknown): BulkIs
   const { addLabels, removeLabels, ...edit } = patch as IssuePatch & { addLabels?: unknown; removeLabels?: unknown };
   const add = addLabels === undefined ? [] : checkLabels(addLabels);
   const drop = removeLabels === undefined ? [] : checkLabels(removeLabels);
-  const labelsOf = db.query<{ labels: string }, [number]>("SELECT labels FROM issues WHERE id = ?");
-  // This issue's labels after the edit: `labels` (or its own), plus `addLabels`, minus `removeLabels`.
+  type Own = { path: string; name: string; group: string | null };
+  const labelsOf = db.query<Own, [number]>(
+    `SELECT ${LABEL_PATH} AS path, l.name, g.name AS "group" FROM issue_labels x JOIN labels l ON l.id = x.label_id LEFT JOIN labels g ON g.id = l.parent_id
+     WHERE x.issue_id = ?`,
+  );
+  const same = (x: string, y: string) => fold(x) === fold(y);
+  // Adding Group/Label swaps out the issue's label of that group, as the picker does.
+  const swapped = add.filter((l) => l.includes("/")).map((l) => l.slice(0, l.indexOf("/")).trim());
+  // This issue's labels after the edit: `labels` (or its own), minus `removeLabels` (a path, or a grouped label's
+  // name), plus `addLabels`.
   const labels = (id: string): string[] => {
-    const base = edit.labels !== undefined ? checkLabels(edit.labels) : (JSON.parse(labelsOf.get(issueRef(a, id).id)!.labels) as string[]);
-    return [...new Set([...base, ...add])].filter((l) => !drop.includes(l));
+    const own: Own[] = edit.labels !== undefined ? checkLabels(edit.labels).map((path) => ({ path, name: path, group: null })) : labelsOf.all(issueRef(a, id).id);
+    const dropped = (l: Own) =>
+      drop.some((d) => same(d, l.path) || (l.group !== null && same(d, l.name))) || (l.group !== null && swapped.some((g) => same(g, l.group!)));
+    return [...own.filter((l) => !dropped(l)).map((l) => l.path), ...add.filter((l) => !drop.some((d) => same(d, l)))];
   };
   const relabel = addLabels !== undefined || removeLabels !== undefined;
   return [...new Set(ids as string[])].map((id): BulkIssueResult => {
@@ -1568,17 +1596,276 @@ export function subscribeIssue(a: Actor, identifier: string, on: boolean): Issue
   return getIssue(a, identifier);
 }
 
-/** Labels in use in the request's workspace, each with how many open issues carry it. */
-export function listLabels(a: Actor): LabelCount[] {
-  const { where, params } = listScope(a, "i", {}, []);
+// --- Labels: a workspace's or one team's own, optionally in a group (one level); issues name them by path ---
+
+type LabelRow = {
+  id: number;
+  workspace: string;
+  team_id: number | null;
+  team_key: string | null;
+  parent_id: number | null;
+  name: string;
+  group_name: string | null;
+  path: string;
+  color: string;
+  is_group: number;
+  created_at: string;
+};
+
+const LABEL_COLUMNS = `l.id, l.workspace, l.team_id, t.key AS team_key, l.parent_id, l.name, g.name AS group_name, ${LABEL_PATH} AS path,
+  l.color, l.is_group, l.created_at`;
+const LABEL_FROM = "FROM labels l LEFT JOIN labels g ON g.id = l.parent_id LEFT JOIN teams t ON t.id = l.team_id";
+const LABEL_SELECT = `SELECT ${LABEL_COLUMNS} ${LABEL_FROM}`;
+// Plus `open`: live issues outside the completed and canceled categories carrying it (a group: any of its labels).
+const LABEL_SELECT_OPEN = `SELECT ${LABEL_COLUMNS},
+    (SELECT COUNT(DISTINCT x.issue_id) FROM issue_labels x JOIN labels o ON o.id = x.label_id JOIN issues i ON i.id = x.issue_id
+     LEFT JOIN workflow_statuses ws ON ws.team_id = i.team_id AND ws.key = i.status
+     WHERE (o.id = l.id OR o.parent_id = l.id) AND i.deleted_at IS NULL
+       AND COALESCE(ws.category, '') NOT IN (${CLOSED_CATEGORIES.map((c) => `'${c}'`).join(", ")})) AS open
+  ${LABEL_FROM}`;
+
+/** Names and paths compare case-insensitively. */
+const fold = (s: string) => s.toLowerCase();
+
+const toLabel = (r: LabelRow & { open: number }): Label => ({
+  id: r.id,
+  workspace: r.workspace,
+  team: r.team_key,
+  name: r.name,
+  path: r.path,
+  group: r.group_name,
+  isGroup: r.is_group === 1,
+  color: r.color,
+  open: r.open,
+  createdAt: r.created_at,
+});
+
+const workspaceLabels = (workspace: string) => db.query<LabelRow, [string]>(`${LABEL_SELECT} WHERE l.workspace = ? ORDER BY l.id`).all(workspace);
+const readLabel = (id: number) =>
+  toLabel(db.query<LabelRow & { open: number }, [number]>(`${LABEL_SELECT_OPEN} WHERE l.id = ?`).get(id)!);
+
+/** Adds a label; its color defaults to the next of LABEL_COLORS, by how many the workspace has. */
+function insertLabel(workspace: string, l: { teamId: number | null; parentId: number | null; name: string; color?: string; isGroup?: boolean }, time: string): number {
+  const { n } = db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM labels WHERE workspace = ?").get(workspace)!;
   return db
-    .query<LabelCount, SQLQueryBindings[]>(
-      `SELECT l.value AS label, SUM(COALESCE(ws.category, '') NOT IN (${inList(CLOSED_CATEGORIES)})) AS open
-       FROM issues i JOIN teams t ON t.id = i.team_id LEFT JOIN workflow_statuses ws ON ws.team_id = i.team_id AND ws.key = i.status,
-         json_each(i.labels) l ${whereClause(where)}
-       GROUP BY l.value ORDER BY l.value COLLATE NOCASE`,
+    .query<{ id: number }, SQLQueryBindings[]>(
+      "INSERT INTO labels (workspace, team_id, parent_id, name, color, is_group, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
     )
-    .all(...CLOSED_CATEGORIES, ...params);
+    .get(workspace, l.teamId, l.parentId, l.name, l.color ?? LABEL_COLORS[n % LABEL_COLORS.length]!, l.isGroup ? 1 : 0, time)!.id;
+}
+
+/**
+ * An issue's labels from names, in its workspace, case-insensitively: a label's path ("Bug", "Type/Bug"), else a bare
+ * name of one grouped label usable here ("Bug" for Type/Bug), else a new workspace label (Group/Label: in that group,
+ * found or created, in its scope). Never a group, another team's own label, or two labels of one group (400). Returns
+ * the label ids, and the ids of the labels it created.
+ */
+function resolveLabels(workspace: string, team: TeamRef, names: string[], time: string): { ids: number[]; created: number[] } {
+  const all = workspaceLabels(workspace);
+  const created: number[] = [];
+  const usable = (l: LabelRow) => l.team_id === null || l.team_id === team.id;
+  const byPath = (path: string) => all.find((l) => fold(l.path) === fold(path));
+  const create = (name: string, group: LabelRow | null, isGroup = false) => {
+    const id = insertLabel(workspace, { teamId: group?.team_id ?? null, parentId: group?.id ?? null, name: capLength(name, "label"), isGroup }, time);
+    created.push(id);
+    const row = db.query<LabelRow, [number]>(`${LABEL_SELECT} WHERE l.id = ?`).get(id)!;
+    all.push(row);
+    return row;
+  };
+  const check = (l: LabelRow) => {
+    if (l.is_group) {
+      const child = all.find((c) => c.parent_id === l.id);
+      throw new AppError(`${l.name} is a label group: pick one of its labels${child ? `, e.g. ${child.path}` : ""}`);
+    }
+    if (!usable(l)) throw new AppError(`Label "${l.path}" belongs to team ${l.team_key}`);
+    return l;
+  };
+  const pick = (given: string): LabelRow => {
+    const slash = given.indexOf("/");
+    const [groupName, name] = slash < 0 ? [null, given] : [given.slice(0, slash).trim(), given.slice(slash + 1).trim()];
+    const found = byPath(given) ?? (groupName === null ? undefined : byPath(`${groupName}/${name}`));
+    if (found) return check(found);
+    if (groupName === null) {
+      const grouped = all.filter((l) => l.parent_id !== null && usable(l) && fold(l.name) === fold(given));
+      if (grouped.length > 1) throw new AppError(`"${given}" is ambiguous: ${grouped.map((l) => l.path).join(" or ")}`);
+      return grouped[0] ?? create(given, null);
+    }
+    if (!groupName || !name || name.includes("/")) throw new AppError(`Invalid label "${given}": use a name, or Group/Label`);
+    const group = all.find((l) => l.parent_id === null && fold(l.name) === fold(groupName));
+    if (group && !group.is_group) throw new AppError(`${group.name} is a label, not a group`);
+    if (group && !usable(group)) throw new AppError(`Label group ${group.name} belongs to team ${group.team_key}`);
+    return create(name, group ?? create(groupName, null, true));
+  };
+  const picked = [...new Map(names.map(pick).map((l) => [l.id, l])).values()];
+  for (const l of picked) {
+    const same = picked.filter((o) => o.parent_id !== null && o.parent_id === l.parent_id);
+    if (same.length > 1) throw new AppError(`Only one label per group: ${same.map((o) => o.path).join(", ")}`);
+  }
+  return { ids: picked.map((l) => l.id), created };
+}
+
+/** Replaces an issue's labels (see resolveLabels), in the caller's transaction. Returns the labels it created. */
+function setIssueLabels(issueId: number, workspace: string, team: TeamRef, names: string[], time: string): number[] {
+  const { ids, created } = resolveLabels(workspace, team, names, time);
+  db.query("DELETE FROM issue_labels WHERE issue_id = ?").run(issueId);
+  for (const id of ids) db.query("INSERT INTO issue_labels (issue_id, label_id) VALUES (?, ?)").run(issueId, id);
+  return created;
+}
+
+/** The request's workspace's labels and groups, by path; `team`: only those usable on its issues (the workspace's and its own). */
+export function listLabels(a: Actor, filter: { team?: string } = {}): Label[] {
+  const workspace = requestWorkspace(a);
+  const params: SQLQueryBindings[] = [workspace];
+  if (filter.team) {
+    const team = db.query<{ id: number }, [string, string]>("SELECT id FROM teams WHERE workspace = ? AND key = ?").get(workspace, filter.team.trim().toUpperCase());
+    if (!team) throw new AppError(`Unknown team "${filter.team}"`);
+    params.push(team.id);
+  }
+  return db
+    .query<LabelRow & { open: number }, SQLQueryBindings[]>(
+      `${LABEL_SELECT_OPEN} WHERE l.workspace = ?${filter.team ? " AND (l.team_id IS NULL OR l.team_id = ?)" : ""}
+       ORDER BY path COLLATE NOCASE, l.id`,
+    )
+    .all(...params)
+    .map(toLabel);
+}
+
+const NO_AGENT_LABELS = "Only people can manage labels";
+
+/** A label of the request's workspace, by id, for a person to manage; anything else is 404. */
+function managedLabel(a: Actor, id: unknown): LabelRow {
+  requirePerson(a, NO_AGENT_LABELS);
+  const row = db.query<LabelRow, [number, string]>(`${LABEL_SELECT} WHERE l.id = ? AND l.workspace = ?`).get(Number(id), requestWorkspace(a));
+  if (!row) throw new AppError(`Label ${id} not found`, 404);
+  return row;
+}
+
+/** A new name: no "/" (Group/Label is a group's; names from before labels were entities keep theirs). */
+function labelName(value: unknown): string {
+  const name = requireText(value, "name");
+  if (name.includes("/")) throw new AppError("Use a group for Group/Label: a label's name can't contain /");
+  return name;
+}
+
+/** A group of the workspace, by name. */
+function labelGroup(workspace: string, name: unknown): LabelRow {
+  const given = typeof name === "string" ? fold(name.trim()) : "";
+  const group = workspaceLabels(workspace).find((l) => l.is_group && fold(l.name) === given);
+  if (!group) throw new AppError(`Unknown label group "${name}"`);
+  return group;
+}
+
+/** A scope: a team of the request's workspace (its id), or null for the workspace. */
+const labelScope = (a: Actor, team: unknown): number | null => (team === null ? null : teamRow(a, team).id);
+
+function sameScope(teamId: number | null, group: LabelRow) {
+  if (teamId !== group.team_id) {
+    throw new AppError(`A label's scope is its group's: ${group.name} is ${group.team_key ? `team ${group.team_key}'s` : "a workspace group"}`);
+  }
+}
+
+/** A path no other label of the workspace has (409). */
+function freePath(workspace: string, path: string, self?: number) {
+  if (workspaceLabels(workspace).some((l) => l.id !== self && fold(l.path) === fold(path))) throw new AppError(`Label "${path}" already exists`, 409);
+}
+
+/** Creates a label or group (people only): a workspace's, or with `team` that team's own; in `group`, its group's scope. */
+export function createLabel(a: Actor, input: LabelInput): Label {
+  requirePerson(a, NO_AGENT_LABELS);
+  const workspace = requestWorkspace(a);
+  if (input.workspace !== undefined && String(input.workspace).trim().toLowerCase() !== workspace) {
+    throw new AppError("Labels are created in the workspace you're in");
+  }
+  const name = labelName(input.name);
+  if (input.isGroup !== undefined && typeof input.isGroup !== "boolean") throw new AppError("isGroup must be true or false");
+  const group = input.group == null ? null : labelGroup(workspace, input.group);
+  if (group && input.isGroup) throw new AppError("A group can't be in a group");
+  const teamId = input.team === undefined ? (group?.team_id ?? null) : labelScope(a, input.team);
+  if (group) sameScope(teamId, group);
+  const color = input.color === undefined ? undefined : checkColor(input.color);
+  freePath(workspace, group ? `${group.name}/${name}` : name);
+  const id = insertLabel(workspace, { teamId, parentId: group?.id ?? null, name, color, isGroup: input.isGroup }, now());
+  changed("label", workspace, String(id));
+  return readLabel(id);
+}
+
+/** Issues carrying any of these labels (trashed ones too). */
+const carrying = (ids: number[]) =>
+  db.query<{ id: number; team_id: number }, SQLQueryBindings[]>(
+    `SELECT DISTINCT i.id, i.team_id FROM issue_labels x JOIN issues i ON i.id = x.issue_id WHERE x.label_id IN (${inList(ids)})`,
+  ).all(...ids);
+
+/**
+ * Renames, recolors, rescopes or regroups a label (people only). Rescoping never strands an issue (409), and a group
+ * takes its labels along; a label joins a group only if no issue would carry two of it (409). A new path (name or
+ * group) shows on every issue carrying it: they're bumped, so a stale whole-list write gets baseUpdatedAt's 409.
+ */
+export function updateLabel(a: Actor, id: unknown, patch: LabelPatch): Label {
+  const label = managedLabel(a, id);
+  const all = workspaceLabels(label.workspace);
+  const children = all.filter((l) => l.parent_id === label.id);
+  const name = patch.name === undefined || patch.name === label.name ? label.name : labelName(patch.name);
+  let group = all.find((l) => l.id === label.parent_id) ?? null;
+  if (patch.group !== undefined) {
+    if (label.is_group && patch.group !== null) throw new AppError("A group can't be in a group");
+    group = patch.group === null ? null : labelGroup(label.workspace, patch.group);
+  }
+  const teamId = patch.team === undefined ? label.team_id : labelScope(a, patch.team);
+  if (group) sameScope(teamId, group);
+  const color = patch.color === undefined ? label.color : checkColor(patch.color);
+  const regrouped = (group?.id ?? null) !== label.parent_id;
+  const renamed = name !== label.name || regrouped;
+  if (renamed) {
+    freePath(label.workspace, group ? `${group.name}/${name}` : name, label.id);
+    for (const c of children) freePath(label.workspace, `${name}/${c.name}`, c.id);
+  }
+  const ids = [label.id, ...children.map((c) => c.id)];
+  if (teamId !== null && teamId !== label.team_id) {
+    const outside = carrying(ids).filter((i) => i.team_id !== teamId).length;
+    if (outside) throw new AppError(`Used on ${outside} ${outside === 1 ? "issue" : "issues"} outside ${teamRow(a, patch.team).key}`, 409);
+  }
+  if (group && regrouped) {
+    const { n } = db
+      .query<{ n: number }, [number, number, number]>(
+        `SELECT COUNT(DISTINCT x.issue_id) AS n FROM issue_labels x JOIN issue_labels y ON y.issue_id = x.issue_id JOIN labels o ON o.id = y.label_id
+         WHERE x.label_id = ? AND o.parent_id = ? AND o.id != ?`,
+      )
+      .get(label.id, group.id, label.id)!;
+    if (n) throw new AppError(`${n} ${n === 1 ? "issue already has" : "issues already have"} a ${group.name} label`, 409);
+  }
+  const time = now();
+  const refs = db.transaction(() => {
+    db.query("UPDATE labels SET name = ?, color = ?, team_id = ?, parent_id = ? WHERE id = ?").run(name, color, teamId, group?.id ?? null, label.id);
+    db.query("UPDATE labels SET team_id = ? WHERE parent_id = ?").run(teamId, label.id);
+    return renamed ? bumpIssues(carrying(ids).map((i) => i.id), time) : [];
+  }).immediate();
+  changed("label", label.workspace, String(label.id));
+  for (const ref of refs) changed("issue", label.workspace, ref);
+  return readLabel(label.id);
+}
+
+/**
+ * Deletes a label for good (people only), as Linear does: it comes off every issue carrying it, each logged as that
+ * issue's own labels change would be (history, webhooks). A group must be empty first (409).
+ */
+export function deleteLabel(a: Actor, id: unknown): Label {
+  const label = managedLabel(a, id);
+  if (label.is_group && db.query("SELECT 1 FROM labels WHERE parent_id = ?").get(label.id)) throw new AppError("Move or delete its labels first", 409);
+  const deleted = readLabel(label.id);
+  const time = now();
+  const read = db.query<IssueRow, [number]>(`${ISSUE_SELECT} WHERE i.id = ?`);
+  const refs = db.transaction(() => {
+    const issues = carrying([label.id]).map((i) => i.id);
+    const before = issues.map((issue) => read.get(issue)!);
+    db.query("DELETE FROM issue_labels WHERE label_id = ?").run(label.id);
+    db.query("DELETE FROM labels WHERE id = ?").run(label.id);
+    const refs = bumpIssues(issues, time);
+    issues.forEach((issue, n) => logActivity(a, issue, label.workspace, changes(before[n]!, read.get(issue)!), time));
+    return refs;
+  }).immediate();
+  changed("label", label.workspace, String(label.id));
+  for (const ref of refs) changed("issue", label.workspace, ref);
+  return deleted;
 }
 
 // --- Documents ---

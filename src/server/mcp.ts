@@ -58,7 +58,11 @@ const status = z
   .string()
   .describe('A status key of the issue\'s team, e.g. "in_progress" (list_teams lists each team\'s statuses; the name, e.g. "In Progress", also works)');
 const priority = z.literal(PRIORITIES).describe("0 none, 1 urgent, 2 high, 3 medium, 4 low");
-const labels = z.array(z.string()).describe('Label names, e.g. ["bug", "ui"]');
+const labels = z
+  .array(z.string())
+  .describe(
+    'Label names, e.g. ["bug", "Type/Feature"]. Reuse labels from list_labels; an unknown name creates a workspace label, and Group/Label creates it in that group. At most one label per group.',
+  );
 const blockedBy = z.array(identifier).describe("Identifiers of issues that must be finished before this one");
 const relatedTo = z
   .array(identifier)
@@ -406,12 +410,14 @@ function createServer(a: Actor, origin: string): McpServer {
     "list_labels",
     {
       description:
-        "List the labels in use, one line each: label · open issue count. Check it before labeling an issue and reuse an existing label rather than inventing a near-duplicate.",
+        "List labels, one line each: label · color · open issue count, plus `team KEY` for a team's own label (usable only on that team's issues). A label written Group/Label belongs to a group, and an issue carries at most one label per group. Check this before labeling an issue and reuse an existing label rather than inventing a near-duplicate.",
+      inputSchema: { team: teamKey.optional().describe("Only labels usable on this team's issues") },
       annotations: { readOnlyHint: true },
     },
-    () => {
-      const labels = tracker.listLabels(a);
-      return result(labels.map((l) => `${l.label} · ${l.open} open`).join("\n") || "No labels yet.", { labels });
+    ({ team }) => {
+      const labels = tracker.listLabels(a, { team });
+      const lines = labels.filter((l) => !l.isGroup).map((l) => [l.path, l.color, l.team && `team ${l.team}`, `${l.open} open`].filter(Boolean).join(" · "));
+      return result(lines.join("\n") || "No labels yet.", { labels });
     },
   );
 

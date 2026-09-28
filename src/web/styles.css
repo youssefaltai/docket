@@ -827,7 +827,7 @@ fieldset.plain {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: hsl(var(--h) 65% 52%);
+  background: #a3a3a3; /* the label's own color, inline */
   flex-shrink: 0;
 }
 
@@ -3041,6 +3041,15 @@ textarea.input {
 }
 .workflow-key {
   font-size: 11.5px;
+}
+/* A group's labels sit under it (workspace and team settings). */
+.label-child {
+  padding-left: 36px;
+}
+.status-color .label-dot {
+  width: 10px;
+  height: 10px;
+  margin: 2px;
 }
 .workflow-menu-space {
   width: 28px;

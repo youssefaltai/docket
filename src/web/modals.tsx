@@ -10,7 +10,9 @@ import {
   CloseIcon,
   Field,
   Kbd,
+  findLabel,
   LabelDot,
+  labelColor,
   MOD,
   Modal,
   ParentIcon,
@@ -56,7 +58,7 @@ function TeamCrumb({ value, onChange }: { value: string; onChange: (key: string)
 type Draft = Required<Omit<IssueInput, "blockedBy" | "relatedTo" | "duplicateOf" | "dueOn" | "assignee" | "delegate">> & { assignee: UserRef | null };
 
 export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueInput>; onClose: () => void }) {
-  const { teams } = useApp();
+  const { teams, labels: allLabels } = useApp();
   // The team's default status, unless the page asked for another (a list group's +, the Triage tab).
   const startIn = (key: string, status?: string) => {
     const team = teams?.find((t) => t.key === key);
@@ -95,10 +97,14 @@ export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueIn
   return (
     <Modal label="New issue" onClose={onClose} onSubmit={submit}>
       <ModalHead onClose={onClose}>
-        {/* A parent belongs to the old team, so switching teams clears it; the status stays if the new team has it. */}
+        {/* A parent and the old team's own labels belong to it, so switching teams drops them; the status stays if the new team has it. */}
         <TeamCrumb
           value={team}
-          onChange={(key) => key !== team && setDraft((d) => ({ ...d, team: key, parent: null, status: startIn(key, d.status) }))}
+          onChange={(key) => {
+            if (key === team) return;
+            const usable = (path: string) => (findLabel(allLabels, path)?.team ?? key) === key;
+            setDraft((d) => ({ ...d, team: key, parent: null, status: startIn(key, d.status), labels: d.labels.filter(usable) }));
+          }}
         />
         <span className="modal-title">New issue</span>
       </ModalHead>
@@ -149,11 +155,11 @@ export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueIn
           <Avatar user={assignee} />
           <span dir="auto">{assignee?.name ?? "Assignee"}</span>
         </AssigneePicker>
-        <LabelsPicker value={labels} onChange={set("labels")} className="chip">
+        <LabelsPicker team={team} value={labels} onChange={set("labels")} className="chip">
           {labels.length ? (
             labels.map((l) => (
               <span key={l} className="chip-label" dir="auto">
-                <LabelDot name={l} />
+                <LabelDot color={labelColor(allLabels, l)} />
                 {l}
               </span>
             ))

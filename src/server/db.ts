@@ -502,6 +502,54 @@ const MIGRATIONS: (string | (() => void))[] = [
   ALTER TABLE users ADD COLUMN system INTEGER NOT NULL DEFAULT 0 CHECK (system IN (0, 1));
   CREATE UNIQUE INDEX users_system ON users(system) WHERE system = 1;
   `,
+  // Labels become entities (Linear's): a workspace's (team_id NULL) or one team's own, with a color, optionally in a
+  // group (is_group, one level deep). Issues point to them through issue_labels; issues.labels (JSON names) stays but
+  // is no longer read or written. Every name in use, trashed issues' too, becomes a workspace label ("Bug" and "bug"
+  // merge into one), colored in turn from LABEL_COLORS; every issue keeps its names. Refused (rolled back) if any
+  // issue's labels aren't an array of names, or if one would lose a name.
+  () => {
+    const odd = db
+      .query("SELECT id FROM issues i WHERE NOT json_valid(i.labels) OR json_type(i.labels) <> 'array' OR EXISTS (SELECT 1 FROM json_each(i.labels) WHERE type <> 'text') LIMIT 5")
+      .all();
+    if (odd.length) throw new Error(`Labels: issues whose labels aren't an array of names: ${JSON.stringify(odd)}`);
+    db.run(`
+    CREATE TABLE labels (
+      id INTEGER PRIMARY KEY,
+      workspace TEXT NOT NULL REFERENCES workspaces(key),
+      team_id INTEGER REFERENCES teams(id),    -- a team's own label, only on its issues; NULL: the workspace's
+      parent_id INTEGER REFERENCES labels(id), -- its group
+      name TEXT NOT NULL,
+      color TEXT NOT NULL,                     -- #rrggbb
+      is_group INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX labels_name ON labels(workspace, COALESCE(parent_id, 0), lower(name));
+    CREATE TABLE issue_labels (
+      issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+      label_id INTEGER NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      PRIMARY KEY (issue_id, label_id)
+    );
+    CREATE INDEX issue_labels_label ON issue_labels(label_id);
+    INSERT INTO labels (workspace, name, color, created_at)
+      SELECT t.workspace, MIN(trim(l.value)), '', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      FROM issues i JOIN teams t ON t.id = i.team_id, json_each(i.labels) l
+      WHERE trim(l.value) <> '' GROUP BY t.workspace, lower(trim(l.value)) ORDER BY t.workspace, lower(trim(l.value));
+    UPDATE labels SET color = CASE (id - 1) % 10
+      WHEN 0 THEN '#357fd4' WHEN 1 THEN '#35d48a' WHEN 2 THEN '#d48a35' WHEN 3 THEN '#7f35d4' WHEN 4 THEN '#d43550'
+      WHEN 5 THEN '#35c4d4' WHEN 6 THEN '#d4b435' WHEN 7 THEN '#354ad4' WHEN 8 THEN '#d45535' ELSE '#d435d4' END;
+    INSERT OR IGNORE INTO issue_labels (issue_id, label_id)
+      SELECT i.id, lb.id FROM issues i JOIN teams t ON t.id = i.team_id, json_each(i.labels) l
+      JOIN labels lb ON lb.workspace = t.workspace AND lower(lb.name) = lower(trim(l.value))
+      WHERE trim(l.value) <> '';
+    `);
+    const lost = db
+      .query(
+        `SELECT i.id, l.value FROM issues i, json_each(i.labels) l WHERE trim(l.value) <> '' AND NOT EXISTS (
+           SELECT 1 FROM issue_labels x JOIN labels lb ON lb.id = x.label_id WHERE x.issue_id = i.id AND lower(lb.name) = lower(trim(l.value))) LIMIT 5`,
+      )
+      .all();
+    if (lost.length) throw new Error(`Labels: issues that would lose a label: ${JSON.stringify(lost)}`);
+  },
 ];
 
 db.run("PRAGMA foreign_keys = OFF"); // a migration may rebuild a table (SQLite's 12-step ALTER); checked before each commit

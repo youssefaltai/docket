@@ -25,7 +25,10 @@ import {
   teamStatuses,
   type StatusLook,
   errorToast,
+  findLabel,
   isMe,
+  labelColor,
+  labelGroupOf,
   useApp,
 } from "./ui";
 
@@ -315,27 +318,27 @@ export const DelegatePicker = (props: UserPickerProps) => (
   <UserPicker kind="agent" label="Delegate to" none="No delegate" {...props} />
 );
 
+/**
+ * Labels usable on `team`'s issues (the workspace's and its own; groups aren't applied), by path. Picking one of a
+ * group the issue already has swaps it, as in Linear. "Create label" takes a name, or Group/Label (made when saved).
+ */
 export function LabelsPicker({
+  team,
   value,
   onChange,
   children,
   ...rest
-}: Trigger & { value: string[]; onChange: (labels: string[]) => void; children: ReactNode }) {
+}: Trigger & { team: string; value: string[]; onChange: (labels: string[]) => void; children: ReactNode }) {
   const { labels, loadDirectory } = useApp();
-  const options = uniq([...labels, ...value])
-    .sort((a, b) => a.localeCompare(b))
-    .map((l) => ({ value: l, label: l, icon: <LabelDot name={l} /> }));
+  const usable = labels.filter((l) => !l.isGroup && (l.team === null || l.team === team)).map((l) => l.path);
+  const options = uniq([...usable, ...value.filter((p) => !findLabel(labels, p))]).map((p) => ({ value: p, label: p, icon: <LabelDot color={labelColor(labels, p)} /> }));
+  const pick = (v: string) => {
+    if (value.includes(v)) return onChange(value.filter((p) => p !== v));
+    const group = labelGroupOf(labels, v);
+    onChange([...value.filter((p) => group === null || labelGroupOf(labels, p) !== group), v]);
+  };
   return (
-    <Picker
-      label="Labels"
-      create="Create label"
-      multi
-      options={options}
-      selected={value}
-      onPick={(v) => onChange(toggle(value, v))}
-      onOpen={loadDirectory}
-      {...rest}
-    >
+    <Picker label="Labels" create="Create label" multi options={options} selected={value} onPick={pick} onOpen={loadDirectory} {...rest}>
       {children}
     </Picker>
   );

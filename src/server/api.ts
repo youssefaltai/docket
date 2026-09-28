@@ -1,5 +1,5 @@
 import type { BunRequest } from "bun";
-import type { DocumentInput, IssueFilter, IssueInput, TeamInput, WebhookInput, WorkflowStatusInput, WorkspaceInput } from "../shared/types.ts";
+import type { DocumentInput, IssueFilter, IssueInput, LabelInput, TeamInput, WebhookInput, WorkflowStatusInput, WorkspaceInput } from "../shared/types.ts";
 import * as access from "./access.ts";
 import { actorOf, isJson } from "./auth.ts";
 import { AppError } from "./db.ts";
@@ -267,7 +267,21 @@ export const apiRoutes = {
     DELETE: handle<"/api/issues/:id/subscription">((req) => tracker.subscribeIssue(actorOf(req), req.params.id, false)),
   },
   "/api/labels": {
-    GET: handle((req) => tracker.listLabels(actorOf(req)).map((l) => l.label)),
+    GET: handle((req) => tracker.listLabels(actorOf(req), { team: param(req, "team") })),
+    POST: handle(async (req) => tracker.createLabel(actorOf(req), await body<LabelInput>(req)), 201),
+  },
+  "/api/labels/:id": {
+    PATCH: handle<"/api/labels/:id">(async (req) =>
+      tracker.updateLabel(
+        actorOf(req),
+        req.params.id,
+        await patch(req, "a label", ["name", "color", "team", "group"], {
+          isGroup: "A label can't become a group, or a group a label: create a new one",
+          workspace: "Labels can't move between workspaces",
+        }),
+      ),
+    ),
+    DELETE: handle<"/api/labels/:id">((req) => tracker.deleteLabel(actorOf(req), req.params.id)),
   },
 
   // --- Inbox ---

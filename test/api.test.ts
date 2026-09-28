@@ -52,7 +52,7 @@ test("issue lifecycle", async () => {
   expect(open.map((i: any) => i.id)).toEqual(["API-2"]);
 
   const { body: labels } = await s.api("GET", "/api/labels");
-  expect(labels).toContain("bug");
+  expect(labels.map((l: any) => l.path)).toContain("bug");
 });
 
 test("deleted issue numbers are never reused", async () => {

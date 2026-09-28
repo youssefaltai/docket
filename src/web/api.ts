@@ -17,6 +17,9 @@ import type {
   IssueInput,
   IssuePatch,
   IssueSummary,
+  Label,
+  LabelInput,
+  LabelPatch,
   Team,
   TeamInput,
   TeamPatch,
@@ -183,7 +186,11 @@ export const api = {
   reactToComment: (id: string, cid: number, emoji: string, on: boolean) =>
     request<Issue>(on ? "PUT" : "DELETE", `/api/issues/${enc(id)}/comments/${cid}/reactions/${enc(emoji)}`),
 
-  labels: () => request<string[]>("GET", "/api/labels"),
+  labels: () => request<Label[]>("GET", "/api/labels"),
+  createLabel: (input: LabelInput) => request<Label>("POST", "/api/labels", input),
+  updateLabel: (id: number, patch: LabelPatch) => request<Label>("PATCH", `/api/labels/${id}`, patch),
+  /** For good: it comes off every issue carrying it. */
+  deleteLabel: (id: number) => request<Label>("DELETE", `/api/labels/${id}`),
   /** Which of your workspaces a link made before URLs carried one points into (404 if none). */
   locate: (what: { issue: string } | { doc: string } | { team: string }) =>
     request<{ workspace: string }>("GET", `/api/locate?${new URLSearchParams(what)}`),

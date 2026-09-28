@@ -47,7 +47,7 @@ test("a PATCH logs only what really changed, one row per field, at one time", as
   expect(await added(id, before)).toEqual([]);
 
   expect((await s.api("PATCH", `/api/issues/${id}`, { labels: ["b", "c"] })).status).toBe(200);
-  expect(await added(id, before)).toEqual([["labels", "admin", ["b", "a"], ["b", "c"]]]);
+  expect(await added(id, before)).toEqual([["labels", "admin", ["a", "b"], ["b", "c"]]]); // labels are a set, by path
 
   const blocker = await create("Blocker");
   const parent = await create("Parent");

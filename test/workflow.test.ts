@@ -129,10 +129,10 @@ test("completedAt, overdue and open counts follow the category, not the key", as
   // Finished work is never overdue, and isn't open.
   const overdue = async () => (await s.api("GET", "/api/issues?team=WF&due=overdue")).body.map((i: any) => i.id);
   expect(await overdue()).not.toContain(issue.id);
-  expect(await s.tool("list_labels")).toContain("ship · 0 open");
+  expect(await s.tool("list_labels")).toMatch(/^ship · #[0-9a-f]{6} · 0 open$/m);
   expect((await patch(issue.id, { status: "in_qa" })).body.completedAt).toBeNull();
   expect(await overdue()).toContain(issue.id);
-  expect(await s.tool("list_labels")).toContain("ship · 1 open");
+  expect(await s.tool("list_labels")).toMatch(/^ship · #[0-9a-f]{6} · 1 open$/m);
   expect((await patch(issue.id, { status: "shipped" })).body.completedAt).toBeString();
   const wf = await team("WF");
   expect(wf.counts.shipped).toBe(1);
