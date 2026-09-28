@@ -1,7 +1,7 @@
 // App shell: boot, sidebar, routing, live updates, global shortcuts.
 import { Fragment, StrictMode, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
-import type { Inbox, IssueInput, Team, Workspace, WorkspaceMember } from "../shared/types";
+import type { Inbox, IssueInput, Label, Team, Workspace, WorkspaceMember } from "../shared/types";
 import { api, connectionStore, setCurrentWorkspace, setOnAccessLost, setOnUnauthorized, store, subscribe } from "./api";
 import { auth, getMe, getYou, loadMe } from "./auth";
 import { ChatDock, ChatNavItem } from "./chat";
@@ -71,7 +71,7 @@ function App() {
   const [workspaces, setWorkspaces] = useState<Workspace[] | null>(null);
   const [teams, setTeams] = useState<{ workspace: string; list: Team[] } | null>(null);
   const [teamsTick, setTeamsTick] = useState(0);
-  const [labels, setLabels] = useState<string[]>([]);
+  const [labels, setLabels] = useState<Label[]>([]);
   const [members, setMembers] = useState<WorkspaceMember[]>([]);
   const [modal, setModal] = useState<ModalState>(null);
   const [navOpen, setNavOpen] = useState(false);

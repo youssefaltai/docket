@@ -8,7 +8,7 @@ import {
 } from "react";
 import { api } from "./api";
 import { getYou } from "./auth";
-import type { IssueSummary, Team, UserRef } from "../shared/types";
+import type { IssueSummary, Label, Team, UserRef } from "../shared/types";
 import { useApp } from "./context";
 import { CalendarIcon, PlusIcon, SearchIcon, SettingsIcon, MenuIcon, TrashIcon } from "./icons";
 import { Link } from "./routing";
@@ -37,13 +37,32 @@ export function Avatar({ user }: { user: UserRef | null }) {
   );
 }
 
-export const LabelDot = ({ name }: { name: string }) => <i className="label-dot" style={hueStyle(name)} />;
+/** The workspace's label with this path (case-insensitively), if any: a name just typed has none yet. */
+export const findLabel = (labels: Label[], path: string) => labels.find((l) => l.path.toLowerCase() === path.toLowerCase());
+export const labelColor = (labels: Label[], path: string) => findLabel(labels, path)?.color ?? "#a3a3a3";
+/** The group a path is in: its label's, or for a new "Group/Label" the part before "/". Lowercase, for comparing. */
+export function labelGroupOf(labels: Label[], path: string): string | null {
+  const label = findLabel(labels, path);
+  const group = label ? label.group : path.includes("/") ? path.slice(0, path.indexOf("/")).trim() : null;
+  return group?.toLowerCase() ?? null;
+}
 
-export function LabelChip({ name }: { name: string }) {
+export const LabelDot = ({ color }: { color: string }) => <i className="label-dot" style={{ background: color }} />;
+
+/** A label by path, in its color; a grouped one as "Type/Bug" with the group muted. */
+export function LabelChip({ path }: { path: string }) {
+  const label = findLabel(useApp().labels, path);
   return (
     <span className="label" dir="auto">
-      <LabelDot name={name} />
-      {name}
+      <LabelDot color={label?.color ?? "#a3a3a3"} />
+      {label?.group ? (
+        <span>
+          <span className="muted">{label.group}/</span>
+          {label.name}
+        </span>
+      ) : (
+        path
+      )}
     </span>
   );
 }

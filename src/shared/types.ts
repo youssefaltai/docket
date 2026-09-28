@@ -210,7 +210,7 @@ export interface IssueSummary {
   status: string; // a status key of its team's workflow
   statusCategory: StatusCategory; // that status's category, for API clients (the web app reads it from the team)
   priority: Priority;
-  labels: string[];
+  labels: string[]; // label paths ("Bug", "Type/Feature"), sorted case-insensitively
   assignee: UserRef | null; // a person: who owns it
   delegate: UserRef | null; // an agent working on it for the assignee (Linear's delegate)
   parent: string | null; // identifier
@@ -259,10 +259,37 @@ export interface Reaction {
   users: UserRef[]; // in the order they reacted
 }
 
-export interface LabelCount {
-  label: string;
-  open: number; // open issues carrying it
+/** New labels' colors, in turn (a label's own color is any "#rrggbb"). */
+export const LABEL_COLORS = ["#357fd4", "#35d48a", "#d48a35", "#7f35d4", "#d43550", "#35c4d4", "#d4b435", "#354ad4", "#d45535", "#d435d4"];
+
+/**
+ * A label (Linear's): a workspace's, or one team's own (usable only on that team's issues). A group holds labels one level
+ * deep and is never applied itself; an issue carries at most one label per group. Issues name labels by `path`, unique in
+ * the workspace case-insensitively.
+ */
+export interface Label {
+  id: number;
+  workspace: string;
+  team: string | null; // a team's own label, only on its issues; null: a workspace label
+  name: string;
+  path: string; // "Type/Bug" inside a group, else the name: what issues' `labels` hold
+  group: string | null; // its group's name
+  isGroup: boolean;
+  color: string; // "#rrggbb"
+  open: number; // open issues carrying it, not in the trash (a group: carrying any of its labels)
+  createdAt: string;
 }
+
+export interface LabelInput {
+  name: string; // no "/": use a group for Group/Label
+  workspace?: string; // optional: labels are created in the request's workspace, and this must name it if given
+  team?: string | null; // a team key: that team's own label; default: its group's scope, else the workspace
+  color?: string; // default: the next of LABEL_COLORS
+  group?: string | null; // the name of a group to put it in
+  isGroup?: boolean;
+}
+
+export type LabelPatch = { name?: string; color?: string; team?: string | null; group?: string | null };
 
 export const ACTIVITY_KINDS = [
   "created",
@@ -373,7 +400,7 @@ export interface IssueInput {
   description?: string;
   status?: string; // a status key (or name) of the team's workflow; default: the team's defaultStatus
   priority?: Priority; // default 0
-  labels?: string[];
+  labels?: string[]; // names or paths; an unknown one creates a workspace label (Group/Label: in that group)
   assignee?: string | null; // a person's username, or "me"
   delegate?: string | null; // an agent's username, or "me" (as an agent)
   parent?: string | null;
@@ -412,7 +439,7 @@ export interface IssueFilter {
   team?: string;
   status?: string[]; // status keys; each must be one of some team's in scope
   category?: StatusCategory[];
-  label?: string;
+  label?: string; // a label's name or path, or a group's name (any of its labels)
   assignee?: string; // username or "me"
   delegate?: string; // username or "me"
   creator?: string; // username or "me" -- who filed it
@@ -547,9 +574,9 @@ export const attachmentMarkdown = (a: Pick<Attachment, "name" | "url" | "content
 // subscription changes) go only to that one user's sockets in that workspace.
 export interface ServerEvent {
   type: "changed";
-  entity: "workspace" | "member" | "team" | "issue" | "document" | "inbox";
+  entity: "workspace" | "member" | "team" | "issue" | "document" | "label" | "inbox";
   workspace: string;
-  id: string; // workspace key, username, team key, issue identifier or document slug; inbox: the recipient's username
+  id: string; // workspace key, username, team key, issue identifier, document slug or label id; inbox: the recipient's username
 }
 
 export interface ApiError {

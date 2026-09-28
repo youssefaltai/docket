@@ -87,11 +87,13 @@ test("labels: counts of open issues, scoped by workspace", async () => {
   await inSide.api("POST", "/api/issues", { team: "SID", title: "C", labels: ["infra"] });
 
   // Each workspace's own: the request's (X-Docket-Workspace); ?workspace= is no longer read.
-  expect((await s.api("GET", "/api/labels")).body).toEqual(["bug", "ui"]);
-  expect((await s.api("GET", "/api/labels?workspace=side")).body).toEqual(["bug", "ui"]);
-  expect((await inSide.api("GET", "/api/labels")).body).toEqual(["infra"]);
+  const paths = async (caller: typeof s.admin, query = "") => (await caller.api("GET", `/api/labels${query}`)).body.map((l: any) => [l.path, l.open]);
+  expect(await paths(s.admin)).toEqual([["bug", 1], ["ui", 1]]);
+  expect(await paths(s.admin, "?workspace=side")).toEqual([["bug", 1], ["ui", 1]]);
+  expect(await paths(inSide)).toEqual([["infra", 1]]);
+  expect((await s.api("GET", "/api/labels")).body[0]).toMatchObject({ workspace: "acme", team: null, name: "bug", group: null, isGroup: false, color: "#357fd4" });
   // A key lists its own workspace's labels.
-  expect(await s.tool("list_labels")).toBe("bug · 1 open\nui · 1 open");
+  expect(await s.tool("list_labels")).toBe("bug · #357fd4 · 1 open\nui · #35d48a · 1 open");
   const side = (await s.api("POST", "/api/api-keys", { name: "side", workspace: "side" })).body.token;
-  expect(await s.with({ token: side }).tool("list_labels")).toBe("infra · 1 open");
+  expect(await s.with({ token: side }).tool("list_labels")).toBe("infra · #357fd4 · 1 open");
 });

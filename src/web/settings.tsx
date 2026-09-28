@@ -6,6 +6,8 @@ import {
   STATUS_CATEGORIES,
   type ApiKeyScope,
   type CodeLink,
+  type Label,
+  type LabelPatch,
   type Role,
   type Session,
   type StatusCategory,
@@ -27,6 +29,7 @@ import {
   EmptyState,
   Field,
   InlineInput,
+  LabelDot,
   ListHeader,
   MenuButton,
   MoreIcon,
@@ -34,6 +37,7 @@ import {
   Section,
   StatusIcon,
   Tabs,
+  TeamMark,
   TeamNotFound,
   ago,
   cls,
@@ -499,6 +503,7 @@ function WorkspaceSettings({ workspace }: { workspace: Workspace }) {
       {!admin && <p className="settings-note">Only admins manage the workspace.</p>}
       {admin && <WorkspaceName key={workspace.name} workspace={workspace} />}
       <Members workspace={workspace.key} members={people} reload={loadDirectory} readOnly={!admin} />
+      <Labels team={null} />
       {admin && (
         <>
           <Invite workspace={workspace.key} />
@@ -879,6 +884,178 @@ function Deliveries({ workspace, id }: { workspace: string; id: number }) {
   );
 }
 
+// ---------- Labels ----------
+
+const byName = (a: Label, b: Label) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+
+/**
+ * One scope's labels: the workspace's (workspace settings) or a team's own (team settings), each group's labels
+ * under it. Everyone in the workspace manages them, as anyone creates one by naming it on an issue.
+ */
+function Labels({ team }: { team: string | null }) {
+  const { labels } = useApp();
+  const [adding, setAdding] = useState<"label" | "group" | null>(null);
+  const scoped = labels.filter((l) => l.team === team);
+  const top = scoped.filter((l) => l.group === null).sort(byName);
+  const add = (kind: "label" | "group", text: string) => (
+    <button className="btn btn-sm" onClick={() => setAdding(kind)}>
+      <PlusIcon />
+      {text}
+    </button>
+  );
+  return (
+    <Section
+      title="Labels"
+      count={scoped.filter((l) => !l.isGroup).length || undefined}
+      action={
+        !adding && (
+          <span className="settings-inline">
+            {add("group", "New group")}
+            {add("label", "New label")}
+          </span>
+        )
+      }
+    >
+      <p className="settings-hint">
+        {team
+          ? `Only ${team}'s issues can use these; workspace labels are in workspace settings.`
+          : "Every team's issues can use these; a team's own labels are in its settings. An issue takes one label per group."}
+      </p>
+      {adding && <NewLabel team={team} isGroup={adding === "group"} onDone={() => setAdding(null)} />}
+      {top.length > 0 ? (
+        <div className="settings-list">
+          {top.map((l) => (
+            <Fragment key={l.id}>
+              <LabelRow label={l} />
+              {l.isGroup && scoped.filter((c) => c.group === l.name).sort(byName).map((c) => <LabelRow key={c.id} label={c} />)}
+            </Fragment>
+          ))}
+        </div>
+      ) : (
+        !adding && <p className="settings-note">No labels yet. Labels you add to issues show up here.</p>
+      )}
+    </Section>
+  );
+}
+
+/** A label or group: its color (the dot opens a color input), inline-editable name, open count, and a menu. */
+function LabelRow({ label }: { label: Label }) {
+  const { labels, teams, loadDirectory } = useApp();
+  const [color, setColor] = useState(label.color);
+  const settled = useDebounced(color, 400); // a color input fires while dragging: save once it settles
+  const [moving, setMoving] = useState<"group" | "scope" | null>(null);
+  const done = (p: Promise<unknown>) => p.then(loadDirectory, errorToast);
+  const update = (patch: LabelPatch) => done(api.updateLabel(label.id, patch));
+  useEffect(() => setColor(label.color), [label.color]);
+  useEffect(() => {
+    if (settled !== label.color) update({ color: settled });
+  }, [settled]);
+  const groups = labels.filter((g) => g.isGroup && g.team === label.team && g.name !== label.group);
+  const remove = async () => {
+    const what = label.isGroup ? `the group ${label.name}` : label.path;
+    if (await ask(`Delete ${what}? It comes off every issue that has it. This can't be undone.`, "Delete")) done(api.deleteLabel(label.id));
+  };
+  const actions: [string, () => void][] = [];
+  if (!label.isGroup && (groups.length || label.group)) actions.push(["Move to group…", () => setMoving("group")]);
+  if (!label.group) actions.push([label.team ? "Move to workspace or team…" : "Move to a team…", () => setMoving("scope")]);
+  actions.push(["Delete", remove]);
+  const options =
+    moving === "group"
+      ? [...(label.group ? [{ value: "", label: "No group" }] : []), ...groups.map((g) => ({ value: g.name, label: g.name, icon: <LabelDot color={g.color} /> }))]
+      : [{ value: "", label: "Workspace" }, ...(teams ?? []).map((t) => ({ value: t.key, label: t.name, icon: <TeamMark id={t.key} /> }))].filter(
+          (o) => o.value !== (label.team ?? ""),
+        );
+  return (
+    <>
+      <div className={cls("settings-row workflow-row", label.group && "label-child")}>
+        <label className="status-color" title="Change color">
+          <LabelDot color={color} />
+          <input type="color" value={color} onChange={(e) => setColor(e.target.value)} aria-label={`${label.name} color`} />
+        </label>
+        <div className="settings-row-main">
+          <InlineInput label={label.isGroup ? "Group name" : "Label name"} value={label.name} onSave={(name) => update({ name })} />
+        </div>
+        {label.isGroup && <span className="webhook-tag">Group</span>}
+        <span className="muted workflow-key">{label.open} open</span>
+        <RowMenu label={`${label.name} actions`} actions={actions} />
+      </div>
+      {moving && (
+        <div className="settings-row settings-inline">
+          <span className="grow">{moving === "group" ? "Move to group…" : "Move to…"}</span>
+          <Picker
+            label={moving === "group" ? "Move to group" : "Move to"}
+            options={options}
+            selected={[]}
+            onPick={(to) => {
+              setMoving(null);
+              update(moving === "group" ? { group: to || null } : { team: to || null });
+            }}
+            className="btn btn-sm"
+          >
+            {moving === "group" ? "Pick a group" : "Pick a team"}
+          </Picker>
+          <button className="btn btn-sm btn-ghost" onClick={() => setMoving(null)}>
+            Cancel
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
+/** "New label" / "New group": a name (and a group for a label); Enter creates it in this section's scope. */
+function NewLabel({ team, isGroup, onDone }: { team: string | null; isGroup: boolean; onDone: () => void }) {
+  const { labels, loadDirectory } = useApp();
+  const [name, setName] = useState("");
+  const [group, setGroup] = useState("");
+  const { busy, run } = useRun();
+  const groups = isGroup ? [] : labels.filter((l) => l.isGroup && l.team === team).sort(byName);
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    if (!name.trim()) return;
+    run(async () => {
+      await api.createLabel({ name: name.trim(), team, isGroup, group: group || null });
+      loadDirectory();
+      onDone();
+    });
+  };
+  return (
+    <form className="settings-row settings-inline" onSubmit={submit}>
+      <input
+        className="input grow"
+        autoFocus
+        dir="auto"
+        placeholder={isGroup ? "Group name, e.g. Type" : "Label name"}
+        aria-label={isGroup ? "New group name" : "New label name"}
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key !== "Escape") return;
+          e.preventDefault();
+          onDone();
+        }}
+      />
+      {groups.length > 0 && (
+        <Picker
+          label="Group"
+          options={[{ value: "", label: "No group" }, ...groups.map((g) => ({ value: g.name, label: g.name, icon: <LabelDot color={g.color} /> }))]}
+          selected={[group]}
+          onPick={setGroup}
+          className="btn btn-sm"
+        >
+          {group || "No group"}
+        </Picker>
+      )}
+      <button className="btn btn-sm btn-primary" disabled={!name.trim() || busy}>
+        Add
+      </button>
+      <button type="button" className="btn btn-sm btn-ghost" onClick={onDone}>
+        Cancel
+      </button>
+    </form>
+  );
+}
+
 // ---------- Team ----------
 
 const CATEGORY_NAMES: Record<StatusCategory, string> = {
@@ -909,6 +1086,7 @@ export function TeamSettingsPage({ teamKey }: { teamKey: string }) {
               <TeamGeneral key={team.key} team={team} />
               <Workflow team={team} />
               <Automations team={team} />
+              <Labels team={team.key} />
             </div>
           )
         )}

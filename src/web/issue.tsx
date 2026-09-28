@@ -568,8 +568,8 @@ function Properties({ issue, patch }: { issue: Issue; patch: (p: IssueChange) =>
         </DelegatePicker>
       </Prop>
       <Prop label="Labels" cmd="labels">
-        <LabelsPicker value={issue.labels} onChange={(labels) => patch({ labels })} className="prop-btn prop-wrap">
-          {issue.labels.length ? issue.labels.map((l) => <LabelChip key={l} name={l} />) : <span className="muted">Add labels</span>}
+        <LabelsPicker team={issue.team} value={issue.labels} onChange={(labels) => patch({ labels })} className="prop-btn prop-wrap">
+          {issue.labels.length ? issue.labels.map((l) => <LabelChip key={l} path={l} />) : <span className="muted">Add labels</span>}
         </LabelsPicker>
       </Prop>
       <Prop label="Due date">

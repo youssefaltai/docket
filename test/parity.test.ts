@@ -31,7 +31,8 @@ test("deleting an issue moves it to the trash; it hides everywhere and comes bac
   expect(ids((await s.api("GET", "/api/issues?q=Parent")).body)).not.toContain(parent.id);
   expect((await s.api("GET", `/api/issues/${blocked.id}`)).body.blockedBy).toEqual([]);
   expect((await s.api("GET", `/api/documents/${doc.slug}`)).body.issues).toEqual([]);
-  expect((await s.api("GET", "/api/labels")).body).not.toContain("trashy");
+  // Its label stays (labels are managed in settings), but a trashed issue isn't open.
+  expect((await s.api("GET", "/api/labels")).body.find((l: any) => l.path === "trashy")).toMatchObject({ open: 0 });
   // The sub-issue stays, still pointing at its (trashed) parent, as in Linear.
   expect((await s.api("GET", `/api/issues/${child.id}`)).body.parent).toBe(parent.id);
   // A trashed issue is read-only.
@@ -46,6 +47,8 @@ test("deleting an issue moves it to the trash; it hides everywhere and comes bac
 
   const restored = await s.api("POST", `/api/issues/${parent.id}/restore`);
   expect(restored.body.deletedAt).toBeNull();
+  expect(restored.body.labels).toEqual(["trashy"]);
+  expect((await s.api("GET", "/api/labels")).body.find((l: any) => l.path === "trashy")).toMatchObject({ open: 1 });
   expect((await s.api("GET", `/api/issues/${blocked.id}`)).body.blockedBy).toEqual([parent.id]);
   expect((await s.api("GET", `/api/documents/${doc.slug}`)).body.issues.map((i: any) => i.id)).toEqual([parent.id]);
   expect((await s.api("POST", `/api/issues/${parent.id}/restore`)).status).toBe(409);

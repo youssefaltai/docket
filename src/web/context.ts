@@ -1,6 +1,6 @@
 // The app-wide context: current workspace/teams/labels/members and the actions views trigger on the shell.
 import { createContext, useContext } from "react";
-import type { Inbox, IssueInput, Team, Workspace, WorkspaceMember } from "../shared/types";
+import type { Inbox, IssueInput, Label, Team, Workspace, WorkspaceMember } from "../shared/types";
 
 export interface AppState {
   workspaces: Workspace[] | null;
@@ -8,7 +8,8 @@ export interface AppState {
   workspace: Workspace | null;
   /** The current workspace's teams (sidebar, pickers, chips, new issue/doc defaults). */
   teams: Team[] | null;
-  labels: string[];
+  /** The current workspace's labels and groups, by path (pickers, chips, filters, settings). */
+  labels: Label[];
   /** The current workspace's members (assignee and delegate pickers). */
   members: WorkspaceMember[];
   /** Your inbox in the current workspace (the sidebar shows its unread count), null until it loads. */

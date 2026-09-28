@@ -10,6 +10,8 @@ import {
   CheckIcon,
   CloseIcon,
   LabelDot,
+  labelColor,
+  labelGroupOf,
   PriorityIcon,
   StatusIcon,
   TagIcon,
@@ -208,8 +210,16 @@ function BulkBar({
   const statuses = statusGroups((teams ?? []).filter((t) => issues.some((i) => i.team === t.key)));
   const people = useMembers("person");
   const agents = useMembers("agent");
-  const allLabels = [...new Set([...labels, ...issues.flatMap((i) => i.labels)])].sort((a, b) => a.localeCompare(b));
+  // Labels usable on every selected issue: the workspace's, and a team's own when they're all that team's.
+  const selectedTeams = new Set(issues.map((i) => i.team));
+  const usable = labels.filter((l) => !l.isGroup && (l.team === null || (selectedTeams.size === 1 && selectedTeams.has(l.team))));
+  const allLabels = [...new Set([...usable.map((l) => l.path), ...issues.flatMap((i) => i.labels)])];
   const common = allLabels.filter((l) => issues.every((i) => i.labels.includes(l)));
+  // Adding a label of a group swaps out the group's other label on each issue, as the server does.
+  const add = (i: IssueSummary, l: string) => {
+    const group = labelGroupOf(labels, l);
+    return [...i.labels.filter((x) => group === null || labelGroupOf(labels, x) !== group), l];
+  };
   const userPicker = (field: "assignee" | "delegate", label: string, none: string, users: UserRef[], text: string) => (
     <Picker
       label={label}
@@ -264,14 +274,14 @@ function BulkBar({
         className="bulkbar-btn"
         multi
         create="Create label"
-        options={allLabels.map((l) => ({ value: l, label: l, icon: <LabelDot name={l} /> }))}
+        options={allLabels.map((l) => ({ value: l, label: l, icon: <LabelDot color={labelColor(labels, l)} /> }))}
         selected={common}
         onOpen={loadDirectory}
         // Toggles one label on all of them: removes it if every one has it, else adds it where it's missing.
         onPick={(l) =>
           common.includes(l)
             ? apply({ removeLabels: [l] }, (i) => ({ ...i, labels: i.labels.filter((x) => x !== l) }))
-            : apply({ addLabels: [l] }, (i) => ({ ...i, labels: i.labels.includes(l) ? i.labels : [...i.labels, l] }))
+            : apply({ addLabels: [l] }, (i) => ({ ...i, labels: i.labels.includes(l) ? i.labels : add(i, l) }))
         }
       >
         <TagIcon />

@@ -17,6 +17,7 @@ import {
   Kbd,
   LabelChip,
   LabelDot,
+  labelColor,
   Link,
   LoadFailed,
   ListHeader,
@@ -258,13 +259,14 @@ function Filters(props: {
       </button>
       <Picker
         label="Filter by label"
-        options={[any("Any label", <TagIcon />), ...labels.map((l) => ({ value: l, label: l, icon: <LabelDot name={l} /> }))]}
+        // Groups too: a group matches any of its labels.
+        options={[any("Any label", <TagIcon />), ...labels.map((l) => ({ value: l.path, label: l.path, icon: <LabelDot color={l.color} /> }))]}
         selected={[props.label]}
         onPick={props.setLabel}
         onOpen={loadDirectory}
         className={cls("chip", props.label && "chip-on")}
       >
-        {props.label ? <LabelDot name={props.label} /> : <TagIcon />}
+        {props.label ? <LabelDot color={labelColor(labels, props.label)} /> : <TagIcon />}
         <span className="chip-text" dir="auto">
           {props.label || "Label"}
         </span>
@@ -439,7 +441,7 @@ function Labels({ labels, max }: { labels: string[]; max: number }) {
   return (
     <span className="labels">
       {labels.slice(0, max).map((l) => (
-        <LabelChip key={l} name={l} />
+        <LabelChip key={l} path={l} />
       ))}
       {extra > 0 && (
         <span className="label" title={labels.slice(max).join(", ")}>
