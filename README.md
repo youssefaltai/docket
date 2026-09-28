@@ -23,16 +23,21 @@ One container. One SQLite file. Your people and your agents, each with their own
 
 Agents are good at doing work and bad at keeping track of it. Docket gives them a place to do that: they pick up issues, post progress, write the spec and move things to review, while you watch it happen in the browser.
 
-- **Built for agents and humans together.** 27 MCP tools for issues, comments, docs and files (screenshots and logs too). Every agent gets its own token and name, and claims issues as a delegate, the way Linear's agents do. What an agent does shows up in your UI right away over WebSocket.
-- **Linear's model, tiny code.** Workspaces with members, admins and guests, public and private teams, list and board views, priorities, labels, sub-issues, blockers, keyboard shortcuts (`C`, `/`, `⌘↵`).
-- **Docs next to your issues.** Markdown docs with version history. Write `API-1` and it links to the issue, with its status shown inline.
-- **Yours.** Self-hosted, a SQLite file and a folder of uploads, five runtime dependencies. Back it up live with `./backup.sh`.
+- **Built for agents and humans together.** 35 MCP tools for issues, projects, comments, docs, notifications and files (screenshots and logs too). Every agent gets its own token and name, and claims issues as a delegate, the way Linear's agents do. What an agent does shows up in your UI right away over WebSocket, and in its history.
+- **Linear's model, tiny code.** Workspaces with members, admins and guests, public and private teams with their own workflows, projects with milestones, cycles, estimates, list and board views you can save, an inbox with @mentions, and a command menu (`⌘K`) with keyboard shortcuts for everything.
+- **Docs next to your issues.** Rich-text docs stored as Markdown, with version history. Write `API-1` and it links to the issue, with its status shown inline.
+- **Connected.** Pull requests and commits move issues along (GitHub), and signed webhooks tell your own services what changed.
+- **Yours.** Self-hosted, a SQLite file and a folder of uploads, eleven runtime dependencies. Back it up live with `./backup.sh`.
 - **Works everywhere.** Install it as a PWA on iPhone, iPad or Mac. It works offline for the issues and docs you've already opened.
 
 <table>
   <tr>
-    <td><img src=".github/screenshots/issue.png" alt="An issue with a comment from Claude"></td>
-    <td><img src=".github/screenshots/doc.png" alt="A markdown doc linking issues"></td>
+    <td><img src=".github/screenshots/issue.png" alt="An issue Claude is working on as a delegate, with sub-issues and its history"></td>
+    <td><img src=".github/screenshots/doc.png" alt="A doc Claude revised, linking the issues it covers"></td>
+  </tr>
+  <tr>
+    <td><img src=".github/screenshots/board.png" alt="The board view with estimates, due dates and labels"></td>
+    <td><img src=".github/screenshots/project.png" alt="A project with milestones, progress, docs and issues"></td>
   </tr>
 </table>
 
@@ -155,7 +160,14 @@ You can also use an optional config file at `$XDG_CONFIG_HOME/docket/config` or 
 <details>
 <summary><b>MCP tools</b></summary>
 
-`update_workspace`, `list_members`, `list_teams`, `create_team`, `update_team`, `list_issues`, `list_labels`, `get_issue`, `create_issue`, `update_issue`, `claim_issue`, `comment_issue`, `list_documents`, `get_document`, `create_document`, `update_document`, `comment_document`, `delete_document`, `update_comment`, `delete_comment`. A key works in one workspace, so the tools act there.
+- **Workspace and teams:** `update_workspace`, `list_members`, `list_teams`, `create_team`, `update_team`, `list_labels`, `list_cycles`, `list_templates`
+- **Issues:** `list_issues`, `get_issue`, `create_issue`, `update_issue`, `claim_issue`, `comment_issue`, `react`, `subscribe`
+- **Projects:** `list_projects`, `get_project`, `create_project`, `update_project`, `create_milestone`, `update_milestone`
+- **Docs:** `list_documents`, `get_document`, `create_document`, `update_document`, `comment_document`, `delete_document`
+- **Comments:** `update_comment`, `delete_comment`, `resolve_thread`
+- **Inbox and files:** `list_notifications`, `mark_notifications_read`, `attach_file`, `get_attachment`
+
+A key works in one workspace, so the tools act there.
 
 The full REST API and data model are in [SPEC.md](SPEC.md).
 
