@@ -20,6 +20,9 @@ import type {
   IssueInput,
   IssuePatch,
   IssueSummary,
+  IssueTemplate,
+  IssueTemplateInput,
+  IssueTemplatePatch,
   Label,
   LabelInput,
   LabelPatch,
@@ -205,6 +208,13 @@ export const api = {
   updateLabel: (id: number, patch: LabelPatch) => request<Label>("PATCH", `/api/labels/${id}`, patch),
   /** For good: it comes off every issue carrying it. */
   deleteLabel: (id: number) => request<Label>("DELETE", `/api/labels/${id}`),
+
+  templates: (team?: string) => request<IssueTemplate[]>("GET", `/api/templates${team ? `?team=${enc(team)}` : ""}`),
+  createTemplate: (input: IssueTemplateInput) => request<IssueTemplate>("POST", "/api/templates", input),
+  updateTemplate: (id: number, patch: IssueTemplatePatch) => request<IssueTemplate>("PATCH", `/api/templates/${id}`, patch),
+  /** Doesn't affect issues already created from it. */
+  deleteTemplate: (id: number) => request<IssueTemplate>("DELETE", `/api/templates/${id}`),
+
   views: () => request<CustomView[]>("GET", "/api/views"),
   view: (id: number) => request<CustomView>("GET", `/api/views/${id}`),
   createView: (input: CustomViewInput) => request<CustomView>("POST", "/api/views", input),

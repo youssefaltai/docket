@@ -1,6 +1,6 @@
 // New issue, doc, team and workspace dialogs.
 import { useState, type ReactNode } from "react";
-import { PRIORITY_LABELS, PROJECT_STATUS_LABELS, type CustomViewInput, type IssueInput, type ProjectStatus, type UserRef, type Workspace } from "../shared/types";
+import { PRIORITY_LABELS, PROJECT_STATUS_LABELS, type CustomViewInput, type IssueInput, type IssueTemplate, type ProjectStatus, type UserRef, type Workspace } from "../shared/types";
 import { api } from "./api";
 import { RichEditor } from "./editor";
 import {
@@ -14,8 +14,10 @@ import {
   ProjectStatusPicker,
   TeamPicker,
   TeamsPicker,
+  TemplatePicker,
   StatusPicker,
   useProjects,
+  useTemplates,
 } from "./pickers";
 import {
   Avatar,
@@ -35,6 +37,7 @@ import {
   ProjectIcon,
   ProjectStatusIcon,
   TeamMark,
+  TemplateIcon,
   StatusIcon,
   statusOf,
   TagIcon,
@@ -57,8 +60,18 @@ function ModalHead({ onClose, children }: { onClose: () => void; children: React
   );
 }
 
-/** "Team ›" in front of a new issue or doc's title. */
-function TeamCrumb({ value, onChange }: { value: string; onChange: (key: string) => void }) {
+/** "Team ›" in front of a new issue or doc's title; a New issue modal also passes `templates` for the Template chip. */
+function TeamCrumb({
+  value,
+  onChange,
+  templates,
+  onPickTemplate,
+}: {
+  value: string;
+  onChange: (key: string) => void;
+  templates?: IssueTemplate[];
+  onPickTemplate?: (t: IssueTemplate) => void;
+}) {
   const { teams } = useApp();
   const team = teams?.find((t) => t.key === value);
   return (
@@ -67,12 +80,21 @@ function TeamCrumb({ value, onChange }: { value: string; onChange: (key: string)
         {team && <TeamMark id={team.key} />}
         <span dir="auto">{team?.name ?? "Team"}</span>
       </TeamPicker>
+      {/* Only shown when the team has templates: no empty-state clutter. */}
+      {templates && templates.length > 0 && onPickTemplate && (
+        <TemplatePicker templates={templates} onPick={onPickTemplate} className="chip">
+          <TemplateIcon />
+          Template
+        </TemplatePicker>
+      )}
       <ChevronRightIcon className="muted" />
     </>
   );
 }
 
-type Draft = Required<Omit<IssueInput, "blockedBy" | "relatedTo" | "duplicateOf" | "dueOn" | "estimate" | "assignee" | "delegate" | "milestone" | "cycle">> & {
+type Draft = Required<
+  Omit<IssueInput, "blockedBy" | "relatedTo" | "duplicateOf" | "dueOn" | "estimate" | "assignee" | "delegate" | "milestone" | "cycle" | "template">
+> & {
   assignee: UserRef | null;
   cycle: number | null;
 };
@@ -100,8 +122,15 @@ export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueIn
   const { team, title, description, status, priority, labels, assignee, parent, project, cycle } = draft;
   const projects = useProjects();
   const inProject = projects.find((p) => p.slug === project);
+  const templates = useTemplates(team);
   // The description's editor loads on first use (focused then), or at once for a given description.
   const [describing, setDescribing] = useState<false | "open" | "focus">(defaults.description ? "open" : false);
+  // Picking a template overwrites the draft's prefillable fields outright: it's meant to be picked first. A status
+  // the team no longer has (deleted since the template was made) falls back to the team's default, as startIn does.
+  const applyTemplate = (t: IssueTemplate) => {
+    setDraft((d) => ({ ...d, title: t.title, description: t.description, status: startIn(team, t.status ?? undefined), priority: t.priority ?? 0, labels: t.labels }));
+    if (t.description) setDescribing("open");
+  };
 
   const { busy, run } = useRun();
   const submit = () => {
@@ -131,6 +160,8 @@ export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueIn
             const usable = (path: string) => (findLabel(allLabels, path)?.team ?? key) === key;
             setDraft((d) => ({ ...d, team: key, parent: null, cycle: null, status: startIn(key, d.status), labels: d.labels.filter(usable) }));
           }}
+          templates={templates}
+          onPickTemplate={applyTemplate}
         />
         <span className="modal-title">New issue</span>
       </ModalHead>

@@ -10,6 +10,7 @@ import {
   type Cycle,
   type EstimateScale,
   type IssueSummary,
+  type IssueTemplate,
   type Milestone,
   type Priority,
   type ProjectStatus,
@@ -460,6 +461,41 @@ export function ProjectPicker({
       ]}
       selected={[value ?? ""]}
       onPick={(v) => (v || null) !== value && onChange(v || null)}
+      {...rest}
+    >
+      {children}
+    </Picker>
+  );
+}
+
+/** A team's issue templates, reloaded whenever `team` changes (the New issue modal's Template control). */
+export function useTemplates(team: string): IssueTemplate[] {
+  const [templates, setTemplates] = useState<IssueTemplate[]>([]);
+  useEffect(() => {
+    if (!team) return setTemplates([]);
+    let live = true;
+    api.templates(team).then((t) => live && setTemplates(t), errorToast);
+    return () => void (live = false);
+  }, [team]);
+  return templates;
+}
+
+/** One of the team's templates, by name; picking one hands it to `onPick` to merge into the draft. */
+export function TemplatePicker({
+  templates,
+  onPick,
+  children,
+  ...rest
+}: Trigger & { templates: IssueTemplate[]; onPick: (t: IssueTemplate) => void }) {
+  return (
+    <Picker
+      label="Template"
+      options={templates.map((t) => ({ value: String(t.id), label: t.name }))}
+      selected={[]}
+      onPick={(v) => {
+        const t = templates.find((x) => x.id === Number(v));
+        if (t) onPick(t);
+      }}
       {...rest}
     >
       {children}

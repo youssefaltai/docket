@@ -1,5 +1,5 @@
 import type { BunRequest } from "bun";
-import type { CustomViewInput, DocumentInput, IssueFilter, IssueInput, LabelInput, MilestoneInput, ProjectInput, TeamInput, WebhookInput, WorkflowStatusInput, WorkspaceInput } from "../shared/types.ts";
+import type { CustomViewInput, DocumentInput, IssueFilter, IssueInput, IssueTemplateInput, LabelInput, MilestoneInput, ProjectInput, TeamInput, WebhookInput, WorkflowStatusInput, WorkspaceInput } from "../shared/types.ts";
 import * as access from "./access.ts";
 import { actorOf, isJson } from "./auth.ts";
 import { AppError } from "./db.ts";
@@ -52,6 +52,7 @@ const TEAM_FIELDS = ["name", "description", "defaultStatus", "autoCloseParent", 
 const DOCUMENT_FIELDS = ["title", "content", "edits", "team", "position", "checkpoint", "project", "baseUpdatedAt"];
 const PROJECT_FIELDS = ["name", "description", "status", "lead", "targetDate", "teams", "baseUpdatedAt"];
 const MILESTONE_FIELDS = ["name", "description", "targetDate", "position"];
+const TEMPLATE_FIELDS = ["name", "title", "description", "status", "priority", "labels"];
 
 const param = (req: Request, name: string) => new URL(req.url).searchParams.get(name) || undefined;
 
@@ -297,6 +298,14 @@ export const apiRoutes = {
       ),
     ),
     DELETE: handle<"/api/labels/:id">((req) => tracker.deleteLabel(actorOf(req), req.params.id)),
+  },
+  "/api/templates": {
+    GET: handle((req) => tracker.listTemplates(actorOf(req), { team: param(req, "team") })),
+    POST: handle(async (req) => tracker.createTemplate(actorOf(req), await body<IssueTemplateInput>(req)), 201),
+  },
+  "/api/templates/:id": {
+    PATCH: handle<"/api/templates/:id">(async (req) => tracker.updateTemplate(actorOf(req), req.params.id, await patch(req, "a template", TEMPLATE_FIELDS))),
+    DELETE: handle<"/api/templates/:id">((req) => tracker.deleteTemplate(actorOf(req), req.params.id)),
   },
 
   // --- Projects ---
