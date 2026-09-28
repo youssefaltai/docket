@@ -654,6 +654,7 @@ type IssueRow = Record<string, unknown> & {
   blocked_by: string; // JSON array of identifiers
   related_to: string; // JSON array of identifiers
   duplicate_of: string | null; // identifier
+  previous_identifiers: string; // JSON array of identifiers it had before it moved team
   due_on: string | null; // "YYYY-MM-DD"
   created_at: string;
   updated_at: string;
@@ -681,7 +682,10 @@ const ISSUE_SELECT = `
       WHERE x.kind = 'related' AND (x.from_id = i.id OR x.to_id = i.id) AND r.deleted_at IS NULL ORDER BY rt.key, r.number
     )) AS related_to,
     (SELECT ${ident("dt", "d")} FROM issue_relations x JOIN issues d ON d.id = x.to_id JOIN teams dt ON dt.id = d.team_id
-      WHERE x.kind = 'duplicate' AND x.from_id = i.id AND d.deleted_at IS NULL) AS duplicate_of
+      WHERE x.kind = 'duplicate' AND x.from_id = i.id AND d.deleted_at IS NULL) AS duplicate_of,
+    (SELECT json_group_array(ref) FROM (
+      SELECT ${ident("at", "a")} AS ref FROM issue_aliases a JOIN teams at ON at.id = a.team_id WHERE a.issue_id = i.id ORDER BY a.created_at, at.key, a.number
+    )) AS previous_identifiers
   FROM issues i
   JOIN teams t ON t.id = i.team_id
   LEFT JOIN workflow_statuses ws ON ws.team_id = i.team_id AND ws.key = i.status
@@ -723,25 +727,42 @@ const toSummary = (row: IssueRow): IssueSummary => ({
   updatedAt: row.updated_at,
   completedAt: row.completed_at,
   deletedAt: row.deleted_at,
+  previousIdentifiers: JSON.parse(row.previous_identifiers),
 });
 
 /**
- * Resolves an identifier like "brd-12" in the request's workspace to the issue's row id; 404 if it isn't there.
- * Trashed issues resolve too (to read or restore them); `liveIssue` is for everything that changes one.
+ * An issue's row id by identifier parts in `workspace`: its current identifier, else one it had before it moved team
+ * (numbers are never reused, so the two never clash).
+ */
+function findIssue(workspace: string, key: string, number: number): number | null {
+  return (
+    db
+      .query<{ id: number }, [string, string, number]>(
+        `SELECT i.id FROM issues i JOIN teams t ON t.id = i.team_id WHERE t.workspace = ?1 AND t.key = ?2 AND i.number = ?3
+         UNION ALL SELECT a.issue_id FROM issue_aliases a JOIN teams t ON t.id = a.team_id WHERE t.workspace = ?1 AND t.key = ?2 AND a.number = ?3`,
+      )
+      .get(workspace, key, number)?.id ?? null
+  );
+}
+
+/**
+ * Resolves an identifier like "brd-12" in the request's workspace to the issue's row id; 404 if it isn't there. An
+ * identifier it had before it moved team resolves too; `ref` is always its current one. Trashed issues resolve too
+ * (to read or restore them); `liveIssue` is for everything that changes one.
  */
 function issueRef(a: Actor, identifier: unknown): { id: number; workspace: string; deleted_at: string | null; ref: string; team: TeamRef } {
   const match = typeof identifier === "string" ? /^([a-z]{2,5})-(\d+)$/i.exec(identifier.trim()) : null;
   if (!match) throw new AppError(`Invalid issue identifier "${identifier}" (expected e.g. BRD-12)`);
   const key = match[1]!.toUpperCase();
   const number = Number(match[2]);
+  const id = findIssue(requestWorkspace(a), key, number);
+  if (id === null) throw new AppError(`Issue ${key}-${number} not found`, 404);
   const row = db
-    .query<{ id: number; workspace: string; deleted_at: string | null; team_id: number }, [string, string, number]>(
-      "SELECT i.id, t.workspace, i.deleted_at, i.team_id FROM issues i JOIN teams t ON t.id = i.team_id WHERE t.workspace = ? AND t.key = ? AND i.number = ?",
+    .query<{ workspace: string; deleted_at: string | null; team_id: number; key: string; number: number }, [number]>(
+      "SELECT t.workspace, i.deleted_at, i.team_id, t.key, i.number FROM issues i JOIN teams t ON t.id = i.team_id WHERE i.id = ?",
     )
-    .get(requestWorkspace(a), key, number);
-  if (!row) throw new AppError(`Issue ${key}-${number} not found`, 404);
-  const { team_id, ...rest } = row;
-  return { ...rest, ref: `${key}-${number}`, team: { id: team_id, key } };
+    .get(id)!;
+  return { id, workspace: row.workspace, deleted_at: row.deleted_at, ref: `${row.key}-${row.number}`, team: { id: row.team_id, key: row.key } };
 }
 
 /** An issue that isn't in the trash: a trashed one can be read and restored, nothing else. */
@@ -1099,6 +1120,10 @@ function issueEvent(a: { id: number }, issueId: number, workspace: string, chang
       if (kind === "claimed") {
         if (from !== to) updatedFrom.status = from;
       } else if (kind === "restored") updatedFrom.deletedAt = from;
+      else if (kind === "team") {
+        const at = (from as string).lastIndexOf("-"); // a move: the identifier, team and number it had
+        Object.assign(updatedFrom, { id: from, team: (from as string).slice(0, at), number: Number((from as string).slice(at + 1)) });
+      }
       else if (kind === "assignee" || kind === "delegate") updatedFrom[kind] = from == null ? null : userRef(from as number, workspace);
       else updatedFrom[kind] = from;
     }
@@ -1112,6 +1137,7 @@ function issueEvent(a: { id: number }, issueId: number, workspace: string, chang
 
 // The fields of an issue's history, from an ISSUE_SELECT row, in the order a mutation lists them.
 const TRACKED: [ActivityKind, (row: IssueRow) => unknown][] = [
+  ["team", (r) => `${r.team_key}-${r.number}`], // its identifier: a move changes both
   ["title", (r) => r.title],
   ["description", (r) => r.description],
   ["status", (r) => r.status],
@@ -1273,8 +1299,33 @@ export function createIssue(a: Actor, input: IssueInput): Issue {
   return getIssue(a, identifier);
 }
 
+/** The team an issue moves to: one of its workspace's (a key resolves only there, so another workspace's team is unknown here). */
+function moveTarget(a: Actor, key: unknown): TeamRow {
+  try {
+    return teamRow(a, key);
+  } catch (e) {
+    if (e instanceof AppError && e.status === 404) throw new AppError(`Unknown team "${key}": an issue moves only to a team of its workspace`);
+    throw e;
+  }
+}
+
+/** Where a moved issue's status lands: the same key in its new team, else that team's first status of its category (not Duplicate), else the team's default. */
+function carriedStatus(team: TeamRow, status: string, category: StatusCategory): string {
+  const statuses = teamStatuses(team.id);
+  const same = statuses.find((s) => s.key === status) ?? statuses.find((s) => s.category === category && s.key !== DUPLICATE_STATUS);
+  return same?.key ?? team.default_status;
+}
+
+/**
+ * Changes an issue. With `team`, it moves to another team of its workspace (Linear's move): it takes that team's next
+ * number, its old identifier keeps resolving (issue_aliases), its status carries over (see carriedStatus) unless one is
+ * given, and it loses the old team's own labels unless `labels` is given. Relations, comments, subscribers, mentions and
+ * doc refs point to its row id, so they come along.
+ */
 export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Issue {
-  const { id, workspace, team } = liveIssue(a, identifier);
+  const { id, workspace, team: from, ref } = liveIssue(a, identifier);
+  const team = patch.team === undefined ? from : moveTarget(a, patch.team);
+  const moving = team.id !== from.id;
   const cols = issueColumns(a, workspace, team, patch);
   // A new parent must not be the issue itself or one of its descendants.
   for (let p = cols.parent_id as number | null | undefined; p != null; ) {
@@ -1286,7 +1337,6 @@ export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Is
   const duplicate = patch.duplicateOf === undefined ? undefined : duplicateId(a, patch.duplicateOf, id);
   const labels = patch.labels === undefined ? undefined : checkLabels(patch.labels);
   if (duplicate != null) cols.status = duplicateStatus(team.id); // marking a duplicate closes it; clearing leaves the status alone
-  const closing = cols.status === undefined ? undefined : isClosed(statusOf(team, cols.status).category);
   const time = now();
   const read = db.query<IssueRow, [number]>(`${ISSUE_SELECT} WHERE i.id = ?`);
   // IMMEDIATE holds the write lock from the read (the version check, the history's "before") to the write.
@@ -1295,6 +1345,16 @@ export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Is
     if (patch.baseUpdatedAt !== undefined && patch.baseUpdatedAt !== before.updated_at) {
       throw new AppError("Issue changed since you read it", 409);
     }
+    if (moving) {
+      db.query("INSERT INTO issue_aliases (team_id, number, issue_id, created_at) VALUES (?, ?, ?, ?)").run(from.id, before.number, id, time);
+      cols.team_id = team.id;
+      cols.number = db
+        .query<{ number: number }, [number]>("UPDATE teams SET next_number = next_number + 1 WHERE id = ? RETURNING next_number - 1 AS number")
+        .get(team.id)!.number;
+      cols.status ??= carriedStatus(team as TeamRow, before.status, before.status_category);
+      if (!labels) db.query("DELETE FROM issue_labels WHERE issue_id = ? AND label_id IN (SELECT id FROM labels WHERE team_id = ?)").run(id, from.id);
+    }
+    const closing = cols.status === undefined ? undefined : isClosed(statusOf(team, cols.status).category);
     // completedAt follows the category, not the key: it changes only when entering or leaving completed/canceled.
     if (closing !== undefined && closing !== isClosed(before.status_category)) cols.completed_at = closing ? time : null;
     // The old and new parent, and any blocker, related or canonical issue added or removed, change too.
@@ -1326,6 +1386,7 @@ export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Is
   }).immediate();
   const issue = getIssue(a, identifier);
   for (const label of created) changed("label", workspace, String(label));
+  if (moving) changed("issue", workspace, ref); // lists showing it under its old identifier
   changed("issue", workspace, issue.id);
   for (const r of new Set(refs)) changed("issue", workspace, r);
   return issue;
@@ -1991,16 +2052,13 @@ function saveVersion(documentId: number, title: string, content: string, authorI
   }
 }
 
-/** Rebuilds the issues a document mentions: identifiers of real issues in its workspace, first-mention order. */
+/** Rebuilds the issues a document mentions: identifiers of real issues in its workspace (or ones they had before a move), first-mention order. */
 function saveRefs(documentId: number, content: string, workspace: string) {
   db.query("DELETE FROM document_refs WHERE document_id = ?").run(documentId);
-  const find = db.query<{ id: number }, [string, string, number]>(
-    "SELECT i.id FROM issues i JOIN teams t ON t.id = i.team_id WHERE t.workspace = ? AND t.key = ? AND i.number = ?",
-  );
   const ids = new Set<number>();
   for (const [, key, number] of content.matchAll(/\b([A-Z]{2,5})-(\d+)\b/g)) {
-    const row = find.get(workspace, key!, Number(number));
-    if (row) ids.add(row.id);
+    const id = findIssue(workspace, key!, Number(number)); // an identifier from before a move too
+    if (id !== null) ids.add(id);
   }
   [...ids].forEach((issueId, ord) => {
     db.query("INSERT INTO document_refs (document_id, issue_id, ord) VALUES (?, ?, ?)").run(documentId, issueId, ord);
@@ -2183,6 +2241,7 @@ export function locate(a: Actor, query: { issue?: string; doc?: string; team?: s
   const [kind, value] = given[0]! as [string, string];
   const mine = [...a.workspaces.keys()];
   const within = `IN (${inList(mine)})`;
+  const numbered = `IN (${mine.map((_, n) => `?${n + 3}`).join(", ") || "NULL"})`; // after ?1 and ?2, used twice
   const issue = /^([a-z]{2,5})-(\d+)$/i.exec(value.trim());
   const row =
     kind === "doc"
@@ -2196,13 +2255,17 @@ export function locate(a: Actor, query: { issue?: string; doc?: string; team?: s
         : issue
           ? db
               .query<{ workspace: string }, SQLQueryBindings[]>(
-                `SELECT t.workspace FROM issues i JOIN teams t ON t.id = i.team_id
-                 WHERE t.key = ? AND i.number = ? AND t.workspace ${within} ORDER BY t.created_at, t.id`,
+                // Its current identifier, or one it had before it moved team.
+                `SELECT t.workspace, t.created_at, t.id FROM issues i JOIN teams t ON t.id = i.team_id
+                 WHERE t.key = ?1 AND i.number = ?2 AND t.workspace ${numbered}
+                 UNION ALL SELECT t.workspace, t.created_at, t.id FROM issue_aliases a JOIN teams t ON t.id = a.team_id
+                 WHERE t.key = ?1 AND a.number = ?2 AND t.workspace ${numbered}
+                 ORDER BY 2, 3`,
               )
               .get(issue[1]!.toUpperCase(), Number(issue[2]), ...mine)
           : null;
   if (!row) throw new AppError("Not found", 404);
-  return row;
+  return { workspace: row.workspace };
 }
 
 // Anything that expired while the server was down goes now; later deletes and trash views purge as they go.

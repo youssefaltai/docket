@@ -132,7 +132,7 @@ test("PATCH refuses fields it can't change, naming them", async () => {
   const issue = await create("Strict");
   const doc = (await s.api("POST", "/api/documents", { team: "PAR", title: "Strict doc", content: "" })).body;
   const cases: [string, string, object, string][] = [
-    ["PATCH", `/api/issues/${issue.id}`, { team: "OTH" }, "Issues can't move between teams"],
+    ["PATCH", `/api/issues/${issue.id}`, { team: "OTH" }, 'Unknown team "OTH"'], // moves stay in the workspace: see move.test.ts
     ["PATCH", `/api/issues/${issue.id}`, { titel: "typo" }, '"titel"'],
     ["PATCH", `/api/documents/${doc.slug}`, { slug: "new" }, "slug never changes"],
     ["PATCH", "/api/teams/PAR", { workspace: "other" }, "Teams can't move between workspaces"],

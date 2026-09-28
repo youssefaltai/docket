@@ -8,8 +8,9 @@ import { isClosedCategory, issueStatus } from "./hooks";
 let issueIndex: Map<string, IssueSummary> | null = null;
 const indexListeners = new Set<() => void>();
 
+/** Every issue by its identifier, and by any it had before it moved team (so old mentions still chip and link). */
 export function setIssueIndex(list: IssueSummary[]) {
-  issueIndex = new Map(list.map((i) => [i.id, i]));
+  issueIndex = new Map(list.flatMap((i) => [i.id, ...i.previousIdentifiers].map((id) => [id, i] as const)));
   indexListeners.forEach((l) => l());
 }
 

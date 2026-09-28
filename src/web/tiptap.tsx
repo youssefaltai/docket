@@ -45,7 +45,7 @@ function chips(doc: PMNode, source: ChipSource): DecorationSet {
     };
     for (const m of text.matchAll(IDENT)) {
       const issue = source.issue(m[0]);
-      if (issue) chip(m.index, m[0].length, { nodeName: "a", class: "issue-ref", href: wsPath(`/issue/${m[0]}`), title: issue.title });
+      if (issue) chip(m.index, m[0].length, { nodeName: "a", class: "issue-ref", href: wsPath(`/issue/${issue.id}`), title: issue.title });
     }
     for (const m of text.matchAll(MENTIONS)) {
       const username = mentionOf(m[1]!, (u) => !!source.member(u));

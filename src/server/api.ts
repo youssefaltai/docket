@@ -35,7 +35,7 @@ async function body<T = Record<string, unknown>>(req: Request): Promise<T> {
 
 /**
  * A PATCH body with only the fields that can change: anything else is 400 naming it, so a typo or an
- * unsupported change (moving an issue to another team) doesn't pass as a silent 200.
+ * unsupported change (moving a team to another workspace) doesn't pass as a silent 200.
  */
 async function patch(req: Request, what: string, fields: readonly string[], why: Record<string, string> = {}) {
   const data = await body(req);
@@ -47,7 +47,7 @@ async function patch(req: Request, what: string, fields: readonly string[], why:
   return data;
 }
 
-const ISSUE_FIELDS = ["title", "description", "status", "priority", "labels", "assignee", "delegate", "parent", "blockedBy", "relatedTo", "duplicateOf", "dueOn", "baseUpdatedAt"];
+const ISSUE_FIELDS = ["title", "description", "team", "status", "priority", "labels", "assignee", "delegate", "parent", "blockedBy", "relatedTo", "duplicateOf", "dueOn", "baseUpdatedAt"];
 const DOCUMENT_FIELDS = ["title", "content", "edits", "team", "position", "checkpoint", "baseUpdatedAt"];
 
 const param = (req: Request, name: string) => new URL(req.url).searchParams.get(name) || undefined;
@@ -224,7 +224,7 @@ export const apiRoutes = {
   "/api/issues/:id": {
     GET: handle<"/api/issues/:id">((req) => tracker.getIssue(actorOf(req), req.params.id)),
     PATCH: handle<"/api/issues/:id">(async (req) =>
-      tracker.updateIssue(actorOf(req), req.params.id, await patch(req, "an issue", ISSUE_FIELDS, { team: "Issues can't move between teams" })),
+      tracker.updateIssue(actorOf(req), req.params.id, await patch(req, "an issue", ISSUE_FIELDS)),
     ),
     DELETE: handle<"/api/issues/:id">((req) => tracker.deleteIssue(actorOf(req), req.params.id)),
   },

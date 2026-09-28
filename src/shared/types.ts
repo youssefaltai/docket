@@ -222,6 +222,7 @@ export interface IssueSummary {
   updatedAt: string;
   completedAt: string | null; // set when its status enters the completed or canceled category, cleared when it leaves
   deletedAt: string | null; // in the trash since then; purged 30 days later
+  previousIdentifiers: string[]; // identifiers it had before it moved team, oldest first; each still resolves to it
 }
 
 /** One page of a list, Linear-style: pass `endCursor` as `after` for the next. */
@@ -293,6 +294,7 @@ export type LabelPatch = { name?: string; color?: string; team?: string | null; 
 
 export const ACTIVITY_KINDS = [
   "created",
+  "team",
   "title",
   "description",
   "status",
@@ -312,7 +314,7 @@ export const ACTIVITY_KINDS = [
 export type ActivityKind = (typeof ACTIVITY_KINDS)[number];
 
 /**
- * One change to an issue. from/to by kind: title, parent and duplicateOf (identifiers), status and claimed (status keys), dueOn
+ * One change to an issue. from/to by kind: team (its identifier before and after a move), title, parent and duplicateOf (identifiers), status and claimed (status keys), dueOn
  * ("YYYY-MM-DD") are strings; priority a number; assignee, delegate a UserRef; labels, blockedBy, relatedTo string arrays; null when unset, and both
  * null for created, description, trashed, restored.
  */
@@ -411,6 +413,9 @@ export interface IssueInput {
 }
 
 export type IssuePatch = Partial<Omit<IssueInput, "team">> & {
+  // Moves it to another team of its workspace: it gets that team's next number, and its old identifier keeps resolving.
+  // Its status carries over by key, else the team's first of that category, else the team's default; the old team's own labels come off.
+  team?: string;
   baseUpdatedAt?: string; // the updatedAt you read; if the issue changed since, the patch is refused (409)
 };
 
