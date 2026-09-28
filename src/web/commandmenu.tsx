@@ -23,6 +23,7 @@ import {
   useIssueIndex,
   useKeydown,
   usePath,
+  visibleCmd,
   type MyTab,
 } from "./ui";
 
@@ -175,15 +176,15 @@ export function CommandMenu() {
     // Context-aware: on an issue page, open its existing property pickers rather than a new interaction.
     if (route.view === "issue")
       for (const [prop, label] of PROPS) {
-        const trigger = `[data-cmd="${prop}"] button`;
-        if (document.querySelector(trigger))
+        const button = () => visibleCmd(document, prop)?.querySelector<HTMLButtonElement>("button");
+        if (button())
           actions.push({
             key: `set-${prop}`,
             label,
             group: "Actions",
             run: () => {
               close(false);
-              setTimeout(() => (document.querySelector<HTMLElement>(trigger))?.click());
+              setTimeout(() => button()?.click());
             },
           });
       }
