@@ -1,5 +1,5 @@
 // Related and duplicate-of issues (DKT-22): related is two-way, a duplicate points at its canonical issue and is
-// canceled; neither names the issue itself, a trashed issue or one in another workspace, and duplicates never loop.
+// set to its team's Duplicate status (a canceled one); neither names the issue itself, a trashed issue or one in another workspace, and duplicates never loop.
 import { Database } from "bun:sqlite";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { startServer, type TestServer } from "./server.ts";
@@ -52,25 +52,25 @@ test("related is symmetric: set from either side, both show it; removing it from
   expect((await get(c.id)).relatedTo).toEqual([a.id, d.id]);
 });
 
-test("marking a duplicate cancels it and lists it on the canonical issue; clearing leaves the status", async () => {
+test("marking a duplicate sets its team's Duplicate status (canceled) and lists it on the canonical issue; clearing leaves the status", async () => {
   const canonical = await create("Canonical");
   const dup = await create("Dup", { status: "todo" });
   const marked = (await patch(dup.id, { duplicateOf: canonical.id.toLowerCase() })).body;
-  expect(marked).toMatchObject({ duplicateOf: canonical.id, status: "canceled" });
+  expect(marked).toMatchObject({ duplicateOf: canonical.id, status: "duplicate" });
   expect(marked.completedAt).toBeString();
   expect((await get(canonical.id)).duplicates).toEqual([dup.id]);
   expect(marked.activity.slice(-2).map((x: any) => [x.kind, x.from, x.to])).toEqual([
-    ["status", "todo", "canceled"],
+    ["status", "todo", "duplicate"],
     ["duplicateOf", null, canonical.id],
   ]);
   const cleared = (await patch(dup.id, { duplicateOf: null })).body;
-  expect(cleared).toMatchObject({ duplicateOf: null, status: "canceled" });
+  expect(cleared).toMatchObject({ duplicateOf: null, status: "duplicate" });
   expect((await get(canonical.id)).duplicates).toEqual([]);
   expect(cleared.activity.at(-1)).toMatchObject({ kind: "duplicateOf", from: canonical.id, to: null });
-  // Created as a duplicate: canceled from the start. Pointing it elsewhere moves it.
+  // Created as a duplicate: Duplicate from the start. Pointing it elsewhere moves it.
   const other = await create("Other");
   const born = await create("Born dup", { duplicateOf: canonical.id, status: "todo" });
-  expect(born).toMatchObject({ duplicateOf: canonical.id, status: "canceled" });
+  expect(born).toMatchObject({ duplicateOf: canonical.id, status: "duplicate" });
   expect((await patch(born.id, { duplicateOf: other.id })).body.duplicateOf).toBe(other.id);
   expect((await get(canonical.id)).duplicates).toEqual([]);
   expect((await get(other.id)).duplicates).toEqual([born.id]);
@@ -153,12 +153,12 @@ test("MCP create_issue and update_issue take relatedTo and duplicateOf, with the
   const text = await bot.tool("get_issue", { id });
   expect(text).toContain(`related to ${target.id}`);
   expect(text).toContain(`duplicate of ${target.id}`);
-  expect(text).toMatch(new RegExp(`status backlog → canceled, duplicate of none → ${target.id}`));
+  expect(text).toMatch(new RegExp(`status backlog → duplicate, duplicate of none → ${target.id}`));
   expect(await bot.tool("get_issue", { id: target.id })).toContain(`duplicates: ${id}`);
   await expect(bot.tool("update_issue", { id, duplicateOf: id })).rejects.toThrow("An issue can't be a duplicate of itself");
   await expect(bot.tool("update_issue", { id, relatedTo: [id] })).rejects.toThrow("An issue can't be related to itself");
   await bot.tool("update_issue", { id, duplicateOf: null, relatedTo: [] });
-  expect(await get(id)).toMatchObject({ duplicateOf: null, relatedTo: [], status: "canceled" });
+  expect(await get(id)).toMatchObject({ duplicateOf: null, relatedTo: [], status: "duplicate" });
   expect(await bot.tool("get_issue", { id })).toContain(`related −${target.id}, duplicate of ${target.id} → none`);
 });
 
@@ -177,8 +177,8 @@ test("webhooks carry the relation's previous value; subscribers hear of a duplic
     [dup.id, { status: "todo", duplicateOf: null }],
   ]);
   const inbox = async () => (await s.as("ana").api("GET", "/api/notifications")).body.notifications.filter((n: any) => n.issue?.id === dup.id);
-  expect((await inbox()).map((n: any) => [n.kind, n.status])).toEqual([["status", "canceled"]]);
-  // Already canceled: marking it again (elsewhere) notifies no one.
+  expect((await inbox()).map((n: any) => [n.kind, n.status])).toEqual([["status", "duplicate"]]);
+  // Already a duplicate: marking it again (elsewhere) notifies no one.
   const other = await create("Hook other");
   await patch(dup.id, { duplicateOf: other.id });
   expect(await inbox()).toHaveLength(1);

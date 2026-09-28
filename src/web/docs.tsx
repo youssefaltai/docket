@@ -24,7 +24,7 @@ import {
   TeamNotFound,
   SearchIcon,
   Section,
-  StatusIcon,
+  IssueStatusIcon,
   TitleEditor,
   TrashIcon,
   ago,
@@ -427,7 +427,7 @@ export function DocPage({ slug }: { slug: string }) {
                         <div className="subs">
                           {doc.issues.map((i) => (
                             <div className="row sub" key={i.id}>
-                              <StatusIcon status={i.status} />
+                              <IssueStatusIcon issue={i} />
                               <span className="row-id">{i.id}</span>
                               <Link to={`/issue/${i.id}`} className="row-title" dir="auto">
                                 {i.title}

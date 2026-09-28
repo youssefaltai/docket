@@ -1,6 +1,6 @@
 // The inbox (Linear's): what needs you in this workspace, one row per issue or doc; and the bell that follows one.
 import { useEffect } from "react";
-import { STATUS_LABELS, type Inbox, type Notification } from "../shared/types";
+import type { Inbox, Notification } from "../shared/types";
 import { api } from "./api";
 import {
   Avatar,
@@ -20,6 +20,7 @@ import {
   useApp,
   useKeydown,
   useLive,
+  useStatusOf,
 } from "./ui";
 
 /** A row: an issue's or doc's notifications, newest first. */
@@ -151,7 +152,10 @@ function Row({ group, onOpen }: { group: Group; onOpen: () => void }) {
 
 /** "Ana mentioned you", "Claude moved to In Review", "Ana commented: …". */
 function Event({ n }: { n: Notification }) {
+  const statusOf = useStatusOf();
   const who = <span dir="auto">{n.actor.name}</span>;
+  // A status key of the issue's team (its identifier's prefix).
+  const moved = n.status ? statusOf(n.issue?.id.replace(/-\d+$/, "") ?? "", n.status) : null;
   const excerpt = n.comment && (
     <>
       : <span dir="auto">{n.comment.excerpt}</span>
@@ -169,7 +173,7 @@ function Event({ n }: { n: Notification }) {
     case "status":
       return (
         <span className="inbox-text">
-          {who} moved to <StatusIcon status={n.status!} /> {STATUS_LABELS[n.status!]}
+          {who} moved to <StatusIcon status={moved!} /> {moved!.name}
         </span>
       );
   }

@@ -1,6 +1,6 @@
 // New issue, doc, team and workspace dialogs.
 import { useState, type ReactNode } from "react";
-import { PRIORITY_LABELS, STATUS_LABELS, type IssueInput, type UserRef, type Workspace } from "../shared/types";
+import { PRIORITY_LABELS, type IssueInput, type UserRef, type Workspace } from "../shared/types";
 import { api } from "./api";
 import { RichEditor } from "./editor";
 import { AssigneePicker, LabelsPicker, ParentPicker, PriorityPicker, TeamPicker, StatusPicker } from "./pickers";
@@ -17,6 +17,7 @@ import {
   PriorityIcon,
   TeamMark,
   StatusIcon,
+  statusOf,
   TagIcon,
   nav,
   navigate,
@@ -55,11 +56,17 @@ function TeamCrumb({ value, onChange }: { value: string; onChange: (key: string)
 type Draft = Required<Omit<IssueInput, "blockedBy" | "relatedTo" | "duplicateOf" | "dueOn" | "assignee" | "delegate">> & { assignee: UserRef | null };
 
 export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueInput>; onClose: () => void }) {
+  const { teams } = useApp();
+  // The team's default status, unless the page asked for another (a list group's +, the Triage tab).
+  const startIn = (key: string, status?: string) => {
+    const team = teams?.find((t) => t.key === key);
+    return status && (!team || team.statuses.some((s) => s.key === status)) ? status : (team?.defaultStatus ?? "backlog");
+  };
   const [draft, setDraft] = useState<Draft>(() => ({
     team: defaults.team ?? "",
     title: defaults.title ?? "",
     description: defaults.description ?? "",
-    status: defaults.status ?? "backlog",
+    status: startIn(defaults.team ?? "", defaults.status),
     priority: defaults.priority ?? 0,
     labels: defaults.labels ?? [],
     assignee: null,
@@ -88,10 +95,10 @@ export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueIn
   return (
     <Modal label="New issue" onClose={onClose} onSubmit={submit}>
       <ModalHead onClose={onClose}>
-        {/* A parent belongs to the old team, so switching teams clears it. */}
+        {/* A parent belongs to the old team, so switching teams clears it; the status stays if the new team has it. */}
         <TeamCrumb
           value={team}
-          onChange={(key) => key !== team && setDraft((d) => ({ ...d, team: key, parent: null }))}
+          onChange={(key) => key !== team && setDraft((d) => ({ ...d, team: key, parent: null, status: startIn(key, d.status) }))}
         />
         <span className="modal-title">New issue</span>
       </ModalHead>
@@ -130,9 +137,9 @@ export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueIn
         )}
       </div>
       <div className="modal-chips">
-        <StatusPicker value={status} onChange={set("status")} className="chip">
-          <StatusIcon status={status} />
-          {STATUS_LABELS[status]}
+        <StatusPicker team={team} value={status} onChange={set("status")} className="chip">
+          <StatusIcon status={statusOf(teams, team, status)} />
+          {statusOf(teams, team, status).name}
         </StatusPicker>
         <PriorityPicker value={priority} onChange={set("priority")} className="chip">
           <PriorityIcon priority={priority} />
@@ -352,59 +359,6 @@ export function NewWorkspaceModal({ onCreate, onClose }: { onCreate: (w: Workspa
       <Field label="Name" hint="A workspace groups related teams, with their issues and docs.">
         <input className="input" autoFocus dir="auto" placeholder="Acme" value={name} onChange={(e) => setName(e.target.value)} />
       </Field>
-    </FormModal>
-  );
-}
-
-/** Edits what the header can't inline: the description and, for admins, the workspace's name. */
-export function TeamSettingsModal({ teamKey, onClose }: { teamKey: string; onClose: () => void }) {
-  const app = useApp();
-  const team = app.teams?.find((t) => t.key === teamKey);
-  const home = app.workspaces?.find((w) => w.key === team?.workspace);
-  const [description, setDescription] = useState(team?.description ?? "");
-  const [workspaceName, setWorkspaceName] = useState(home?.name ?? "");
-  if (!team || !home) return null;
-  const admin = home.role === "admin"; // only admins rename the workspace
-
-  return (
-    <FormModal
-      title="Team settings"
-      aside={
-        <span className="muted" dir="auto">
-          {team.name}
-        </span>
-      }
-      action="Save"
-      ready={!admin || !!workspaceName.trim()}
-      onSubmit={async () => {
-        if (admin && workspaceName.trim() !== home.name) await api.updateWorkspace(home.key, { name: workspaceName.trim() });
-        if (description.trim() !== team.description) await api.updateTeam(team.key, { description: description.trim() });
-        app.reloadTeams();
-        onClose();
-      }}
-      onClose={onClose}
-    >
-      <Field
-        label={
-          <>
-            Description <em>optional</em>
-          </>
-        }
-      >
-        <textarea
-          className="input"
-          autoFocus
-          dir="auto"
-          rows={2}
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-        />
-      </Field>
-      {admin && (
-        <Field label="Workspace name" hint={`Renames ${home.name} for all its teams.`}>
-          <input className="input" dir="auto" value={workspaceName} onChange={(e) => setWorkspaceName(e.target.value)} />
-        </Field>
-      )}
     </FormModal>
   );
 }

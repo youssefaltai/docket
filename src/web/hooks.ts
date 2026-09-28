@@ -1,9 +1,21 @@
 // General-purpose hooks and small data helpers used across pages: fetching, keybindings, sizing, issue order.
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { HttpError } from "./api";
-import { useLive } from "./context";
+import { useApp, useLive } from "./context";
 import { errorToast } from "./toast";
-import { OPEN_STATUSES, STATUSES, type IssuePatch, type IssueSummary, type Priority, type Status, type Team, type UserRef } from "../shared/types";
+import {
+  ACTIVE_CATEGORIES,
+  CLOSED_CATEGORIES,
+  DEFAULT_WORKFLOW,
+  STATUS_CATEGORIES,
+  type IssuePatch,
+  type IssueSummary,
+  type Priority,
+  type StatusCategory,
+  type Team,
+  type UserRef,
+  type WorkflowStatus,
+} from "../shared/types";
 
 export function useDebounced<T>(value: T, ms: number): T {
   const [v, setV] = useState(value);
@@ -143,7 +155,72 @@ export function useIssueShortcuts(
   });
 }
 
-export const openCount = (t: Team) => OPEN_STATUSES.reduce((n, s) => n + t.counts[s], 0);
+// --- Statuses: each team has its own workflow; issues name a status by key ---
+
+/** A status as the UI shows it: its team's, plus its icon's fill (the team's k-th started status is 1 − ½^(k+1) full). */
+export type StatusLook = WorkflowStatus & { fill: number };
+
+const look = (statuses: WorkflowStatus[], s: WorkflowStatus): StatusLook => ({
+  ...s,
+  fill: 1 - 0.5 ** (Math.max(0, statuses.filter((x) => x.category === "started").indexOf(s)) + 1),
+});
+
+/** A team's statuses in workflow order (the default workflow while teams load). */
+export function teamStatuses(teams: Team[] | null, team: string): StatusLook[] {
+  const statuses = teams?.find((t) => t.key === team)?.statuses ?? DEFAULT_WORKFLOW;
+  return statuses.map((s) => look(statuses, s));
+}
+
+/**
+ * A team's status by key. While teams load, or for a key the team no longer has (old history), the default
+ * workflow's, else a plain one named by its key in `category` (an issue's own statusCategory).
+ */
+export function statusOf(teams: Team[] | null, team: string, key: string, category?: StatusCategory): StatusLook {
+  const statuses = teams?.find((t) => t.key === team)?.statuses;
+  const own = statuses?.find((s) => s.key === key);
+  if (own) return look(statuses!, own);
+  const known = DEFAULT_WORKFLOW.find((s) => s.key === key);
+  if (known) return look(DEFAULT_WORKFLOW, known);
+  return { key, name: key, category: category ?? "unstarted", color: "#8f8f8f", position: 0, fill: 0.5 };
+}
+
+/** `statusOf` over the current workspace's teams. */
+export function useStatusOf() {
+  const { teams } = useApp();
+  return (team: string, key: string, category?: StatusCategory) => statusOf(teams, team, key, category);
+}
+
+/** An issue's status look, by its team (so an optimistic change shows at once). */
+export const issueStatus = (teams: Team[] | null, issue: Pick<IssueSummary, "team" | "status" | "statusCategory">) =>
+  statusOf(teams, issue.team, issue.status, issue.statusCategory);
+
+export const isClosedCategory = (category: StatusCategory) => CLOSED_CATEGORIES.includes(category);
+
+const rank = (s: { category: StatusCategory }) => STATUS_CATEGORIES.indexOf(s.category);
+
+/**
+ * The status groups of a list or board over `teams`: every key they have (named by the first team that has it) and
+ * any key only an issue has, ordered by category, then the smallest position.
+ */
+export function statusGroups(teams: Team[], issues: IssueSummary[] = []): StatusLook[] {
+  const groups = new Map<string, StatusLook>();
+  for (const t of teams) {
+    for (const s of teamStatuses([t], t.key)) {
+      const had = groups.get(s.key);
+      if (had) had.position = Math.min(had.position, s.position);
+      else groups.set(s.key, { ...s });
+    }
+  }
+  for (const i of issues) if (!groups.has(i.status)) groups.set(i.status, issueStatus(teams, i));
+  return [...groups.values()].sort((a, b) => rank(a) - rank(b) || a.position - b.position);
+}
+
+/** Open issues of a team: its active categories (not triage, completed or canceled). */
+export const openCount = (t: Team) =>
+  t.statuses.filter((s) => ACTIVE_CATEGORIES.includes(s.category)).reduce((n, s) => n + (t.counts[s.key] ?? 0), 0);
+
+/** Issues waiting in a team's Triage. */
+export const triageCount = (t: Team) => t.statuses.filter((s) => s.category === "triage").reduce((n, s) => n + (t.counts[s.key] ?? 0), 0);
 
 /** An issue edit as the UI shows it (users as refs), so it can be applied optimistically. */
 export type IssueChange = Omit<IssuePatch, "assignee" | "delegate"> & { assignee?: UserRef | null; delegate?: UserRef | null };
@@ -155,15 +232,13 @@ export function toPatch({ assignee, delegate, ...patch }: IssueChange): IssuePat
   return patch;
 }
 
-const statusRank = (s: Status) => STATUSES.indexOf(s);
 const priorityRank = (p: Priority) => (p === 0 ? 5 : p);
 
-/** Server order: status, priority (1→4, none last), most recently updated. */
-export function sortIssues<T extends IssueSummary>(list: T[]): T[] {
-  return [...list].sort(
-    (a, b) =>
-      statusRank(a.status) - statusRank(b.status) ||
-      priorityRank(a.priority) - priorityRank(b.priority) ||
-      b.updatedAt.localeCompare(a.updatedAt),
-  );
+/** Server order: status category, the team's status order, priority (1→4, none last), most recently updated. */
+export function sortIssues<T extends IssueSummary>(list: T[], teams: Team[] | null): T[] {
+  const status = new Map(list.map((i) => [i, issueStatus(teams, i)]));
+  return [...list].sort((a, b) => {
+    const [x, y] = [status.get(a)!, status.get(b)!];
+    return rank(x) - rank(y) || x.position - y.position || priorityRank(a.priority) - priorityRank(b.priority) || b.updatedAt.localeCompare(a.updatedAt);
+  });
 }

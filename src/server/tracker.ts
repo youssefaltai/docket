@@ -3,11 +3,14 @@
 // 404, as if it didn't exist.
 import type { SQLQueryBindings } from "bun:sqlite";
 import {
-  CLOSED_STATUSES,
+  CATEGORY_COLORS,
+  CLOSED_CATEGORIES,
+  DEFAULT_WORKFLOW,
   DUE_FILTERS,
+  DUPLICATE_STATUS,
   ISSUE_SORTS,
   PRIORITIES,
-  STATUSES,
+  STATUS_CATEGORIES,
   type Activity,
   type ActivityKind,
   type BulkIssueResult,
@@ -28,7 +31,7 @@ import {
   type LabelCount,
   type Priority,
   type Reaction,
-  type Status,
+  type StatusCategory,
   type Team,
   type TeamInput,
   type TeamPatch,
@@ -36,6 +39,9 @@ import {
   type UserKind,
   type UserRef,
   type WebhookAction,
+  type WorkflowStatus,
+  type WorkflowStatusInput,
+  type WorkflowStatusPatch,
 } from "../shared/types.ts";
 import { type Actor, activeMemberId, requestWorkspace, requirePerson } from "./access.ts";
 import {
@@ -55,7 +61,6 @@ import {
 import * as inbox from "./inbox.ts";
 import { enqueue } from "./webhooks.ts";
 
-const checkStatus = (value: unknown) => checkOneOf(value, STATUSES, "status");
 const checkPriority = (value: unknown) => checkOneOf(value as Priority, PRIORITIES, "priority (0 none, 1 urgent, 2 high, 3 medium, 4 low)");
 
 /** A calendar date, "YYYY-MM-DD", that exists (no 2026-02-30). */
@@ -349,30 +354,45 @@ interface TeamRow {
   workspace: string;
   name: string;
   description: string;
+  default_status: string;
+  statuses: string; // JSON array of WorkflowStatus, in workflow order
   counts: string; // JSON object: status → issue count, statuses without issues left out
   doc_count: number;
   created_at: string;
   updated_at: string;
 }
 
+/** Category order in SQL (STATUS_CATEGORIES) for a category column; anything else last. */
+const categoryRank = (column: string) =>
+  `CASE ${column} ${STATUS_CATEGORIES.map((c, n) => `WHEN '${c}' THEN ${n}`).join(" ")} ELSE ${STATUS_CATEGORIES.length} END`;
+const WORKFLOW_ORDER = `ORDER BY ${categoryRank("category")}, position, id`;
+
 const TEAM_SELECT = `
   SELECT t.*,
+    (SELECT json_group_array(json_object('key', key, 'name', name, 'category', category, 'color', color, 'position', position)) FROM (
+      SELECT * FROM workflow_statuses WHERE team_id = t.id ${WORKFLOW_ORDER}
+    )) AS statuses,
     (SELECT json_group_object(status, n) FROM (
       SELECT status, COUNT(*) AS n FROM issues WHERE team_id = t.id AND deleted_at IS NULL GROUP BY status
     )) AS counts,
     (SELECT COUNT(*) FROM documents WHERE team_id = t.id AND deleted_at IS NULL) AS doc_count
   FROM teams t`;
 
-const toTeam = (row: TeamRow): Team => ({
-  key: row.key,
-  workspace: row.workspace,
-  name: row.name,
-  description: row.description,
-  counts: { ...Object.fromEntries(STATUSES.map((s) => [s, 0])), ...JSON.parse(row.counts) },
-  docCount: row.doc_count,
-  createdAt: row.created_at,
-  updatedAt: row.updated_at,
-});
+function toTeam(row: TeamRow): Team {
+  const statuses: WorkflowStatus[] = JSON.parse(row.statuses);
+  return {
+    key: row.key,
+    workspace: row.workspace,
+    name: row.name,
+    description: row.description,
+    statuses,
+    defaultStatus: row.default_status,
+    counts: { ...Object.fromEntries(statuses.map((s) => [s.key, 0])), ...JSON.parse(row.counts) },
+    docCount: row.doc_count,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
 
 /** A team of the request's workspace, by key. */
 function teamRow(a: Actor, key: unknown): TeamRow {
@@ -406,28 +426,189 @@ export function createTeam(a: Actor, input: TeamInput): Team {
     throw new AppError(`Team key ${key} is taken in this workspace`, 409);
   }
   const time = now();
-  db.query("INSERT INTO teams (key, workspace, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)").run(
-    key,
-    workspace,
-    name,
-    description,
-    time,
-    time,
-  );
+  db.transaction(() => {
+    const { id } = db
+      .query<{ id: number }, SQLQueryBindings[]>(
+        "INSERT INTO teams (key, workspace, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
+      )
+      .get(key, workspace, name, description, time, time)!;
+    const insert = db.query("INSERT INTO workflow_statuses (team_id, key, name, category, color, position) VALUES (?, ?, ?, ?, ?, ?)");
+    for (const s of DEFAULT_WORKFLOW) insert.run(id, s.key, s.name, s.category, s.color, s.position);
+  })();
   changed("team", workspace, key);
   return toTeam(teamRow(a, key));
 }
 
-/** Renames or redescribes a team. Teams never change workspace: their issues, people and links belong to it. */
+/**
+ * Renames or redescribes a team, or sets where its new issues start (a backlog or unstarted status). Teams never
+ * change workspace: their issues, people and links belong to it.
+ */
 export function updateTeam(a: Actor, key: string, patch: TeamPatch & { workspace?: unknown }): Team {
   requirePerson(a, NO_AGENT_TEAMS);
   const row = teamRow(a, key);
   if (patch.workspace !== undefined && patch.workspace !== row.workspace) throw new AppError("Teams can't move between workspaces");
   const name = patch.name === undefined ? row.name : requireText(patch.name, "name");
   const description = patch.description === undefined ? row.description : optionalText(patch.description, "description");
-  db.query("UPDATE teams SET name = ?, description = ?, updated_at = ? WHERE id = ?").run(name, description, now(), row.id);
+  let defaultStatus = row.default_status;
+  if (patch.defaultStatus !== undefined) {
+    const status = statusOf(row, patch.defaultStatus);
+    if (status.category !== "backlog" && status.category !== "unstarted") throw new AppError("The default status must be in Backlog or Unstarted");
+    defaultStatus = status.key;
+  }
+  db.query("UPDATE teams SET name = ?, description = ?, default_status = ?, updated_at = ? WHERE id = ?").run(name, description, defaultStatus, now(), row.id);
   changed("team", row.workspace, row.key);
   return toTeam(teamRow(a, row.key));
+}
+
+// --- Workflows: each team's statuses (Linear's), in fixed categories; issues hold a status's key ---
+
+type StatusRow = WorkflowStatus & { id: number };
+type TeamRef = { id: number; key: string };
+
+const teamStatuses = (teamId: number) =>
+  db.query<StatusRow, [number]>(`SELECT id, key, name, category, color, position FROM workflow_statuses WHERE team_id = ? ${WORKFLOW_ORDER}`).all(teamId);
+
+const isClosed = (category: StatusCategory | null) => !!category && CLOSED_CATEGORIES.includes(category);
+
+/** A status of the team, by key, else by name, case-insensitively; anything else is 400 naming the team's keys. */
+function statusOf(team: TeamRef, value: unknown): StatusRow {
+  const statuses = teamStatuses(team.id);
+  const given = typeof value === "string" ? value.trim().toLowerCase() : "";
+  const found = statuses.find((s) => s.key === given) ?? statuses.find((s) => s.name.toLowerCase() === given);
+  if (!found) throw new AppError(`Invalid status "${value}" for ${team.key}. Use one of: ${statuses.map((s) => s.key).join(", ")}`);
+  return found;
+}
+
+/** Where a team's work goes when it's a duplicate: its Duplicate status, else its first canceled one. */
+const duplicateStatus = (teamId: number) =>
+  db
+    .query<{ key: string }, [number, string]>(
+      "SELECT key FROM workflow_statuses WHERE team_id = ? AND category = 'canceled' ORDER BY key = ? DESC, position, id LIMIT 1",
+    )
+    .get(teamId, DUPLICATE_STATUS)!.key;
+
+const CATEGORY_NAMES: Record<StatusCategory, string> = {
+  triage: "Triage",
+  backlog: "Backlog",
+  unstarted: "Unstarted",
+  started: "Started",
+  completed: "Completed",
+  canceled: "Canceled",
+};
+
+/** A workflow change: people only (like the rest of team settings), in the request's workspace (else 404). */
+function workflowTeam(a: Actor, key: unknown): TeamRow {
+  requirePerson(a, "Only people can change a workflow");
+  return teamRow(a, key);
+}
+
+function workflowStatus(team: TeamRow, key: unknown): StatusRow {
+  const given = typeof key === "string" ? key.trim().toLowerCase() : "";
+  const status = teamStatuses(team.id).find((s) => s.key === given);
+  if (!status) throw new AppError(`Status ${key} not found in ${team.key}`, 404);
+  return status;
+}
+
+/** A status name, unique in the team case-insensitively (409). */
+function statusName(team: TeamRow, value: unknown, self?: number): string {
+  const name = requireText(value, "name");
+  const clash = teamStatuses(team.id).find((s) => s.id !== self && s.name.toLowerCase() === name.toLowerCase());
+  if (clash) throw new AppError(`${team.key} already has a status named ${clash.name}`, 409);
+  return name;
+}
+
+function checkColor(value: unknown): string {
+  const color = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (!/^#[0-9a-f]{6}$/.test(color)) throw new AppError(`Invalid color "${value}": use #rrggbb, e.g. #5e6ad2`);
+  return color;
+}
+
+/**
+ * Adds a status to a team's workflow, last in its category unless `position` says otherwise. Its key is derived
+ * from the name ("In QA" → in_qa) unless given, and never changes. A team has at most one triage status: adding
+ * it turns Triage on.
+ */
+export function createStatus(a: Actor, teamKey: string, input: WorkflowStatusInput): Team {
+  const team = workflowTeam(a, teamKey);
+  const category = checkOneOf(input.category, STATUS_CATEGORIES, "category");
+  const statuses = teamStatuses(team.id);
+  const triage = category === "triage";
+  if (triage && statuses.some((s) => s.category === "triage")) throw new AppError(`${team.key} already has Triage`, 409);
+  const name = statusName(team, input.name ?? (triage ? "Triage" : undefined));
+  const color = input.color === undefined ? CATEGORY_COLORS[category] : checkColor(input.color);
+  const position =
+    input.position === undefined ? Math.max(0, ...statuses.filter((s) => s.category === category).map((s) => s.position)) + 1 : checkPosition(input.position);
+  const taken = (key: string) => statuses.some((s) => s.key === key);
+  let key: string;
+  if (input.key !== undefined || triage) {
+    key = input.key === undefined ? "triage" : typeof input.key === "string" ? input.key.trim().toLowerCase() : "";
+    if (!/^[a-z0-9]+(_[a-z0-9]+)*$/.test(key)) throw new AppError(`Invalid key "${input.key}": use a-z, 0-9 and single underscores, e.g. "in_qa"`);
+    if (taken(key)) throw new AppError(`${team.key} already has a status with the key ${key}`, 409);
+  } else {
+    key = pickSlug(undefined, name, (slug) => taken(slug.replace(/-/g, "_")), { label: "key", fallback: "status" }).replace(/-/g, "_");
+  }
+  db.query("INSERT INTO workflow_statuses (team_id, key, name, category, color, position) VALUES (?, ?, ?, ?, ?, ?)").run(
+    team.id,
+    key,
+    name,
+    category,
+    color,
+    position,
+  );
+  changed("team", team.workspace, team.key);
+  return toTeam(teamRow(a, team.key));
+}
+
+/** Renames, recolors or moves a status within its category. Its key and category never change; Duplicate never does. */
+export function updateStatus(a: Actor, teamKey: string, key: string, patch: WorkflowStatusPatch): Team {
+  const team = workflowTeam(a, teamKey);
+  const status = workflowStatus(team, key);
+  if (status.key === DUPLICATE_STATUS) throw new AppError("Duplicate is a system status: it can't be changed");
+  const name = patch.name === undefined ? status.name : statusName(team, patch.name, status.id);
+  const color = patch.color === undefined ? status.color : checkColor(patch.color);
+  const position = patch.position === undefined ? status.position : checkPosition(patch.position);
+  db.query("UPDATE workflow_statuses SET name = ?, color = ?, position = ? WHERE id = ?").run(name, color, position, status.id);
+  changed("team", team.workspace, team.key);
+  return toTeam(teamRow(a, team.key));
+}
+
+/**
+ * Deletes a status. Never Duplicate, the default status, or the last one of a category (triage aside: deleting
+ * it turns Triage off). Issues in it, trashed ones too, need `moveTo`, another status of the team: they move in
+ * one transaction, each as its own status change would (history, completedAt by category, notifications, webhooks).
+ */
+export function deleteStatus(a: Actor, teamKey: string, key: string, moveTo?: string): Team {
+  const team = workflowTeam(a, teamKey);
+  const status = workflowStatus(team, key);
+  if (status.key === DUPLICATE_STATUS) throw new AppError("Duplicate is a system status: it can't be deleted");
+  if (status.key === team.default_status) throw new AppError(`${status.name} is the default status: make another status the default first`, 409);
+  const statuses = teamStatuses(team.id);
+  const others = statuses.filter((s) => s.id !== status.id);
+  if (status.category !== "triage" && !others.some((s) => s.category === status.category && s.key !== DUPLICATE_STATUS)) {
+    throw new AppError(`${status.name} is the last ${CATEGORY_NAMES[status.category]} status: add another first`, 409);
+  }
+  const target = moveTo === undefined ? undefined : others.find((s) => s.key === String(moveTo).trim().toLowerCase());
+  if (moveTo !== undefined && !target) throw new AppError(`moveTo: "${moveTo}" isn't another status of ${team.key}`);
+  const time = now();
+  const refs = db.transaction(() => {
+    const issues = db.query<{ id: number }, [number, string]>("SELECT id FROM issues WHERE team_id = ? AND status = ? ORDER BY id").all(team.id, status.key);
+    if (issues.length && !target) {
+      throw new AppError(`${issues.length} ${issues.length === 1 ? "issue is" : "issues are"} ${status.name}: pass moveTo`, 409);
+    }
+    // completedAt changes only when the category crosses into or out of completed/canceled.
+    const closing = isClosed(target?.category ?? null);
+    const keep = closing === isClosed(status.category) ? 1 : 0;
+    const move = db.query(`UPDATE issues SET status = ?, completed_at = CASE WHEN ? THEN completed_at ELSE ? END, ${BUMPED_AT} WHERE id = ?`);
+    for (const { id } of issues) {
+      move.run(target!.key, keep, closing ? time : null, time, time, id);
+      logActivity(a, id, team.workspace, [{ kind: "status", from: status.key, to: target!.key }], time);
+    }
+    db.query("DELETE FROM workflow_statuses WHERE id = ?").run(status.id);
+    return issues.map(({ id }) => ownerRef("issue", id));
+  }).immediate();
+  changed("team", team.workspace, team.key);
+  for (const ref of refs) changed("issue", team.workspace, ref);
+  return toTeam(teamRow(a, team.key));
 }
 
 // --- Issues ---
@@ -440,7 +621,9 @@ type IssueRow = Record<string, unknown> & {
   number: number;
   title: string;
   description: string;
-  status: Status;
+  status: string; // a key of its team's workflow
+  status_category: StatusCategory;
+  status_position: number;
   priority: Priority;
   labels: string; // JSON array
   parent: string | null; // identifier
@@ -458,7 +641,7 @@ type IssueRow = Record<string, unknown> & {
 const ident = (team: string, issue: string) => `${team}.key || '-' || ${issue}.number`;
 
 const ISSUE_SELECT = `
-  SELECT i.*, t.key AS team_key, t.workspace, ${ident("pt", "p")} AS parent,
+  SELECT i.*, t.key AS team_key, t.workspace, ws.category AS status_category, ws.position AS status_position, ${ident("pt", "p")} AS parent,
     ${userCols("ua", "assignee")}, ${userCols("ud", "delegate")}, ${userCols("uc", "creator")},
     (SELECT json_group_array(ref) FROM (
       SELECT ${ident("bt", "b")} AS ref FROM issue_blocks x JOIN issues b ON b.id = x.blocker_id JOIN teams bt ON bt.id = b.team_id
@@ -473,17 +656,20 @@ const ISSUE_SELECT = `
       WHERE x.kind = 'duplicate' AND x.from_id = i.id AND d.deleted_at IS NULL) AS duplicate_of
   FROM issues i
   JOIN teams t ON t.id = i.team_id
+  LEFT JOIN workflow_statuses ws ON ws.team_id = i.team_id AND ws.key = i.status
   ${userJoin("uc", "i.creator_id", "t.workspace")}
   ${userJoin("ua", "i.assignee_id", "t.workspace")}
   ${userJoin("ud", "i.delegate_id", "t.workspace")}
   LEFT JOIN issues p ON p.id = i.parent_id
   LEFT JOIN teams pt ON pt.id = p.team_id`;
 
-// Status order, then priority 1→4 with 0 (none) last, then most recently updated. The first two keys are
-// also what a page cursor records (with updated_at and id), so pages resume exactly where they stopped.
-const STATUS_RANK = `CASE i.status ${STATUSES.map((s, n) => `WHEN '${s}' THEN ${n}`).join(" ")} END`;
+// Status category order, then the team's order within it, then priority 1→4 with 0 (none) last, then most
+// recently updated. The first three keys are also what a page cursor records (with updated_at and id), so pages
+// resume exactly where they stopped.
+const STATUS_RANK = categoryRank("ws.category");
+const STATUS_POSITION = "COALESCE(ws.position, 0)";
 const PRIORITY_RANK = "CASE i.priority WHEN 0 THEN 5 ELSE i.priority END";
-const DEFAULT_ORDER = `${STATUS_RANK}, ${PRIORITY_RANK}, i.updated_at DESC, i.id DESC`;
+const DEFAULT_ORDER = `${STATUS_RANK}, ${STATUS_POSITION}, ${PRIORITY_RANK}, i.updated_at DESC, i.id DESC`;
 const ISSUE_ORDER = `ORDER BY ${DEFAULT_ORDER}`;
 // sort=due: earliest due date first, issues without one last, then the default order.
 const DUE_ORDER = `ORDER BY i.due_on IS NULL, i.due_on, ${DEFAULT_ORDER}`;
@@ -495,6 +681,7 @@ const toSummary = (row: IssueRow): IssueSummary => ({
   number: row.number,
   title: row.title,
   status: row.status,
+  statusCategory: row.status_category,
   priority: row.priority,
   labels: JSON.parse(row.labels),
   assignee: ref(row, "assignee"),
@@ -514,18 +701,19 @@ const toSummary = (row: IssueRow): IssueSummary => ({
  * Resolves an identifier like "brd-12" in the request's workspace to the issue's row id; 404 if it isn't there.
  * Trashed issues resolve too (to read or restore them); `liveIssue` is for everything that changes one.
  */
-function issueRef(a: Actor, identifier: unknown): { id: number; workspace: string; deleted_at: string | null; ref: string } {
+function issueRef(a: Actor, identifier: unknown): { id: number; workspace: string; deleted_at: string | null; ref: string; team: TeamRef } {
   const match = typeof identifier === "string" ? /^([a-z]{2,5})-(\d+)$/i.exec(identifier.trim()) : null;
   if (!match) throw new AppError(`Invalid issue identifier "${identifier}" (expected e.g. BRD-12)`);
   const key = match[1]!.toUpperCase();
   const number = Number(match[2]);
   const row = db
-    .query<{ id: number; workspace: string; deleted_at: string | null }, [string, string, number]>(
-      "SELECT i.id, t.workspace, i.deleted_at FROM issues i JOIN teams t ON t.id = i.team_id WHERE t.workspace = ? AND t.key = ? AND i.number = ?",
+    .query<{ id: number; workspace: string; deleted_at: string | null; team_id: number }, [string, string, number]>(
+      "SELECT i.id, t.workspace, i.deleted_at, i.team_id FROM issues i JOIN teams t ON t.id = i.team_id WHERE t.workspace = ? AND t.key = ? AND i.number = ?",
     )
     .get(requestWorkspace(a), key, number);
   if (!row) throw new AppError(`Issue ${key}-${number} not found`, 404);
-  return { ...row, ref: `${key}-${number}` };
+  const { team_id, ...rest } = row;
+  return { ...rest, ref: `${key}-${number}`, team: { id: team_id, key } };
 }
 
 /** An issue that isn't in the trash: a trashed one can be read and restored, nothing else. */
@@ -626,12 +814,12 @@ function setDuplicate(id: number, canonical: number | null, time: string): numbe
   return [was, canonical].filter((c) => c !== null);
 }
 
-/** Validates the patch fields that map directly to issue columns. */
-function issueColumns(a: Actor, workspace: string, patch: IssuePatch): Record<string, SQLQueryBindings> {
+/** Validates the patch fields that map directly to issue columns; a status must be one of the team's (by key or name). */
+function issueColumns(a: Actor, workspace: string, team: TeamRef, patch: IssuePatch): Record<string, SQLQueryBindings> {
   const cols: Record<string, SQLQueryBindings> = {};
   if (patch.title !== undefined) cols.title = requireText(patch.title, "title");
   if (patch.description !== undefined) cols.description = optionalText(patch.description, "description");
-  if (patch.status !== undefined) cols.status = checkStatus(patch.status);
+  if (patch.status !== undefined) cols.status = statusOf(team, patch.status).key;
   if (patch.priority !== undefined) cols.priority = checkPriority(patch.priority);
   if (patch.labels !== undefined) cols.labels = JSON.stringify(checkLabels(patch.labels));
   for (const [field, kind] of [["assignee", "person"], ["delegate", "agent"]] as const) {
@@ -645,8 +833,6 @@ function issueColumns(a: Actor, workspace: string, patch: IssuePatch): Record<st
   return cols;
 }
 
-const isClosed = (status: Status) => CLOSED_STATUSES.includes(status);
-
 /**
  * WHERE conditions shared by the issue and doc lists (both join their team as `t`): the request's workspace,
  * a team, and a substring search over `searched` (the query's own %, _ and \ match literally).
@@ -655,6 +841,7 @@ function listScope(a: Actor, alias: string, filter: { team?: string; q?: string 
   const workspace = requestWorkspace(a);
   const where = ["t.workspace = ?", `${alias}.deleted_at IS NULL`];
   const params: SQLQueryBindings[] = [workspace];
+  let teamId: number | null = null;
   if (filter.team) {
     const team = db
       .query<{ id: number }, [string, string]>("SELECT id FROM teams WHERE workspace = ? AND key = ?")
@@ -662,12 +849,13 @@ function listScope(a: Actor, alias: string, filter: { team?: string; q?: string 
     if (!team) throw new AppError(`Unknown team "${filter.team}"`);
     where.push(`${alias}.team_id = ?`);
     params.push(team.id);
+    teamId = team.id;
   }
   if (filter.q) {
     where.push(`(${searched.map((column) => `${column} LIKE ? ESCAPE '\\'`).join(" OR ")})`);
     params.push(...searched.map(() => `%${filter.q!.trim().replace(/[\\%_]/g, "\\$&")}%`));
   }
-  return { where, params, workspace };
+  return { where, params, workspace, teamId };
 }
 
 /** `listScope` always adds the workspace condition, so there's always a WHERE. */
@@ -686,22 +874,27 @@ function userFilter(a: Actor, value: string, workspace: string, field: string, c
 }
 
 /**
- * Page cursors: the last row's sort keys (status rank, priority rank, updated_at, id, due_on), opaque to clients.
- * They carry every order's keys, so a cursor resumes in either order.
+ * Page cursors: the last row's sort keys (category rank, status position, priority rank, updated_at, id, due_on),
+ * opaque to clients. They carry every order's keys, so a cursor resumes in either order.
  */
-type Cursor = [number, number, string, number, string | null];
-const cursorOf = (issue: IssueSummary, id: number) =>
-  Buffer.from(JSON.stringify([STATUSES.indexOf(issue.status), issue.priority || 5, issue.updatedAt, id, issue.dueOn])).toString("base64url");
+type Cursor = [number, number, number, string, number, string | null];
+const cursorOf = (row: IssueRow) => {
+  const rank = STATUS_CATEGORIES.indexOf(row.status_category);
+  const keys = [rank < 0 ? STATUS_CATEGORIES.length : rank, row.status_position ?? 0, row.priority || 5, row.updated_at, row.id, row.due_on];
+  return Buffer.from(JSON.stringify(keys)).toString("base64url");
+};
 
 function parseCursor(cursor: string): Cursor {
   try {
     const keys = JSON.parse(Buffer.from(cursor, "base64url").toString());
     if (
       Array.isArray(keys) &&
-      keys.length === 5 &&
-      typeof keys[2] === "string" &&
-      [0, 1, 3].every((i) => Number.isInteger(keys[i])) &&
-      (keys[4] === null || typeof keys[4] === "string")
+      keys.length === 6 &&
+      typeof keys[1] === "number" &&
+      Number.isFinite(keys[1]) &&
+      typeof keys[3] === "string" &&
+      [0, 2, 4].every((i) => Number.isInteger(keys[i])) &&
+      (keys[5] === null || typeof keys[5] === "string")
     ) {
       return keys as Cursor;
     }
@@ -725,12 +918,12 @@ export function listIssuesPage(a: Actor, filter: IssueFilter, page: { first?: un
   const hasNextPage = rows.length > first;
   const issues = rows.slice(0, first);
   const last = issues.at(-1);
-  return { issues: issues.map(toSummary), pageInfo: { hasNextPage, endCursor: last ? cursorOf(toSummary(last), last.id) : null } };
+  return { issues: issues.map(toSummary), pageInfo: { hasNextPage, endCursor: last ? cursorOf(last) : null } };
 }
 
-// Linear's due-date filters, by the server's date (SQLite's date('now'), UTC). Finished work is never overdue.
+// Linear's due-date filters, by the server's date (SQLite's date('now'), UTC). Finished work (completed or canceled) is never overdue.
 const DUE_WHERE: Record<(typeof DUE_FILTERS)[number], string> = {
-  overdue: `i.due_on < date('now') AND i.status NOT IN (${CLOSED_STATUSES.map((s) => `'${s}'`).join(", ")})`,
+  overdue: `i.due_on < date('now') AND ws.category NOT IN (${CLOSED_CATEGORIES.map((c) => `'${c}'`).join(", ")})`,
   soon: "i.due_on BETWEEN date('now') AND date('now', '+7 days')",
   today: "i.due_on = date('now')",
   any: "i.due_on IS NOT NULL",
@@ -738,10 +931,24 @@ const DUE_WHERE: Record<(typeof DUE_FILTERS)[number], string> = {
 };
 
 function queryIssues(a: Actor, filter: IssueFilter, after?: Cursor, limit?: number): IssueRow[] {
-  const { where, params, workspace } = listScope(a, "i", filter, ["i.title", "i.description", ident("t", "i")]);
+  const { where, params, workspace, teamId } = listScope(a, "i", filter, ["i.title", "i.description", ident("t", "i")]);
   if (filter.status?.length) {
-    where.push(`i.status IN (${inList(filter.status)})`);
-    params.push(...filter.status.map(checkStatus));
+    // Each key must be a status of some team in scope: a typo shouldn't look like "no issues".
+    const known = db
+      .query<{ key: string }, SQLQueryBindings[]>(
+        `SELECT DISTINCT w.key FROM workflow_statuses w JOIN teams t ON t.id = w.team_id WHERE t.workspace = ?${teamId === null ? "" : " AND t.id = ?"}`,
+      )
+      .all(workspace, ...(teamId === null ? [] : [teamId]))
+      .map((r) => r.key);
+    const keys = filter.status.map((s) => String(s).trim().toLowerCase());
+    const unknown = filter.status.find((_, n) => !known.includes(keys[n]!));
+    if (unknown !== undefined) throw new AppError(`Unknown status "${unknown}"`);
+    where.push(`i.status IN (${inList(keys)})`);
+    params.push(...keys);
+  }
+  if (filter.category?.length) {
+    where.push(`ws.category IN (${inList(filter.category)})`);
+    params.push(...filter.category.map((c) => checkOneOf(c, STATUS_CATEGORIES, "category")));
   }
   if (filter.label) {
     where.push("EXISTS (SELECT 1 FROM json_each(i.labels) WHERE value = ? COLLATE NOCASE)");
@@ -770,9 +977,10 @@ function queryIssues(a: Actor, filter: IssueFilter, after?: Cursor, limit?: numb
   if (filter.due) where.push(DUE_WHERE[checkOneOf(filter.due, DUE_FILTERS, "due")]);
   const byDue = checkOneOf(filter.sort ?? "default", ISSUE_SORTS, "sort") === "due";
   if (after) {
-    const [s, p, u, id, due] = after;
-    let rest = `(${STATUS_RANK} > ? OR (${STATUS_RANK} = ? AND (${PRIORITY_RANK} > ? OR (${PRIORITY_RANK} = ? AND (i.updated_at < ? OR (i.updated_at = ? AND i.id < ?))))))`;
-    const restParams: SQLQueryBindings[] = [s, s, p, p, u, u, id];
+    const [s, o, p, u, id, due] = after;
+    const byPriority = `(${PRIORITY_RANK} > ? OR (${PRIORITY_RANK} = ? AND (i.updated_at < ? OR (i.updated_at = ? AND i.id < ?))))`;
+    let rest = `(${STATUS_RANK} > ? OR (${STATUS_RANK} = ? AND (${STATUS_POSITION} > ? OR (${STATUS_POSITION} = ? AND ${byPriority}))))`;
+    const restParams: SQLQueryBindings[] = [s, s, o, o, p, p, u, u, id];
     if (byDue && due === null) rest = `(i.due_on IS NULL AND ${rest})`; // past the dated rows: only undated ones follow
     else if (byDue) {
       rest = `(i.due_on IS NULL OR i.due_on > ? OR (i.due_on = ? AND ${rest}))`;
@@ -793,15 +1001,26 @@ type Change = { kind: ActivityKind; from?: unknown; to?: unknown };
 // Kinds whose values aren't stored: `created` and the trash have none, and descriptions aren't diffed.
 const NO_VALUES: ActivityKind[] = ["created", "description", "trashed", "restored"];
 
-// Moving into these tells an issue's subscribers: work handed back for review, finished or dropped.
-const ANNOUNCED: Status[] = ["in_review", "done", "canceled"];
+/**
+ * Whether moving an issue into this status tells its subscribers: work finished or dropped (the completed and
+ * canceled categories, Duplicate included), or handed over for review (the key in_review, where the team has it).
+ */
+function announced(issueId: number, status: string): boolean {
+  if (status === "in_review") return true;
+  const row = db
+    .query<{ category: StatusCategory }, [string, number]>(
+      "SELECT w.category FROM issues i JOIN workflow_statuses w ON w.team_id = i.team_id AND w.key = ? WHERE i.id = ?",
+    )
+    .get(status, issueId);
+  return isClosed(row?.category ?? null);
+}
 
 /**
  * Records a mutation's changes, one row each, at its `time`. Call it once per mutation, as the last statement
  * of its transaction, so whatever runs here later sees the final state and rolls back with the change.
  * Values as they are in memory (users by id, parent and blockers by identifier), stored as JSON.
  * Then the inbox: creating or claiming subscribes the actor; a new assignee or delegate is subscribed and told;
- * a move into in_review, done or canceled tells the subscribers. The webhook event goes first (`was`: see issueEvent).
+ * a move into in_review or a completed or canceled status tells the subscribers. The webhook event goes first (`was`: see issueEvent).
  */
 function logActivity(a: Actor, issueId: number, workspace: string, changes: Change[], time: string, was: Record<string, unknown> = {}) {
   const insert = db.query("INSERT INTO issue_activity (issue_id, actor_id, kind, from_value, to_value, created_at) VALUES (?, ?, ?, ?, ?, ?)");
@@ -815,8 +1034,8 @@ function logActivity(a: Actor, issueId: number, workspace: string, changes: Chan
     else if ((kind === "assignee" || kind === "delegate") && typeof to === "number") {
       inbox.subscribe(to, target, time);
       inbox.notify([to], { ...event, kind: kind === "assignee" ? "assigned" : "delegated" }, time);
-    } else if (kind === "status" && ANNOUNCED.includes(to as Status)) {
-      inbox.notify(inbox.subscribers(target), { ...event, kind: "status", status: to as Status }, time);
+    } else if (kind === "status" && announced(issueId, to as string)) {
+      inbox.notify(inbox.subscribers(target), { ...event, kind: "status", status: to as string }, time);
     }
   }
 }
@@ -951,20 +1170,21 @@ export function createIssue(a: Actor, input: IssueInput): Issue {
   const team = teamRow(a, input.team);
   const cols = {
     description: "",
-    status: "backlog",
+    status: team.default_status,
     priority: 0,
     labels: "[]",
     assignee_id: null,
     delegate_id: null,
     parent_id: null,
     due_on: null,
-    ...issueColumns(a, team.workspace, input),
+    ...issueColumns(a, team.workspace, team, input),
     title: requireText(input.title, "title"),
   };
   const blockers = input.blockedBy === undefined ? [] : blockerIds(a, input.blockedBy);
   const related = input.relatedTo === undefined ? [] : relatedIds(a, input.relatedTo);
   const duplicate = input.duplicateOf === undefined ? null : duplicateId(a, input.duplicateOf);
-  if (duplicate !== null) cols.status = "canceled"; // a duplicate is closed, as in Linear
+  if (duplicate !== null) cols.status = duplicateStatus(team.id); // a duplicate is closed, as in Linear
+  const closed = isClosed(statusOf(team, cols.status).category);
   const time = now();
   const { identifier, docs, refs } = db.transaction(() => {
     const { number } = db
@@ -977,7 +1197,7 @@ export function createIssue(a: Actor, input: IssueInput): Issue {
       creator_id: a.id,
       created_at: time,
       updated_at: time,
-      completed_at: isClosed(cols.status as Status) ? time : null,
+      completed_at: closed ? time : null,
     };
     const names = Object.keys(row);
     const { id } = db
@@ -1010,8 +1230,8 @@ export function createIssue(a: Actor, input: IssueInput): Issue {
 }
 
 export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Issue {
-  const { id, workspace } = liveIssue(a, identifier);
-  const cols = issueColumns(a, workspace, patch);
+  const { id, workspace, team } = liveIssue(a, identifier);
+  const cols = issueColumns(a, workspace, team, patch);
   // A new parent must not be the issue itself or one of its descendants.
   for (let p = cols.parent_id as number | null | undefined; p != null; ) {
     if (p === id) throw new AppError("An issue can't be its own parent or ancestor");
@@ -1020,7 +1240,8 @@ export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Is
   const blockers = patch.blockedBy === undefined ? undefined : blockerIds(a, patch.blockedBy, id);
   const relatedTo = patch.relatedTo === undefined ? undefined : relatedIds(a, patch.relatedTo, id);
   const duplicate = patch.duplicateOf === undefined ? undefined : duplicateId(a, patch.duplicateOf, id);
-  if (duplicate != null) cols.status = "canceled"; // marking a duplicate closes it; clearing leaves the status alone
+  if (duplicate != null) cols.status = duplicateStatus(team.id); // marking a duplicate closes it; clearing leaves the status alone
+  const closing = cols.status === undefined ? undefined : isClosed(statusOf(team, cols.status).category);
   const time = now();
   const read = db.query<IssueRow, [number]>(`${ISSUE_SELECT} WHERE i.id = ?`);
   // IMMEDIATE holds the write lock from the read (the version check, the history's "before") to the write.
@@ -1029,10 +1250,8 @@ export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Is
     if (patch.baseUpdatedAt !== undefined && patch.baseUpdatedAt !== before.updated_at) {
       throw new AppError("Issue changed since you read it", 409);
     }
-    if (cols.status !== undefined) {
-      const closing = isClosed(cols.status as Status);
-      if (closing !== isClosed(before.status)) cols.completed_at = closing ? time : null;
-    }
+    // completedAt follows the category, not the key: it changes only when entering or leaving completed/canceled.
+    if (closing !== undefined && closing !== isClosed(before.status_category)) cols.completed_at = closing ? time : null;
     // The old and new parent, and any blocker, related or canonical issue added or removed, change too.
     const related = new Set<number>();
     const parentBefore = before.parent_id as number | null;
@@ -1186,31 +1405,32 @@ export function listTrash(a: Actor, team: string): Trash {
 }
 
 /**
- * Takes an open issue: a person as its assignee, an agent as its delegate. An unstarted one (backlog,
- * todo) moves to in_progress; one already started (in_progress, in_review) keeps its status, as in
- * Linear. Refused (409, naming them) if it's closed or another active member holds that slot. IMMEDIATE
- * takes the write lock before the read, so of two claims racing for a free issue exactly one wins.
- * Claiming your own started issue is a no-op.
+ * Takes an open issue: a person as its assignee, an agent as its delegate. One not started yet (the triage,
+ * backlog and unstarted categories) moves to the team's first started status (in_progress by default); one
+ * already started keeps its status, as in Linear. Refused (409, naming them) if it's completed or canceled or
+ * another active member holds that slot. IMMEDIATE takes the write lock before the read, so of two claims racing
+ * for a free issue exactly one wins. Claiming your own started issue is a no-op.
  */
 export function claimIssue(a: Actor, identifier: string): Issue {
-  const { id, workspace } = liveIssue(a, identifier);
+  const { id, workspace, team } = liveIssue(a, identifier);
   const slot = a.kind === "person" ? "assignee_id" : "delegate_id";
   const time = now();
   const claimed = db.transaction(() => {
     const row = db
-      .query<{ status: Status; holder: number | null; username: string | null; active: number; ref: string }, [string, number]>(
-        `SELECT i.status, i.${slot} AS holder, m.username, ${ident("t", "i")} AS ref, (m.user_id IS NOT NULL AND m.suspended_at IS NULL) AS active
+      .query<{ status: string; category: StatusCategory; holder: number | null; username: string | null; active: number; ref: string }, [string, number]>(
+        `SELECT i.status, ws.category, i.${slot} AS holder, m.username, ${ident("t", "i")} AS ref, (m.user_id IS NOT NULL AND m.suspended_at IS NULL) AS active
          FROM issues i JOIN teams t ON t.id = i.team_id
+         LEFT JOIN workflow_statuses ws ON ws.team_id = i.team_id AND ws.key = i.status
          LEFT JOIN workspace_members m ON m.user_id = i.${slot} AND m.workspace = ? WHERE i.id = ?`,
       )
       .get(workspace, id)!;
-    if (isClosed(row.status)) throw new AppError(`${row.ref} is ${row.status}`, 409);
+    if (isClosed(row.category)) throw new AppError(`${row.ref} is ${row.status}`, 409);
     if (row.holder !== null && row.holder !== a.id && row.active) {
       throw new AppError(`${row.ref} is claimed by ${row.username}`, 409);
     }
-    const started = row.status === "in_progress" || row.status === "in_review";
+    const started = row.category === "started";
     if (row.holder === a.id && started) return false;
-    const status = started ? row.status : "in_progress";
+    const status = started ? row.status : teamStatuses(team.id).find((s) => s.category === "started")!.key;
     db.query(`UPDATE issues SET ${slot} = ?, status = ?, ${BUMPED_AT} WHERE id = ?`).run(a.id, status, time, time, id);
     const was = row.holder === a.id ? {} : { [slot === "assignee_id" ? "assignee" : "delegate"]: row.holder === null ? null : userRef(row.holder, workspace) };
     logActivity(a, id, workspace, [{ kind: "claimed", from: row.status, to: status }], time, was);
@@ -1279,11 +1499,12 @@ export function listLabels(a: Actor): LabelCount[] {
   const { where, params } = listScope(a, "i", {}, []);
   return db
     .query<LabelCount, SQLQueryBindings[]>(
-      `SELECT l.value AS label, SUM(i.status NOT IN (${inList(CLOSED_STATUSES)})) AS open
-       FROM issues i JOIN teams t ON t.id = i.team_id, json_each(i.labels) l ${whereClause(where)}
+      `SELECT l.value AS label, SUM(COALESCE(ws.category, '') NOT IN (${inList(CLOSED_CATEGORIES)})) AS open
+       FROM issues i JOIN teams t ON t.id = i.team_id LEFT JOIN workflow_statuses ws ON ws.team_id = i.team_id AND ws.key = i.status,
+         json_each(i.labels) l ${whereClause(where)}
        GROUP BY l.value ORDER BY l.value COLLATE NOCASE`,
     )
-    .all(...CLOSED_STATUSES, ...params);
+    .all(...CLOSED_CATEGORIES, ...params);
 }
 
 // --- Documents ---

@@ -14,7 +14,7 @@ import {
   MY_TABS,
   PlusIcon,
   SettingsIcon,
-  StatusIcon,
+  IssueStatusIcon,
   TeamMark,
   cls,
   navigate,
@@ -189,7 +189,7 @@ export function CommandMenu() {
 
     const issues: IssueSummary[] = index ? [...index.values()].filter((i) => !i.deletedAt) : [];
     const issueItems = pick(issues, q, (i) => [i.id, i.title], q ? 8 : 0).map(
-      (i): Item => ({ key: i.id, label: i.title, prefix: i.id, icon: <StatusIcon status={i.status} />, group: "Issues", run: go(`/issue/${i.id}`) }),
+      (i): Item => ({ key: i.id, label: i.title, prefix: i.id, icon: <IssueStatusIcon issue={i} />, group: "Issues", run: go(`/issue/${i.id}`) }),
     );
     const docItems = pick(docs ?? [], q, (d) => [d.title], q ? 5 : 0).map(
       (d): Item => ({ key: d.slug, label: d.title, icon: <DocIcon />, group: "Docs", run: go(`/doc/${d.slug}`) }),

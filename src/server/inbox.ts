@@ -2,7 +2,7 @@
 // (notifications). tracker.ts calls the fan-out helpers inside each mutation's transaction; the rest acts for the
 // caller alone, in the request's workspace: nobody sees, marks or deletes anyone else's notifications.
 import type { SQLQueryBindings } from "bun:sqlite";
-import type { Inbox, Notification, NotificationKind, Status, UserKind } from "../shared/types.ts";
+import type { Inbox, Notification, NotificationKind, UserKind } from "../shared/types.ts";
 import { type Actor, requestWorkspace, usernameOf } from "./access.ts";
 import { AppError, changed, db, now } from "./db.ts";
 import { enqueue } from "./webhooks.ts";
@@ -40,7 +40,7 @@ export interface Event {
   workspace: string;
   target: Target;
   commentId?: number;
-  status?: Status;
+  status?: string; // kind "status": the key it moved to
 }
 
 /**

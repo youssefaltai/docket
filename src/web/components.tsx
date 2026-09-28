@@ -8,11 +8,11 @@ import {
 } from "react";
 import { api } from "./api";
 import { getYou } from "./auth";
-import { CLOSED_STATUSES, type IssueSummary, type Team, type UserRef } from "../shared/types";
+import type { IssueSummary, Team, UserRef } from "../shared/types";
 import { useApp } from "./context";
 import { CalendarIcon, PlusIcon, SearchIcon, SettingsIcon, MenuIcon, TrashIcon } from "./icons";
 import { Link } from "./routing";
-import { useAutosize, useRun } from "./hooks";
+import { isClosedCategory, issueStatus, triageCount, useAutosize, useRun } from "./hooks";
 import { errorToast } from "./toast";
 import { ago, cls, dayLabel, daysUntil, fullDate, hueStyle } from "./util";
 
@@ -52,10 +52,10 @@ export function LabelChip({ name }: { name: string }) {
  * An issue's due date against today, Linear's colors: red when an open issue is due today or overdue, orange within a
  * week, gray otherwise (finished work is never flagged).
  */
-export function dueInfo(issue: Pick<IssueSummary, "dueOn" | "status">) {
+export function dueInfo(issue: Pick<IssueSummary, "dueOn">, closed: boolean) {
   if (!issue.dueOn) return null;
   const days = daysUntil(issue.dueOn);
-  const open = !CLOSED_STATUSES.includes(issue.status);
+  const open = !closed;
   const date = dayLabel(issue.dueOn);
   const n = (d: number) => `${d} day${d === 1 ? "" : "s"}`;
   const relative = days === 0 ? "today" : days < 0 ? `${n(-days)} overdue` : `in ${n(days)}`;
@@ -67,7 +67,7 @@ export function dueInfo(issue: Pick<IssueSummary, "dueOn" | "status">) {
 }
 
 export function DueChip({ issue }: { issue: IssueSummary }) {
-  const due = dueInfo(issue);
+  const due = dueInfo(issue, isClosedCategory(issueStatus(useApp().teams, issue).category));
   if (!due) return null;
   return (
     <span className={cls("due", due.tone)} title={due.title}>
@@ -85,9 +85,9 @@ export function TeamMark({ id }: { id: string }) {
   );
 }
 
-/** Team header: mark, inline-editable name and a settings button. */
-function TeamTitle({ team }: { team: Team }) {
-  const { reloadTeams, teamSettings } = useApp();
+/** Team header: mark, inline-editable name and a link to the team's settings. */
+export function TeamTitle({ team }: { team: Team }) {
+  const { reloadTeams } = useApp();
   return (
     <>
       <TeamMark id={team.key} />
@@ -96,14 +96,9 @@ function TeamTitle({ team }: { team: Team }) {
         value={team.name}
         onSave={(name) => api.updateTeam(team.key, { name }).then(reloadTeams, errorToast)}
       />
-      <button
-        className="icon-btn sm"
-        onClick={() => teamSettings(team.key)}
-        aria-label="Team settings"
-        title="Team settings"
-      >
+      <Link className="icon-btn sm" to={`/t/${team.key}/settings`} aria-label="Team settings" title="Team settings">
         <SettingsIcon />
-      </button>
+      </Link>
     </>
   );
 }
@@ -207,7 +202,7 @@ function useInlineEdit<E extends HTMLInputElement | HTMLTextAreaElement>(value: 
   return { draft, setDraft, props };
 }
 
-function InlineInput({ value, onSave, label }: { value: string; onSave: (v: string) => void; label: string }) {
+export function InlineInput({ value, onSave, label }: { value: string; onSave: (v: string) => void; label: string }) {
   const { draft, setDraft, props } = useInlineEdit<HTMLInputElement>(value, onSave);
   return (
     <input
@@ -261,7 +256,7 @@ export function ListHeader({
   team: Team | undefined;
   title: string;
   count: number;
-  view: "issues" | "docs" | "trash";
+  view: "issues" | "triage" | "docs" | "trash" | "settings";
   /** New item, search and controls: lists have them, the trash doesn't. */
   onNew?: () => void;
   search?: string;
@@ -281,6 +276,10 @@ export function ListHeader({
           label="Team views"
           tabs={[
             [`/t/${team.key}`, "Issues", view === "issues"],
+            // Triage is on while the team has a triage status.
+            ...(team.statuses.some((s) => s.category === "triage")
+              ? [[`/t/${team.key}/triage`, `Triage${triageCount(team) ? ` ${triageCount(team)}` : ""}`, view === "triage"] as [string, string, boolean]]
+              : []),
             [`/t/${team.key}/docs`, "Docs", view === "docs"],
             [`/t/${team.key}/trash`, "Trash", view === "trash"],
           ]}

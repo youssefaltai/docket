@@ -22,6 +22,8 @@ import type {
   TeamPatch,
   ServerEvent,
   Trash,
+  WorkflowStatusInput,
+  WorkflowStatusPatch,
   Workspace,
   WorkspaceInput,
   WorkspaceMember,
@@ -150,6 +152,12 @@ export const api = {
   createTeam: (input: TeamInput) => request<Team>("POST", "/api/teams", input),
   updateTeam: (key: string, patch: TeamPatch) =>
     request<Team>("PATCH", `/api/teams/${enc(key)}`, patch),
+  createStatus: (team: string, input: WorkflowStatusInput) => request<Team>("POST", `/api/teams/${enc(team)}/statuses`, input),
+  updateStatus: (team: string, key: string, patch: WorkflowStatusPatch) =>
+    request<Team>("PATCH", `/api/teams/${enc(team)}/statuses/${enc(key)}`, patch),
+  /** `moveTo`: where its issues (trashed ones too) go; needed while any are in it. */
+  deleteStatus: (team: string, key: string, moveTo?: string) =>
+    request<Team>("DELETE", `/api/teams/${enc(team)}/statuses/${enc(key)}${moveTo ? `?moveTo=${enc(moveTo)}` : ""}`),
 
   issues: (filter: IssueFilter = {}) => request<IssueSummary[]>("GET", `/api/issues${query(filter)}`),
   issue: (id: string) => request<Issue>("GET", `/api/issues/${enc(id)}`),

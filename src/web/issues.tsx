@@ -1,6 +1,6 @@
 // Issues view: header with search + filters, and the list / board layouts.
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { CLOSED_STATUSES, STATUSES, STATUS_LABELS, type DueFilter, type IssueSummary, type Status } from "../shared/types";
+import { STATUS_CATEGORIES, type DueFilter, type IssueSummary } from "../shared/types";
 import { api, store } from "./api";
 import { getYou } from "./auth";
 import { SelectBox, shiftClick, useBulk, type Selection } from "./bulk";
@@ -25,6 +25,9 @@ import {
   TeamNotFound,
   SearchIcon,
   StatusIcon,
+  isClosedCategory,
+  statusGroups,
+  type StatusLook,
   TagIcon,
   cls,
   errorToast,
@@ -44,6 +47,9 @@ import {
 
 type View = "list" | "board";
 type Patch = (id: string, change: IssueChange) => void;
+
+/** What lists and boards show: every category but triage (its issues wait on the Triage tab). */
+export const LISTED = STATUS_CATEGORIES.filter((c) => c !== "triage");
 
 /**
  * `I` (claim) and `⌘⌫`/`Ctrl⌫` (delete to trash) on a focused row/card: the same API calls the issue page's
@@ -104,7 +110,7 @@ export function IssuesView({ teamKey }: { teamKey: string | null }) {
     reload,
     invalidate,
   } = useFetch(
-    () => api.issues({ team: teamKey ?? undefined, q, label, assignee, delegate, due: due || undefined }),
+    () => api.issues({ team: teamKey ?? undefined, category: LISTED, q, label, assignee, delegate, due: due || undefined }),
     [teamKey, q, label, assignee, delegate, due],
   );
 
@@ -179,9 +185,9 @@ export function IssuesView({ teamKey }: { teamKey: string | null }) {
       </EmptyState>
     );
   } else if (view === "board") {
-    body = <Board issues={issues} onPatch={patch} selection={selection} />;
+    body = <Board issues={issues} team={teamKey} onPatch={patch} selection={selection} />;
   } else {
-    body = <IssueList issues={issues} onPatch={patch} selection={selection} />;
+    body = <IssueList issues={issues} team={teamKey} onPatch={patch} selection={selection} />;
   }
 
   return (
@@ -319,26 +325,38 @@ const DUE_OPTIONS: [DueFilter | "", string][] = [
 
 // ---------- List ----------
 
-export function IssueList({ issues, onPatch, selection }: { issues: IssueSummary[]; onPatch: Patch; selection: Selection }) {
-  const [collapsed, setCollapsed] = useState(() => new Set(CLOSED_STATUSES));
-  const sorted = useMemo(() => sortIssues(issues), [issues]);
-  const toggle = (s: Status) =>
-    setCollapsed((cur) => {
+/**
+ * The status groups of a list or board: the team's statuses, or every team's in the workspace (a key names its first
+ * team's status), triage left out; the board leaves out canceled ones too.
+ */
+function useGroups(team: string | null | undefined, issues: IssueSummary[], board = false) {
+  const { teams } = useApp();
+  const scope = (teams ?? []).filter((t) => !team || t.key === team);
+  const groups = statusGroups(scope, issues).filter((s) => s.category !== "triage" && !(board && s.category === "canceled"));
+  return { groups, sorted: useMemo(() => sortIssues(issues, teams), [issues, teams]) };
+}
+
+export function IssueList({ issues, team, onPatch, selection }: { issues: IssueSummary[]; team?: string | null; onPatch: Patch; selection: Selection }) {
+  // Completed and canceled groups start collapsed; `toggled` holds the groups flipped from that.
+  const [toggled, setToggled] = useState(() => new Set<string>());
+  const { groups, sorted } = useGroups(team, issues);
+  const toggle = (key: string) =>
+    setToggled((cur) => {
       const next = new Set(cur);
-      if (!next.delete(s)) next.add(s);
+      if (!next.delete(key)) next.add(key);
       return next;
     });
 
   return (
     <div className={cls("list", selection.any && "selecting")}>
-      {STATUSES.map((status) => {
-        const items = sorted.filter((i) => i.status === status);
+      {groups.map((status) => {
+        const items = sorted.filter((i) => i.status === status.key);
         if (!items.length) return null;
-        const open = !collapsed.has(status);
+        const open = isClosedCategory(status.category) === toggled.has(status.key);
         return (
-          <section key={status}>
+          <section key={status.key}>
             <div className="group">
-              <button className="group-toggle" onClick={() => toggle(status)} aria-expanded={open}>
+              <button className="group-toggle" onClick={() => toggle(status.key)} aria-expanded={open}>
                 <ChevronDownIcon className={cls("caret", !open && "caret-closed")} />
                 <StatusIconLabel status={status} />
                 <span className="count">{items.length}</span>
@@ -353,13 +371,13 @@ export function IssueList({ issues, onPatch, selection }: { issues: IssueSummary
   );
 }
 
-function NewInStatus({ status }: { status: Status }) {
+function NewInStatus({ status }: { status: StatusLook }) {
   const { newIssue } = useApp();
   return (
     <button
       className="icon-btn sm"
-      onClick={() => newIssue({ status })}
-      aria-label={`New ${STATUS_LABELS[status]} issue`}
+      onClick={() => newIssue({ status: status.key })}
+      aria-label={`New ${status.name} issue`}
       title="New issue"
     >
       <PlusIcon />
@@ -379,11 +397,13 @@ function Blocked({ by }: { by: string[] }) {
   );
 }
 
-function StatusIconLabel({ status }: { status: Status }) {
+function StatusIconLabel({ status }: { status: StatusLook }) {
   return (
     <>
       <StatusIcon status={status} />
-      <span className="group-label">{STATUS_LABELS[status]}</span>
+      <span className="group-label" dir="auto">
+        {status.name}
+      </span>
     </>
   );
 }
@@ -397,7 +417,7 @@ function IssueRow({ issue, onPatch, selection }: { issue: IssueSummary; onPatch:
       <SelectBox id={issue.id} selection={selection} />
       <PriorityPicker value={issue.priority} onChange={(priority) => set({ priority })} className="row-btn" cmd="priority" />
       <span className="row-id">{issue.id}</span>
-      <StatusPicker value={issue.status} onChange={(status) => set({ status })} className="row-btn" cmd="status" />
+      <StatusPicker team={issue.team} value={issue.status} onChange={(status) => set({ status })} className="row-btn" cmd="status" />
       <Link to={`/issue/${issue.id}`} className="row-title" data-nav dir="auto">
         {issue.title}
       </Link>
@@ -432,14 +452,13 @@ function Labels({ labels, max }: { labels: string[]; max: number }) {
 
 // ---------- Board ----------
 
-const BOARD_STATUSES = STATUSES.filter((s) => s !== "canceled");
-
-export function Board({ issues, onPatch, selection }: { issues: IssueSummary[]; onPatch: Patch; selection: Selection }) {
+/** Columns by status, canceled ones left out. Dropping on a column the issue's team lacks answers 400: it toasts and reloads. */
+export function Board({ issues, team, onPatch, selection }: { issues: IssueSummary[]; team?: string | null; onPatch: Patch; selection: Selection }) {
   const [dragging, setDragging] = useState<string | null>(null);
-  const [over, setOver] = useState<Status | null>(null);
-  const sorted = useMemo(() => sortIssues(issues), [issues]);
+  const [over, setOver] = useState<string | null>(null);
+  const { groups, sorted } = useGroups(team, issues, true);
 
-  const drop = (status: Status) => {
+  const drop = (status: string) => {
     const issue = issues.find((i) => i.id === dragging);
     if (issue && issue.status !== status) onPatch(issue.id, { status });
     setDragging(null);
@@ -448,24 +467,24 @@ export function Board({ issues, onPatch, selection }: { issues: IssueSummary[]; 
 
   return (
     <div className={cls("board", selection.any && "selecting")}>
-      {BOARD_STATUSES.map((status) => {
-        const items = sorted.filter((i) => i.status === status);
+      {groups.map((status) => {
+        const items = sorted.filter((i) => i.status === status.key);
         return (
           <section
-            key={status}
-            className={cls("column", over === status && "column-over")}
+            key={status.key}
+            className={cls("column", over === status.key && "column-over")}
             onDragOver={(e) => {
               if (!dragging) return;
               e.preventDefault();
               e.dataTransfer.dropEffect = "move";
-              setOver(status);
+              setOver(status.key);
             }}
             onDragLeave={(e) => {
               if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOver(null);
             }}
             onDrop={(e) => {
               e.preventDefault();
-              drop(status);
+              drop(status.key);
             }}
           >
             <div className="column-head">
@@ -527,7 +546,7 @@ function Card({
       onDragEnd={onDragEnd}
     >
       <div className="card-head">
-        <StatusPicker value={issue.status} onChange={(status) => set({ status })} className="row-btn" cmd="status" />
+        <StatusPicker team={issue.team} value={issue.status} onChange={(status) => set({ status })} className="row-btn" cmd="status" />
         <span className="row-id">{issue.id}</span>
         <span className="grow" />
         <SelectBox id={issue.id} selection={selection} />

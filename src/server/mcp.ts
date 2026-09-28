@@ -4,15 +4,15 @@ import type { ZodRawShapeCompat } from "@modelcontextprotocol/sdk/server/zod-com
 import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import {
-  CLOSED_STATUSES,
+  ACTIVE_CATEGORIES,
+  CLOSED_CATEGORIES,
   DUE_FILTERS,
   INLINE_IMAGE_TYPES,
   ISSUE_SORTS,
   attachmentMarkdown,
-  OPEN_STATUSES,
   PRIORITIES,
   PRIORITY_LABELS,
-  STATUSES,
+  STATUS_CATEGORIES,
   type Activity,
   type Comment,
   type Document,
@@ -41,12 +41,12 @@ const instructions = (a: Actor, here: Here) => `You're connected to Docket at ${
 Docket is an issue tracker shared by people and agents, modeled on Linear.
 - Workspace → team → issues and docs. Your key works in one workspace: everything you list, read and change is there.
 - Teams have a 2–5 letter key (e.g. BRD), unique within this workspace. Issues are identified as KEY-number, e.g. BRD-12.
-- Statuses: backlog, todo, in_progress, in_review, done, canceled. Priority: 0 none, 1 urgent, 2 high, 3 medium, 4 low.
+- Each team has its own statuses, named by key (list_teams shows them), in Linear's fixed categories: triage (new, not yet accepted), backlog, unstarted, started, completed, canceled. By default a team has backlog, todo, in_progress, in_review, done, canceled and duplicate. Priority: 0 none, 1 urgent, 2 high, 3 medium, 4 low.
 - People and agents are named by username (@alice), unique within this workspace. An issue's assignee is a person who owns it; its delegate is an agent working on it for them. "me" means you.
 ${
   a.scope === "read"
     ? "- This key is read-only: you can list and read everything here, but not change anything."
-    : "- Working on an issue: get_issue, then claim_issue (an agent becomes its delegate, a person its assignee, and it moves to in_progress; if someone else holds it, pick another), post progress notes with comment_issue, then set in_review or done. There is no delete: set status canceled instead."
+    : "- Working on an issue: get_issue, then claim_issue (an agent becomes its delegate, a person its assignee, and it moves to the team's first started status, in_progress by default; if someone else holds it, pick another), post progress notes with comment_issue, then set in_review when it's ready for review or done when finished (or the team's own statuses in those categories). There is no delete: set status canceled instead."
 }
 - Documents (specs, plans, notes) live in teams and are identified by a slug, e.g. "architecture". They are markdown: mention issues by identifier (BRD-2) and they auto-link; link other docs with [Title](/doc/slug). Change a long doc with update_document's \`edits\` rather than rewriting it.
 - Mention people or agents as @username (see list_members) in descriptions, comments and docs.
@@ -54,14 +54,16 @@ ${
 
 const identifier = z.string().describe('Issue identifier: team key + number, e.g. "BRD-12" (case-insensitive)');
 const teamKey = z.string().describe('Team key, e.g. "BRD" (see list_teams)');
-const status = z.enum(STATUSES).describe("backlog | todo | in_progress | in_review | done | canceled");
+const status = z
+  .string()
+  .describe('A status key of the issue\'s team, e.g. "in_progress" (list_teams lists each team\'s statuses; the name, e.g. "In Progress", also works)');
 const priority = z.literal(PRIORITIES).describe("0 none, 1 urgent, 2 high, 3 medium, 4 low");
 const labels = z.array(z.string()).describe('Label names, e.g. ["bug", "ui"]');
 const blockedBy = z.array(identifier).describe("Identifiers of issues that must be finished before this one");
 const relatedTo = z
   .array(identifier)
   .describe("Identifiers of issues connected to this one that aren't duplicates or blockers; related is two-way. Replaces the whole list");
-const duplicateOf = identifier.describe("The issue this one duplicates: it's set to canceled and the relation is recorded");
+const duplicateOf = identifier.describe("The issue this one duplicates: it's set to its team's Duplicate status (a canceled one) and the relation is recorded");
 const dueOn = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/)
@@ -99,7 +101,7 @@ const reactionsLine = (reactions: Reaction[]) =>
 /** "due 2026-10-01", or "overdue 2026-09-20" for an open issue due before today (the server's date, UTC). */
 function due(issue: IssueSummary): string | null {
   if (!issue.dueOn) return null;
-  const overdue = issue.dueOn < new Date().toISOString().slice(0, 10) && !CLOSED_STATUSES.includes(issue.status);
+  const overdue = issue.dueOn < new Date().toISOString().slice(0, 10) && !CLOSED_CATEGORIES.includes(issue.statusCategory);
   return `${overdue ? "overdue" : "due"} ${issue.dueOn}`;
 }
 
@@ -346,14 +348,15 @@ function createServer(a: Actor, origin: string): McpServer {
     "list_teams",
     {
       description:
-        "List the workspace's teams with open-issue counts, one line each: key · name · open count. A team's key (e.g. BRD) prefixes its issue identifiers (BRD-12).",
+        "List the workspace's teams, one line each: key · name · workspace · open count · status keys in workflow order, the default for new issues marked. A team's key (e.g. BRD) prefixes its issue identifiers (BRD-12). Statuses are per team: use a team's own keys for its issues (categories: triage, backlog, unstarted, started, completed, canceled; structuredContent has each status's name and category).",
       annotations: { readOnlyHint: true },
     },
     () => {
       const teams = tracker.listTeams(a);
       const lines = teams.map((t) => {
-        const open = OPEN_STATUSES.reduce((sum, s) => sum + t.counts[s], 0);
-        return `${t.key} · ${t.name} · ${open} open`;
+        const open = t.statuses.filter((s) => ACTIVE_CATEGORIES.includes(s.category)).reduce((sum, s) => sum + (t.counts[s.key] ?? 0), 0);
+        const statuses = t.statuses.map((s) => (s.key === t.defaultStatus ? `${s.key} (default)` : s.key)).join(", ");
+        return `${t.key} · ${t.name} · workspace ${t.workspace} · ${open} open · statuses: ${statuses}`;
       });
       return result(lines.join("\n") || "No teams yet.", { teams });
     },
@@ -412,15 +415,17 @@ function createServer(a: Actor, origin: string): McpServer {
     "list_issues",
     {
       description:
-        "List issues, one line each: identifier · status · priority · title · @assignee · →@delegate · #labels · due date (\"overdue\" when an open issue's date has passed). Sorted by status, then priority (urgent first, none last), then most recently updated; sort \"due\" puts the earliest due date first (none last). Only open issues (backlog, todo, in_progress, in_review) unless you pass `status`; there is no 'open' status, so for open issues leave `status` out. Pages of `limit` (default 50): when there are more, the output ends with a cursor to pass as `after` for the next page. Unknown team, assignee, delegate, creator or parent is an error, not an empty list. Use get_issue for the description, comments, sub-issues and blockers.",
+        "List issues, one line each: identifier · status · priority · title · @assignee · →@delegate · #labels · due date (\"overdue\" when an open issue's date has passed). Sorted by status (category order: triage, backlog, unstarted, started, completed, canceled; then the team's order), then priority (urgent first, none last), then most recently updated; sort \"due\" puts the earliest due date first (none last). By default only active issues (backlog, unstarted and started categories); pass `category` (e.g. [\"triage\"] for issues waiting to be accepted, [\"completed\"] for finished ones) or `status` keys for others. There is no 'open' status. Pages of `limit` (default 50): when there are more, the output ends with a cursor to pass as `after` for the next page. Unknown team, assignee, delegate, creator or parent is an error, not an empty list. Use get_issue for the description, comments, sub-issues and blockers.",
       inputSchema: {
         team: teamKey.optional(),
         status: z
-          .array(status)
+          .array(z.string())
           .optional()
-          .describe(
-            'Only these statuses, from: backlog, todo, in_progress, in_review, done, canceled. Leave it out for open issues (the default: all but done and canceled); "open" is not a status.',
-          ),
+          .describe('Only these status keys, e.g. ["in_progress"] (list_teams shows each team\'s). Leave status and category out for active issues; "open" is not a status.'),
+        category: z
+          .array(z.enum(STATUS_CATEGORIES))
+          .optional()
+          .describe("Only statuses in these categories, e.g. [\"triage\"] or [\"completed\", \"canceled\"]. Default (with no status either): backlog, unstarted, started"),
         label: z.string().optional(),
         assignee: assignee.optional(),
         delegate: delegate.optional(),
@@ -438,8 +443,9 @@ function createServer(a: Actor, origin: string): McpServer {
       },
       annotations: { readOnlyHint: true },
     },
-    ({ status, query, limit = 50, after, ...filter }) => {
-      const { issues, pageInfo } = tracker.listIssuesPage(a, { ...filter, status: status ?? OPEN_STATUSES, q: query }, { first: limit, after });
+    ({ status, category, query, limit = 50, after, ...filter }) => {
+      const scope = status || category ? { status, category } : { category: ACTIVE_CATEGORIES };
+      const { issues, pageInfo } = tracker.listIssuesPage(a, { ...filter, ...scope, q: query }, { first: limit, after });
       const lines = issues.map(line);
       if (pageInfo.hasNextPage) lines.push(`…more: call again with after: "${pageInfo.endCursor}"`);
       return result(lines.join("\n") || "No matching issues.", { issues, pageInfo });
@@ -464,12 +470,12 @@ function createServer(a: Actor, origin: string): McpServer {
     "create_issue",
     {
       description:
-        "Create an issue in a team; returns its identifier (e.g. BRD-13). Defaults: status backlog (as in Linear; pass todo when it's ready to be picked up), priority 0 (none). Set parent to make it a sub-issue, blockedBy for issues that must be finished first. Mark an issue a duplicate with duplicateOf: it's set to canceled and the relation is recorded; use relatedTo for issues that are connected but not duplicates or blockers.",
+        "Create an issue in a team; returns its identifier (e.g. BRD-13). Defaults: the team's default status (backlog unless the team changed it; list_teams marks it; pass todo when it's ready to be picked up, or triage to leave it for the team to accept, in teams with Triage), priority 0 (none). Set parent to make it a sub-issue, blockedBy for issues that must be finished first. Mark an issue a duplicate with duplicateOf: it's set to its team's Duplicate status and the relation is recorded; use relatedTo for issues that are connected but not duplicates or blockers.",
       inputSchema: {
         team: teamKey,
         title,
         description: description.optional(),
-        status: status.optional().describe("Default backlog"),
+        status: status.optional().describe("Default: the team's default status (list_teams marks it)"),
         priority: priority.optional().describe("0 none (default), 1 urgent, 2 high, 3 medium, 4 low"),
         labels: labels.optional(),
         assignee: assignee.optional().describe('The person who owns it: a username, or "me"'),
@@ -491,7 +497,7 @@ function createServer(a: Actor, origin: string): McpServer {
     "update_issue",
     {
       description:
-        "Update an issue; only the fields you pass change. Status flow: in_progress when you start, in_review when ready for review, done when finished, canceled instead of deleting (there is no delete). labels, blockedBy and relatedTo replace the whole list, so include existing entries you want to keep, and pass baseUpdatedAt (from get_issue) when replacing them or the description, so you don't overwrite someone else's change. To start work, use claim_issue. Don't reassign an issue someone else holds; use claim_issue. Mark an issue a duplicate with duplicateOf: it's set to canceled and the relation is recorded; use relatedTo for issues that are connected but not duplicates or blockers. Pass null for assignee, delegate, parent or duplicateOf to clear it (clearing duplicateOf leaves the status as it is). Log progress with comment_issue rather than editing the description.",
+        "Update an issue; only the fields you pass change. Status flow: in_progress when you start, in_review when ready for review, done when finished (or the team's statuses in the started and completed categories; list_teams), canceled instead of deleting (there is no delete). labels, blockedBy and relatedTo replace the whole list, so include existing entries you want to keep, and pass baseUpdatedAt (from get_issue) when replacing them or the description, so you don't overwrite someone else's change. To start work, use claim_issue. Don't reassign an issue someone else holds; use claim_issue. Mark an issue a duplicate with duplicateOf: it's set to its team's Duplicate status and the relation is recorded; use relatedTo for issues that are connected but not duplicates or blockers. Pass null for assignee, delegate, parent or duplicateOf to clear it (clearing duplicateOf leaves the status as it is). Log progress with comment_issue rather than editing the description.",
       inputSchema: {
         id: identifier,
         title: title.optional(),
@@ -504,7 +510,7 @@ function createServer(a: Actor, origin: string): McpServer {
         parent: identifier.nullable().optional().describe("Parent issue identifier; null to detach"),
         blockedBy: blockedBy.optional(),
         relatedTo: relatedTo.optional(),
-        duplicateOf: duplicateOf.nullable().optional().describe("The issue this one duplicates (it's set to canceled); null to clear"),
+        duplicateOf: duplicateOf.nullable().optional().describe("The issue this one duplicates (it's set to its team's Duplicate status); null to clear"),
         dueOn: dueOn.nullable().optional().describe('Due date, a calendar date like "2026-09-30"; null to clear'),
         baseUpdatedAt: z
           .string()
@@ -522,7 +528,7 @@ function createServer(a: Actor, origin: string): McpServer {
     "claim_issue",
     {
       description:
-        "Take an issue to work on, in one step no one else can interleave with: an agent becomes its delegate, a person its assignee, and an unstarted issue (backlog, todo) moves to in_progress; one already in_progress or in_review keeps its status. Fails if the issue is done or canceled, or someone else holds it (the error names them): then pick another issue rather than working on it too. Claiming your own again is fine. To hand it back, update_issue with delegate (or assignee) null and status todo.",
+        "Take an issue to work on, in one step no one else can interleave with: an agent becomes its delegate, a person its assignee, and an issue not started yet (triage, backlog or unstarted category) moves to the team's first started status (in_progress by default); one already started keeps its status. Fails if it's completed or canceled, or someone else holds it (the error names them): then pick another issue rather than working on it too. Claiming your own again is fine. To hand it back, update_issue with delegate (or assignee) null and status todo.",
       inputSchema: { id: identifier },
     },
     writes(({ id }) => {
@@ -735,7 +741,7 @@ function createServer(a: Actor, origin: string): McpServer {
     "list_notifications",
     {
       description:
-        'Your notifications, newest first, one line each: #id · unread · kind · target · by @actor · time · "excerpt". Kinds: delegated (an issue was delegated to you: start with get_issue and claim_issue), assigned, mentioned, commented, status (an issue you follow moved to in_review, done or canceled). Mark them read with mark_notifications_read when handled.',
+        'Your notifications, newest first, one line each: #id · unread · kind · target · by @actor · time · "excerpt". Kinds: delegated (an issue was delegated to you: start with get_issue and claim_issue), assigned, mentioned, commented, status (an issue you follow moved to in_review or a completed or canceled status, e.g. done, canceled, duplicate). Mark them read with mark_notifications_read when handled.',
       inputSchema: {
         unread: z.boolean().optional().describe("Only unread ones (default true); false lists read ones too"),
         limit: z.number().int().min(1).max(200).optional().describe("How many (default 50)"),

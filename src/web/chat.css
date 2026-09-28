@@ -117,10 +117,10 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--s-in_review);
+  background: #30a46c;
 }
 .chat-tool.running::before {
-  background: var(--s-in_progress);
+  background: #e8a800;
   animation: chat-pulse 0.8s var(--ease) infinite alternate;
 }
 .chat-tool.error::before {

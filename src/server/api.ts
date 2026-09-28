@@ -1,5 +1,5 @@
 import type { BunRequest } from "bun";
-import type { DocumentInput, IssueFilter, IssueInput, Status, TeamInput, WebhookInput, WorkspaceInput } from "../shared/types.ts";
+import type { DocumentInput, IssueFilter, IssueInput, TeamInput, WebhookInput, WorkflowStatusInput, WorkspaceInput } from "../shared/types.ts";
 import * as access from "./access.ts";
 import { actorOf, isJson } from "./auth.ts";
 import { AppError } from "./db.ts";
@@ -54,7 +54,8 @@ const param = (req: Request, name: string) => new URL(req.url).searchParams.get(
 
 const issueFilter = (req: Request): IssueFilter => ({
   team: param(req, "team"),
-  status: param(req, "status")?.split(",") as Status[] | undefined,
+  status: param(req, "status")?.split(","),
+  category: param(req, "category")?.split(",") as IssueFilter["category"],
   label: param(req, "label"),
   assignee: param(req, "assignee"),
   delegate: param(req, "delegate"),
@@ -172,8 +173,33 @@ export const apiRoutes = {
       tracker.updateTeam(
         actorOf(req),
         req.params.key,
-        await patch(req, "a team", ["name", "description"], { workspace: "Teams can't move between workspaces", key: "A team's key never changes" }),
+        await patch(req, "a team", ["name", "description", "defaultStatus"], {
+          workspace: "Teams can't move between workspaces",
+          key: "A team's key never changes",
+        }),
       ),
+    ),
+  },
+  "/api/teams/:key/statuses": {
+    POST: handle<"/api/teams/:key/statuses">(
+      async (req) => tracker.createStatus(actorOf(req), req.params.key, await body<WorkflowStatusInput>(req)),
+      201,
+    ),
+  },
+  "/api/teams/:key/statuses/:status": {
+    PATCH: handle<"/api/teams/:key/statuses/:status">(async (req) =>
+      tracker.updateStatus(
+        actorOf(req),
+        req.params.key,
+        req.params.status,
+        await patch(req, "a status", ["name", "color", "position"], {
+          key: "A status's key never changes",
+          category: "A status's category never changes: add one in the other category, then delete this one",
+        }),
+      ),
+    ),
+    DELETE: handle<"/api/teams/:key/statuses/:status">((req) =>
+      tracker.deleteStatus(actorOf(req), req.params.key, req.params.status, param(req, "moveTo")),
     ),
   },
   "/api/teams/:key/trash": {

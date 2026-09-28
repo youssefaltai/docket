@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import type { IssueFilter } from "../shared/types";
 import { api, store } from "./api";
 import { useBulk } from "./bulk";
-import { Board, IssueList, useListShortcuts } from "./issues";
+import { Board, IssueList, LISTED, useListShortcuts } from "./issues";
 import { MY_TABS, type MyTab } from "./routing";
 import {
   BoardIcon,
@@ -56,7 +56,7 @@ export function MyIssuesView({ tab }: { tab: MyTab }) {
     document.title = "My Issues · Docket";
   }, []);
 
-  const { data: issues, setData: setIssues, failed, reload, invalidate } = useFetch(() => api.issues(filterFor(tab)), [tab]);
+  const { data: issues, setData: setIssues, failed, reload, invalidate } = useFetch(() => api.issues({ ...filterFor(tab), category: LISTED }), [tab]);
   const shown = tab === "delegated" ? issues?.filter((i) => i.delegate) : issues;
 
   useListShortcuts(setIssues, invalidate, reload);

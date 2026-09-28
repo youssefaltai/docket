@@ -22,13 +22,6 @@
   --wash-strong: rgb(0 0 0 / 0.06);
   --ring: rgb(0 0 0 / 0.04);
 
-  --s-backlog: #a3a3a3;
-  --s-todo: #8f8f8f;
-  --s-in_progress: #e8a800;
-  --s-in_review: #30a46c;
-  --s-done: #5e6ad2;
-  --s-canceled: #b4b4b4;
-
   --radius: 6px;
   --shadow-pop: 0 0 0 1px rgb(0 0 0 / 0.02), 0 4px 8px -2px rgb(0 0 0 / 0.06), 0 12px 32px -4px rgb(0 0 0 / 0.1);
   --shadow-modal: 0 0 0 1px rgb(0 0 0 / 0.02), 0 8px 16px -4px rgb(0 0 0 / 0.08), 0 24px 64px -8px rgb(0 0 0 / 0.2);
@@ -1406,7 +1399,7 @@ fieldset.plain {
 }
 .thread-check {
   flex: none;
-  color: var(--s-done);
+  color: #5e6ad2;
 }
 .thread-toggles {
   display: flex;
@@ -3015,6 +3008,69 @@ textarea.input {
 .settings-row.dim .settings-row-title,
 .settings-row.dim .avatar {
   opacity: 0.45;
+}
+/* A team's workflow (team settings): statuses by category. */
+.workflow-switch {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+.workflow-category {
+  margin-top: 18px;
+}
+.workflow-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.workflow-head h4 {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--muted);
+}
+.workflow-row {
+  min-height: 40px;
+}
+.workflow-row .inline-input {
+  max-width: 100%;
+  font-weight: 400;
+}
+.workflow-key {
+  font-size: 11.5px;
+}
+.workflow-menu-space {
+  width: 28px;
+}
+/* The status icon doubles as its color picker: the native input sits invisibly on top of it. */
+.status-color {
+  position: relative;
+  display: inline-flex;
+  padding: 4px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.status-color:hover:not(.fixed) {
+  background: var(--wash);
+}
+.status-color.fixed {
+  cursor: default;
+}
+.status-color input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+@media (max-width: 767px) {
+  .workflow-key {
+    display: none;
+  }
 }
 .webhook-tags {
   display: flex;

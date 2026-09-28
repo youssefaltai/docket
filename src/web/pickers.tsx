@@ -4,11 +4,8 @@ import { createPortal } from "react-dom";
 import {
   PRIORITIES,
   PRIORITY_LABELS,
-  STATUSES,
-  STATUS_LABELS,
   type IssueSummary,
   type Priority,
-  type Status,
   type UserKind,
   type UserRef,
 } from "../shared/types";
@@ -21,8 +18,12 @@ import {
   PlusIcon,
   PriorityIcon,
   TeamMark,
+  IssueStatusIcon,
   StatusIcon,
   cls,
+  statusOf,
+  teamStatuses,
+  type StatusLook,
   errorToast,
   isMe,
   useApp,
@@ -238,24 +239,28 @@ export function useMembers(kind: UserKind): UserRef[] {
 }
 const toggle = (xs: string[], x: string) => (xs.includes(x) ? xs.filter((y) => y !== x) : [...xs, x]);
 
-export const STATUS_OPTIONS: Option[] = STATUSES.map((s) => ({ value: s, label: STATUS_LABELS[s], icon: <StatusIcon status={s} /> }));
+export const statusOptions = (statuses: StatusLook[]): Option[] =>
+  statuses.map((s) => ({ value: s.key, label: s.name, icon: <StatusIcon status={s} /> }));
 export const PRIORITY_OPTIONS: Option[] = PRIORITIES.map((p) => ({
   value: String(p),
   label: PRIORITY_LABELS[p],
   icon: <PriorityIcon priority={p} />,
 }));
 
-export function StatusPicker({ value, onChange, children, ...rest }: Trigger & { value: Status; onChange: (s: Status) => void }) {
+/** A status of `team`'s workflow (each issue's own team: sub-issues can be in others). */
+export function StatusPicker({ team, value, onChange, children, ...rest }: Trigger & { team: string; value: string; onChange: (s: string) => void }) {
+  const { teams } = useApp();
+  const current = statusOf(teams, team, value);
   return (
     <Picker
       label="Change status"
-      valueText={STATUS_LABELS[value]}
-      options={STATUS_OPTIONS}
+      valueText={current.name}
+      options={statusOptions(teamStatuses(teams, team))}
       selected={[value]}
-      onPick={(v) => v !== value && onChange(v as Status)}
+      onPick={(v) => v !== value && onChange(v)}
       {...rest}
     >
-      {children ?? <StatusIcon status={value} />}
+      {children ?? <StatusIcon status={current} />}
     </Picker>
   );
 }
@@ -356,7 +361,7 @@ function useIssueOptions(team: string | undefined, exclude: string[]) {
       .catch(errorToast);
   const options: Option[] = issues
     .filter((i) => !exclude.includes(i.id))
-    .map((i) => ({ value: i.id, label: i.title, prefix: i.id, icon: <StatusIcon status={i.status} /> }));
+    .map((i) => ({ value: i.id, label: i.title, prefix: i.id, icon: <IssueStatusIcon issue={i} /> }));
   return { options, load };
 }
 
