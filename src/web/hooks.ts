@@ -120,6 +120,12 @@ export function moveFocus(delta: number): boolean {
 export const isEditable = (t: EventTarget | null) =>
   t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
 
+/** The first `[data-cmd="cmd"]` under `root` that's actually on screen — some pages render more than one
+ * (e.g. issue.tsx's desktop sidebar and its phone-width inline copy) and only one is visible at a time. */
+export function visibleCmd(root: ParentNode, cmd: string): HTMLElement | null {
+  return [...root.querySelectorAll<HTMLElement>(`[data-cmd="${cmd}"]`)].find((n) => n.getClientRects().length > 0) ?? null;
+}
+
 const PROP_CMD: Record<string, string> = { s: "status", p: "priority", a: "assignee", d: "delegate", l: "labels", i: "claim" };
 
 /**
@@ -146,8 +152,7 @@ export function useIssueShortcuts(
     const current = scope();
     if (!current) return;
     e.preventDefault();
-    const nodes = [...current.root.querySelectorAll<HTMLElement>(`[data-cmd="${cmd}"]`)];
-    const target = nodes.find((n) => n.offsetParent !== null);
+    const target = visibleCmd(current.root, cmd);
     const btn = target instanceof HTMLButtonElement ? target : target?.querySelector<HTMLButtonElement>("button");
     if (btn) btn.click();
     else if (cmd === "claim") fallback?.claim(current.id);

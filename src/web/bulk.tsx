@@ -25,6 +25,7 @@ import {
   toast,
   useApp,
   useKeydown,
+  visibleCmd,
 } from "./ui";
 
 export interface Selection {
@@ -149,7 +150,7 @@ export function useBulk(
       void remove();
     } else if (!mod && BAR_CMD[key.toLowerCase()]) {
       e.preventDefault();
-      document.querySelector<HTMLButtonElement>(`.bulkbar [data-cmd="${BAR_CMD[key.toLowerCase()]}"]`)?.click();
+      visibleCmd(document, BAR_CMD[key.toLowerCase()]!)?.click();
     }
   }, true);
 
