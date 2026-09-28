@@ -456,7 +456,7 @@ export interface DocumentPatch {
 
 export interface IssueInput {
   team: string;
-  title: string;
+  title?: string; // required unless a template supplies one
   description?: string;
   status?: string; // a status key (or name) of the team's workflow; default: the team's defaultStatus
   priority?: Priority; // default 0
@@ -472,14 +472,48 @@ export interface IssueInput {
   project?: string | null; // a project's slug (its team joins the project); a sub-issue defaults to its parent's, and its milestone
   milestone?: string | null; // a milestone's name in its project; changing the project clears it unless one is named too
   cycle?: number | "current" | "next" | null; // a cycle of the team (not a completed one); a sub-issue defaults to its parent's when it starts unstarted or started
+  /** An issue template's id (of the same team): its title, description, status, priority and labels are applied
+   *  first, then this input's own fields (which win), then the usual defaults. */
+  template?: number;
 }
 
-export type IssuePatch = Partial<Omit<IssueInput, "team">> & {
+export type IssuePatch = Partial<Omit<IssueInput, "team" | "template">> & {
   // Moves it to another team of its workspace: it gets that team's next number, and its old identifier keeps resolving.
   // Its status carries over by key, else the team's first of that category, else the team's default; the old team's own labels come off.
   team?: string;
   baseUpdatedAt?: string; // the updatedAt you read; if the issue changed since, the patch is refused (409)
 };
+
+/**
+ * A team's saved prefill for new issues (Linear's issue templates; team-scoped only, no workspace-wide tier).
+ * Picking one in the New issue modal, or passing its id as create_issue's `template`, seeds title, description,
+ * status, priority and labels; picking or applying one only seeds the draft, so anything typed afterward, or
+ * passed explicitly alongside `template`, still wins. Deleting a template never touches issues made from it.
+ */
+export interface IssueTemplate {
+  id: number;
+  team: string; // team key
+  name: string; // labels it in the picker, e.g. "Bug report"
+  title: string; // the prefilled title, often a scaffold like "Bug: "
+  description: string; // markdown
+  status: string | null; // a status key of the team's workflow; null: the team's default status at use time
+  priority: Priority | null; // null: default (0) at use time
+  labels: string[]; // label paths, sorted case-insensitively
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface IssueTemplateInput {
+  team: string;
+  name: string;
+  title?: string;
+  description?: string;
+  status?: string | null;
+  priority?: Priority | null;
+  labels?: string[];
+}
+
+export type IssueTemplatePatch = Partial<Omit<IssueTemplateInput, "team">>;
 
 /**
  * POST /api/issues/bulk: one change for up to 100 issues, applied to each in turn exactly as its own PATCH

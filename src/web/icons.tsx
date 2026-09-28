@@ -58,6 +58,7 @@ export const SortIcon = icon("M5 13V3M2.5 5.5L5 3l2.5 2.5M11 3v10M8.5 10.5L11 13
 export const CycleIcon = icon("M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2v2.6h-2.6M8 5v3l2 1.5");
 export const ViewsIcon =icon("M8 2.5l5.5 3L8 8.5l-5.5-3zM2.5 8L8 11l5.5-3M2.5 10.5L8 13.5l5.5-3");
 export const SmileIcon = icon("M8 14A6 6 0 1 0 8 2a6 6 0 0 0 0 12zM5.75 6.5h.01M10.25 6.5h.01M5.3 9.3a3.2 3.2 0 0 0 5.4 0");
+export const TemplateIcon = icon("M3 3.5a1 1 0 0 1 1-1h8a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1zM3 6.5h10M5.5 9h5M5.5 11h3");
 
 export function Logo() {
   return (

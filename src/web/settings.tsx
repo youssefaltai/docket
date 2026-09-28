@@ -5,12 +5,15 @@ import {
   DUPLICATE_STATUS,
   ESTIMATE_SCALES,
   ESTIMATE_VALUES,
+  PRIORITY_LABELS,
   STATUS_CATEGORIES,
   type ApiKeyScope,
   type CodeLink,
   type EstimateScale,
+  type IssueTemplate,
   type Label,
   type LabelPatch,
+  type Priority,
   type Role,
   type Session,
   type StatusCategory,
@@ -25,7 +28,7 @@ import {
 } from "../shared/types";
 import { api } from "./api";
 import { auth, getMe, getYou } from "./auth";
-import { Picker, RowMenu, statusOptions } from "./pickers";
+import { LabelsPicker, Picker, PriorityPicker, RowMenu, StatusPicker, statusOptions } from "./pickers";
 import {
   ask,
   Avatar,
@@ -37,15 +40,19 @@ import {
   ListHeader,
   MenuButton,
   PlusIcon,
+  PriorityIcon,
   Section,
   StatusIcon,
   Tabs,
+  TagIcon,
   TeamMark,
   TeamNotFound,
   ago,
   cls,
   copyText,
   errorToast,
+  labelColor,
+  statusOf,
   teamStatuses,
   toast,
   useApp,
@@ -871,6 +878,127 @@ function Deliveries({ workspace, id }: { workspace: string; id: number }) {
   );
 }
 
+// ---------- Templates ----------
+
+/** A team's saved issue templates: named prefills for title, description, status, priority and labels. */
+function Templates({ team }: { team: Team }) {
+  const [templates, setTemplates] = useState<IssueTemplate[]>([]);
+  const [adding, setAdding] = useState(false);
+  const load = () => void api.templates(team.key).then(setTemplates, errorToast);
+  useEffect(load, [team.key]);
+  return (
+    <Section
+      title="Templates"
+      count={templates.length || undefined}
+      action={
+        !adding && (
+          <button className="btn btn-sm" onClick={() => setAdding(true)}>
+            <PlusIcon />
+            New template
+          </button>
+        )
+      }
+    >
+      <p className="settings-hint">Prefill a new issue's title, description, status, priority and labels; picked from the Template control in the New issue modal.</p>
+      {adding && <NewTemplate team={team} onDone={() => (setAdding(false), load())} />}
+      {templates.length > 0 ? (
+        <div className="settings-list">
+          {templates.map((t) => (
+            <TemplateRow key={t.id} team={team} template={t} onChange={load} />
+          ))}
+        </div>
+      ) : (
+        !adding && <p className="settings-note">No templates yet. Templates prefill a new issue's title, description, status, priority and labels.</p>
+      )}
+    </Section>
+  );
+}
+
+/** One template: its inline-editable name, a summary of what it prefills, and Delete. */
+function TemplateRow({ team, template, onChange }: { team: Team; template: IssueTemplate; onChange: () => void }) {
+  const { teams } = useApp();
+  const done = (p: Promise<unknown>) => p.then(onChange, errorToast);
+  const status = statusOf(teams, team.key, template.status ?? team.defaultStatus);
+  const summary = [
+    template.title && `“${template.title}”`,
+    status.name,
+    template.priority ? PRIORITY_LABELS[template.priority] : null,
+    template.labels.join(", "),
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const remove = async () => {
+    if (await ask(`Delete ${template.name}? Issues already created from it are unaffected.`, "Delete")) done(api.deleteTemplate(template.id));
+  };
+  return (
+    <div className="settings-row workflow-row">
+      <StatusIcon status={status} />
+      <div className="settings-row-main">
+        <InlineInput label="Template name" value={template.name} onSave={(name) => done(api.updateTemplate(template.id, { name }))} />
+        {summary && <div className="muted">{summary}</div>}
+      </div>
+      <button className="btn btn-sm btn-ghost" onClick={remove}>
+        Delete
+      </button>
+    </div>
+  );
+}
+
+/** "New template": name, title, description, then status, priority and labels; Enter (in name) or the button adds it. */
+function NewTemplate({ team, onDone }: { team: Team; onDone: () => void }) {
+  const { teams } = useApp();
+  const [name, setName] = useState("");
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [status, setStatus] = useState(team.defaultStatus);
+  const [priority, setPriority] = useState<Priority>(0);
+  const [labels, setLabels] = useState<string[]>([]);
+  const { busy, run } = useRun();
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    if (!name.trim()) return;
+    run(async () => {
+      await api.createTemplate({ team: team.key, name: name.trim(), title: title.trim(), description: description.trim(), status, priority, labels });
+      onDone();
+    });
+  };
+  return (
+    <form className="settings-form" onSubmit={submit}>
+      <Field label="Name">
+        <input className="input" autoFocus dir="auto" placeholder="e.g. Bug report" value={name} onChange={(e) => setName(e.target.value)} />
+      </Field>
+      <Field label="Title">
+        <input className="input" dir="auto" placeholder="Prefilled title, e.g. Bug: " value={title} onChange={(e) => setTitle(e.target.value)} />
+      </Field>
+      <Field label="Description">
+        <textarea className="input" dir="auto" rows={2} value={description} onChange={(e) => setDescription(e.target.value)} />
+      </Field>
+      <div className="settings-inline">
+        <StatusPicker team={team.key} value={status} onChange={setStatus} className="btn btn-sm">
+          <StatusIcon status={statusOf(teams, team.key, status)} />
+          {statusOf(teams, team.key, status).name}
+        </StatusPicker>
+        <PriorityPicker value={priority} onChange={setPriority} className="btn btn-sm">
+          <PriorityIcon priority={priority} />
+          {priority ? PRIORITY_LABELS[priority] : "Priority"}
+        </PriorityPicker>
+        <LabelsPicker team={team.key} value={labels} onChange={setLabels} className="btn btn-sm">
+          <TagIcon />
+          {labels.length ? labels.join(", ") : "Labels"}
+        </LabelsPicker>
+      </div>
+      <div className="settings-inline">
+        <button className="btn btn-primary" disabled={!name.trim() || busy}>
+          Add
+        </button>
+        <button type="button" className="btn btn-ghost" onClick={onDone}>
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+}
+
 // ---------- Labels ----------
 
 const byName = (a: Label, b: Label) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
@@ -1075,6 +1203,7 @@ export function TeamSettingsPage({ teamKey }: { teamKey: string }) {
               <Automations team={team} />
               <Estimates team={team} />
               <Cycles team={team} />
+              <Templates key={team.key} team={team} />
               <Labels team={team.key} />
             </div>
           )

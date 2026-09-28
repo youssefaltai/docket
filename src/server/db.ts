@@ -655,6 +655,32 @@ const MIGRATIONS: (string | (() => void))[] = [
   ALTER TABLE issues ADD COLUMN cycle_id INTEGER REFERENCES cycles(id) ON DELETE SET NULL;
   CREATE INDEX issues_cycle ON issues(cycle_id) WHERE cycle_id IS NOT NULL;
   `,
+  // Issue templates (Linear's, team-scoped only): a team's named prefills for new issues (title, description,
+  // status, priority, labels). status is a key of the team's own workflow, checked when it's set; it's not a
+  // foreign key, because a status later deleted from the workflow doesn't invalidate the template: applying it
+  // then falls back to the team's default status at use time. Labels are entities (migration 18), so a
+  // template's are a join table, like an issue's, rather than a JSON list. Hard-deleted: templates only ever
+  // seed an IssueInput, so removing one never touches issues already created from it.
+  `
+  CREATE TABLE issue_templates (
+    id INTEGER PRIMARY KEY,
+    team_id INTEGER NOT NULL REFERENCES teams(id),
+    name TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    status TEXT,    -- a status key of the team's workflow; NULL: the team's default status at use time
+    priority INTEGER CHECK (priority BETWEEN 0 AND 4), -- NULL: default (0) at use time
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX issue_templates_team ON issue_templates(team_id);
+  CREATE TABLE issue_template_labels (
+    template_id INTEGER NOT NULL REFERENCES issue_templates(id) ON DELETE CASCADE,
+    label_id INTEGER NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+    PRIMARY KEY (template_id, label_id)
+  );
+  CREATE INDEX issue_template_labels_label ON issue_template_labels(label_id);
+  `,
 ];
 
 db.run("PRAGMA foreign_keys = OFF"); // a migration may rebuild a table (SQLite's 12-step ALTER); checked before each commit

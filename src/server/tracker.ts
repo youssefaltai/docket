@@ -40,6 +40,9 @@ import {
   type IssuePage,
   type IssuePatch,
   type IssueSummary,
+  type IssueTemplate,
+  type IssueTemplateInput,
+  type IssueTemplatePatch,
   LABEL_COLORS,
   type Label,
   type LabelInput,
@@ -708,6 +711,178 @@ export function deleteStatus(a: Actor, teamKey: string, key: string, moveTo?: st
   changed("team", team.workspace, team.key);
   for (const ref of refs) changed("issue", team.workspace, ref);
   return toTeam(teamRow(a, team.key));
+}
+
+// --- Issue templates: a team's own named prefills (title, description, status, priority, labels) for new issues ---
+
+type TemplateRow = {
+  id: number;
+  team_id: number;
+  team_key: string;
+  workspace: string;
+  name: string;
+  title: string;
+  description: string;
+  status: string | null;
+  priority: Priority | null;
+  label_paths: string; // JSON array of paths, case-insensitively sorted
+  created_at: string;
+  updated_at: string;
+};
+
+const TEMPLATE_SELECT = `
+  SELECT it.*, t.key AS team_key, t.workspace,
+    (SELECT json_group_array(path) FROM (
+      SELECT ${LABEL_PATH} AS path FROM issue_template_labels x JOIN labels l ON l.id = x.label_id LEFT JOIN labels g ON g.id = l.parent_id
+      WHERE x.template_id = it.id ORDER BY path COLLATE NOCASE
+    )) AS label_paths
+  FROM issue_templates it JOIN teams t ON t.id = it.team_id`;
+
+const toTemplate = (row: TemplateRow): IssueTemplate => ({
+  id: row.id,
+  team: row.team_key,
+  name: row.name,
+  title: row.title,
+  description: row.description,
+  status: row.status,
+  priority: row.priority,
+  labels: JSON.parse(row.label_paths),
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+});
+
+const NO_AGENT_TEMPLATES = "Only people can manage issue templates";
+
+/** A template of the request's workspace, by id; anything else is 404. */
+function templateRow(a: Actor, id: unknown): TemplateRow {
+  const row = db.query<TemplateRow, [number, string]>(`${TEMPLATE_SELECT} WHERE it.id = ? AND t.workspace = ?`).get(Number(id), requestWorkspace(a));
+  if (!row) throw new AppError(`Template ${id} not found`, 404);
+  return row;
+}
+
+/** A template of the request's workspace, by id, for a person to manage (create/update/delete): anything else is 404. */
+function managedTemplate(a: Actor, id: unknown): TemplateRow {
+  requirePerson(a, NO_AGENT_TEMPLATES);
+  return templateRow(a, id);
+}
+
+/** Replaces a template's labels (see resolveLabels), in the caller's transaction. Returns the labels it created. */
+function setTemplateLabels(templateId: number, workspace: string, team: TeamRef, names: string[], time: string): number[] {
+  const { ids, created } = resolveLabels(workspace, team, names, time);
+  db.query("DELETE FROM issue_template_labels WHERE template_id = ?").run(templateId);
+  for (const id of ids) db.query("INSERT INTO issue_template_labels (template_id, label_id) VALUES (?, ?)").run(templateId, id);
+  return created;
+}
+
+/**
+ * A template's status: a key of the team's current workflow, checked when it's set; null leaves it unset (the
+ * team's default status at use time). Not a foreign key, so a status deleted later doesn't invalidate the template.
+ */
+const checkTemplateStatus = (team: TeamRef, value: unknown): string | null => (value == null ? null : statusOf(team, value).key);
+
+/** The request's workspace's templates, by name; `team`: only that team's own (templates are always one team's). */
+export function listTemplates(a: Actor, filter: { team?: string } = {}): IssueTemplate[] {
+  const workspace = requestWorkspace(a);
+  const params: SQLQueryBindings[] = [workspace];
+  let where = "t.workspace = ?";
+  if (filter.team) {
+    where += " AND t.id = ?";
+    params.push(teamRow(a, filter.team).id);
+  }
+  return db
+    .query<TemplateRow, SQLQueryBindings[]>(`${TEMPLATE_SELECT} WHERE ${where} ORDER BY it.name COLLATE NOCASE, it.id`)
+    .all(...params)
+    .map(toTemplate);
+}
+
+/** Creates a template in a team (people only): its name labels it in the picker; title/description/status/priority/labels prefill an issue. */
+export function createTemplate(a: Actor, input: IssueTemplateInput): IssueTemplate {
+  requirePerson(a, NO_AGENT_TEMPLATES);
+  const team = teamRow(a, input.team);
+  const name = requireText(input.name, "name");
+  const title = optionalText(input.title, "title");
+  const description = optionalText(input.description, "description");
+  const status = checkTemplateStatus(team, input.status ?? null);
+  const priority = input.priority == null ? null : checkPriority(input.priority);
+  const labels = input.labels === undefined ? [] : checkLabels(input.labels);
+  const time = now();
+  const { id, created } = db.transaction(() => {
+    const { id } = db
+      .query<{ id: number }, SQLQueryBindings[]>(
+        "INSERT INTO issue_templates (team_id, name, title, description, status, priority, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+      )
+      .get(team.id, name, title, description, status, priority, time, time)!;
+    const created = setTemplateLabels(id, team.workspace, team, labels, time);
+    return { id, created };
+  })();
+  changed("team", team.workspace, team.key);
+  for (const labelId of created) changed("label", team.workspace, String(labelId));
+  return toTemplate(templateRow(a, id));
+}
+
+/** Renames or redescribes a template, or changes its prefill fields (people only). Its team never changes. */
+export function updateTemplate(a: Actor, id: unknown, patch: IssueTemplatePatch): IssueTemplate {
+  const row = managedTemplate(a, id);
+  const team: TeamRef = { id: row.team_id, key: row.team_key };
+  const name = patch.name === undefined ? row.name : requireText(patch.name, "name");
+  const title = patch.title === undefined ? row.title : optionalText(patch.title, "title");
+  const description = patch.description === undefined ? row.description : optionalText(patch.description, "description");
+  const status = patch.status === undefined ? row.status : checkTemplateStatus(team, patch.status);
+  const priority = patch.priority === undefined ? row.priority : patch.priority == null ? null : checkPriority(patch.priority);
+  const time = now();
+  const created = db.transaction(() => {
+    db.query("UPDATE issue_templates SET name = ?, title = ?, description = ?, status = ?, priority = ?, updated_at = ? WHERE id = ?").run(
+      name,
+      title,
+      description,
+      status,
+      priority,
+      time,
+      row.id,
+    );
+    return patch.labels === undefined ? [] : setTemplateLabels(row.id, row.workspace, team, checkLabels(patch.labels), time);
+  })();
+  changed("team", row.workspace, row.team_key);
+  for (const labelId of created) changed("label", row.workspace, String(labelId));
+  return toTemplate(templateRow(a, row.id));
+}
+
+/** Deletes a template for good (people only): it only ever seeds an IssueInput, so issues made from it are untouched. */
+export function deleteTemplate(a: Actor, id: unknown): IssueTemplate {
+  const row = managedTemplate(a, id);
+  const deleted = toTemplate(row);
+  db.query("DELETE FROM issue_templates WHERE id = ?").run(row.id);
+  changed("team", row.workspace, row.team_key);
+  return deleted;
+}
+
+/** The template's status if the team's workflow still has it, else the team's default (it may have been deleted since). */
+function templateStatusAtUse(team: TeamRow, status: string): string {
+  try {
+    return statusOf(team, status).key;
+  } catch {
+    return team.default_status;
+  }
+}
+
+/**
+ * Merges a template's title, description, status, priority and labels into `input`: template first, then
+ * `input`'s own fields (which always win), then createIssue's usual defaults for whatever neither sets. The
+ * template must belong to `team`; a status it named that the team no longer has falls back to the team's default.
+ */
+function applyTemplate(team: TeamRow, input: IssueInput): IssueInput {
+  if (input.template == null) return input;
+  const row = db.query<TemplateRow, [number, number]>(`${TEMPLATE_SELECT} WHERE it.id = ? AND it.team_id = ?`).get(Number(input.template), team.id);
+  if (!row) throw new AppError(`Template ${input.template} not found`, 404);
+  const t = toTemplate(row);
+  return {
+    ...input,
+    title: input.title ?? (t.title || undefined),
+    description: input.description ?? (t.description || undefined),
+    status: input.status ?? (t.status !== null ? templateStatusAtUse(team, t.status) : undefined),
+    priority: input.priority ?? (t.priority ?? undefined),
+    labels: input.labels ?? (t.labels.length ? t.labels : undefined),
+  };
 }
 
 // --- Issues ---
@@ -1399,8 +1574,9 @@ function bumpIssues(ids: Iterable<number>, time: string): string[] {
   return [...ids].map((id) => bump.get(time, time, id)!.ref);
 }
 
-export function createIssue(a: Actor, input: IssueInput): Issue {
-  const team = teamRow(a, input.team);
+export function createIssue(a: Actor, rawInput: IssueInput): Issue {
+  const team = teamRow(a, rawInput.team);
+  const input = applyTemplate(team, rawInput);
   const cols = {
     description: "",
     status: team.default_status,

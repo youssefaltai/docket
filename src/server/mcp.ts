@@ -515,6 +515,21 @@ function createServer(a: Actor, origin: string): McpServer {
   );
 
   register(
+    "list_templates",
+    {
+      description:
+        "List a team's issue templates, one line each: id · name · TEAM. Pass a template's id as create_issue's template to prefill title, description, status, priority and labels. Team-scoped only: managed by people in team settings.",
+      inputSchema: { team: teamKey.optional().describe("Only this team's templates") },
+      annotations: { readOnlyHint: true },
+    },
+    ({ team }) => {
+      const templates = tracker.listTemplates(a, { team });
+      const lines = templates.map((t) => `${t.id} · ${t.name} · ${t.team}`);
+      return result(lines.join("\n") || "No templates yet.", { templates });
+    },
+  );
+
+  register(
     "list_issues",
     {
       description:
@@ -580,10 +595,10 @@ function createServer(a: Actor, origin: string): McpServer {
     "create_issue",
     {
       description:
-        "Create an issue in a team; returns its identifier (e.g. BRD-13). Defaults: the team's default status (backlog unless the team changed it; list_teams marks it; pass todo when it's ready to be picked up, or triage to leave it for the team to accept, in teams with Triage), priority 0 (none). Set parent to make it a sub-issue, blockedBy for issues that must be finished first. Mark an issue a duplicate with duplicateOf: it's set to its team's Duplicate status and the relation is recorded; use relatedTo for issues that are connected but not duplicates or blockers. A sub-issue joins its parent's project unless you pass one. A sub-issue joins its parent's cycle when it starts out unstarted or started.",
+        "Create an issue in a team; returns its identifier (e.g. BRD-13). Defaults: the team's default status (backlog unless the team changed it; list_teams marks it; pass todo when it's ready to be picked up, or triage to leave it for the team to accept, in teams with Triage), priority 0 (none). Set parent to make it a sub-issue, blockedBy for issues that must be finished first. Mark an issue a duplicate with duplicateOf: it's set to its team's Duplicate status and the relation is recorded; use relatedTo for issues that are connected but not duplicates or blockers. A sub-issue joins its parent's project unless you pass one. A sub-issue joins its parent's cycle when it starts out unstarted or started. Pass template (see list_templates) to prefill title, description, status, priority and labels from a team template; any of those fields you also pass override the template's, and title becomes optional once a template supplies one.",
       inputSchema: {
         team: teamKey,
-        title,
+        title: title.optional().describe("Required unless template supplies one"),
         description: description.optional(),
         status: status.optional().describe("Default: the team's default status (list_teams marks it)"),
         priority: priority.optional().describe("0 none (default), 1 urgent, 2 high, 3 medium, 4 low"),
@@ -599,6 +614,13 @@ function createServer(a: Actor, origin: string): McpServer {
         project: projectSlug.optional().describe("Project slug (see list_projects); its team joins the project"),
         milestone: milestone.optional(),
         cycle: cycle.nullable().optional(),
+        template: z
+          .number()
+          .int()
+          .optional()
+          .describe(
+            "An issue template's id (see list_templates in the team) to prefill title, description, labels, priority and status; fields you also pass override the template's",
+          ),
       },
     },
     writes((input) => {
