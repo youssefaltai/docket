@@ -432,7 +432,7 @@ function createServer(a: Actor, origin: string): McpServer {
     "list_teams",
     {
       description:
-        "List the workspace's teams, one line each: key · name · workspace · open count · status keys in workflow order, the default for new issues marked, the estimate scale if the team has estimates on (an issue's estimate is a position 1-5 in it), and its cycle length and current cycle if it uses cycles. A team's key (e.g. BRD) prefixes its issue identifiers (BRD-12). Statuses are per team: use a team's own keys for its issues (categories: triage, backlog, unstarted, started, completed, canceled; structuredContent has each status's name and category).",
+        "List the teams you can see in this workspace, one line each: key · name · workspace · `private` (only its members see it) · `member` (you're in it) · open count · status keys in workflow order, the default for new issues marked, the estimate scale if the team has estimates on (an issue's estimate is a position 1-5 in it), and its cycle length and current cycle if it uses cycles. A team's key (e.g. BRD) prefixes its issue identifiers (BRD-12). Statuses are per team: use a team's own keys for its issues (categories: triage, backlog, unstarted, started, completed, canceled; structuredContent has each status's name and category).",
       annotations: { readOnlyHint: true },
     },
     () => {
@@ -443,7 +443,8 @@ function createServer(a: Actor, origin: string): McpServer {
         const estimates = t.estimateScale && `estimates: ${t.estimateScale} (${ESTIMATE_VALUES[t.estimateScale].join(", ")})`;
         const cycles =
           t.cycleWeeks && `cycles every ${t.cycleWeeks === 1 ? "week" : `${t.cycleWeeks} weeks`}${t.currentCycle === null ? "" : `, current ${t.currentCycle}`}`;
-        return [t.key, t.name, `workspace ${t.workspace}`, `${open} open`, `statuses: ${statuses}`, estimates, cycles].filter(Boolean).join(" · ");
+        const marks = [t.private && "private", t.member && "member"];
+        return [t.key, t.name, `workspace ${t.workspace}`, ...marks, `${open} open`, `statuses: ${statuses}`, estimates, cycles].filter(Boolean).join(" · ");
       });
       return result(lines.join("\n") || "No teams yet.", { teams });
     },
@@ -1111,14 +1112,15 @@ function createServer(a: Actor, origin: string): McpServer {
     "attach_file",
     {
       description:
-        "Upload a file (a log, a report, a screenshot) to link from a comment, description or doc; returns the markdown to paste: ![name](url) for images, [name](url) otherwise. Prefer this over pasting long logs into comments. Pass exactly one of text (UTF-8) or base64. At most about 700 KB per call over MCP; files are private to this workspace's members.",
+        "Upload a file (a log, a report, a screenshot) to link from a comment, description or doc; returns the markdown to paste: ![name](url) for images, [name](url) otherwise. Prefer this over pasting long logs into comments. Pass exactly one of text (UTF-8) or base64. At most about 700 KB per call over MCP; files are private to this workspace's members, and with `team` to those who see that team: pass the team of the issue or doc you'll link it from.",
       inputSchema: {
         name: z.string().describe('File name, e.g. "build.log" or "screenshot.png"'),
         text: z.string().optional().describe("The file's content as UTF-8 text"),
         base64: z.string().optional().describe("The file's bytes, base64-encoded (for images and other binary files)"),
+        team: z.string().optional().describe('The team key of the issue or doc it goes in, e.g. "BRD": only those who see that team can open it'),
       },
     },
-    writes(({ name, text, base64 }) => {
+    writes(({ name, text, base64, team }) => {
       if ((text === undefined) === (base64 === undefined)) throw new AppError("Pass exactly one of text or base64");
       let bytes: Uint8Array;
       if (text !== undefined) bytes = new TextEncoder().encode(text);
@@ -1127,7 +1129,7 @@ function createServer(a: Actor, origin: string): McpServer {
         if (!/^[A-Za-z0-9+/]*={0,2}$/.test(clean) || clean.length % 4 === 1) throw new AppError("base64 isn't valid base64");
         bytes = Buffer.from(clean, "base64");
       }
-      const attachment = saveAttachment(a, name, bytes);
+      const attachment = saveAttachment(a, name, bytes, team);
       return result(attachmentMarkdown(attachment), { attachment, markdown: attachmentMarkdown(attachment) });
     }),
   );

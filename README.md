@@ -24,7 +24,7 @@ One container. One SQLite file. Your people and your agents, each with their own
 Agents are good at doing work and bad at keeping track of it. Docket gives them a place to do that: they pick up issues, post progress, write the spec and move things to review, while you watch it happen in the browser.
 
 - **Built for agents and humans together.** 27 MCP tools for issues, comments, docs and files (screenshots and logs too). Every agent gets its own token and name, and claims issues as a delegate, the way Linear's agents do. What an agent does shows up in your UI right away over WebSocket.
-- **Linear's model, tiny code.** Workspaces with members and admins, teams, list and board views, priorities, labels, sub-issues, blockers, keyboard shortcuts (`C`, `/`, `⌘↵`).
+- **Linear's model, tiny code.** Workspaces with members, admins and guests, public and private teams, list and board views, priorities, labels, sub-issues, blockers, keyboard shortcuts (`C`, `/`, `⌘↵`).
 - **Docs next to your issues.** Markdown docs with version history. Write `API-1` and it links to the issue, with its status shown inline.
 - **Yours.** Self-hosted, a SQLite file and a folder of uploads, five runtime dependencies. Back it up live with `./backup.sh`.
 - **Works everywhere.** Install it as a PWA on iPhone, iPad or Mac. It works offline for the issues and docs you've already opened.

@@ -1,12 +1,13 @@
 // Attachments: files people and agents upload to a workspace (screenshots, logs) and link from markdown. The bytes
 // live in attachments/<id> next to the database; a row holds the rest. Only the workspace's active members get
-// them back, as the type Docket sniffed (never the uploader's claim), and only raster images display inline.
+// them back (a file uploaded in a team: only those who see the team), as the type Docket sniffed (never the
+// uploader's claim), and only raster images display inline.
 import type { BunRequest } from "bun";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ATTACHMENT_URL, INLINE_IMAGE_TYPES, MAX_UPLOAD_BYTES, type Attachment, type UserKind } from "../shared/types.ts";
-import { type Actor, requestWorkspace } from "./access.ts";
+import { type Actor, requestWorkspace, SEES_TEAM, seesTeam } from "./access.ts";
 import { actorOf } from "./auth.ts";
 import { AppError, db, now } from "./db.ts";
 import { attachmentsDir } from "./paths.ts";
@@ -20,15 +21,18 @@ interface Row {
   name: string;
   content_type: string;
   size: number;
+  team_id: number | null;
+  team_key: string | null;
   created_at: string;
   username: string;
   uploader_name: string;
   kind: UserKind;
 }
 
-// The uploader as they're known in the file's workspace.
-const SELECT = `SELECT a.*, m.username, m.name AS uploader_name, u.kind FROM attachments a
-  JOIN users u ON u.id = a.uploader_id JOIN workspace_members m ON m.user_id = a.uploader_id AND m.workspace = a.workspace`;
+// The uploader as they're known in the file's workspace, and the team it was uploaded in.
+const SELECT = `SELECT a.*, t.key AS team_key, m.username, m.name AS uploader_name, u.kind FROM attachments a
+  JOIN users u ON u.id = a.uploader_id JOIN workspace_members m ON m.user_id = a.uploader_id AND m.workspace = a.workspace
+  LEFT JOIN teams t ON t.id = a.team_id`;
 
 // encodeURIComponent leaves ! ' ( ) * alone; parentheses would end a markdown link early.
 const encodeName = (name: string) => encodeURIComponent(name).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
@@ -40,6 +44,7 @@ const toAttachment = (r: Row): Attachment => ({
   contentType: r.content_type,
   size: r.size,
   uploader: { username: r.username, name: r.uploader_name, kind: r.kind },
+  team: r.team_key,
   createdAt: r.created_at,
 });
 
@@ -70,9 +75,16 @@ export function sniff(bytes: Uint8Array): string {
   return "application/octet-stream";
 }
 
-/** Stores a file in the request's workspace: written to disk first, then its row (a failed insert removes the file). */
-export function saveAttachment(a: Actor, name: unknown, bytes: Uint8Array): Attachment {
+/**
+ * Stores a file in the request's workspace, or with `team` (a key) in that team, which only those who see it can get
+ * back: written to disk first, then its row (a failed insert removes the file). A team you don't see is 404.
+ */
+export function saveAttachment(a: Actor, name: unknown, bytes: Uint8Array, team?: string | null): Attachment {
   const workspace = requestWorkspace(a);
+  const teamId = team
+    ? db.query<{ id: number }, [string, string]>(`SELECT id FROM teams t WHERE t.workspace = ? AND t.key = ? AND ${SEES_TEAM(String(a.id), "t")}`).get(workspace, team.trim().toUpperCase())?.id
+    : null;
+  if (teamId === undefined) throw new AppError(`Team ${team} not found`, 404);
   if (bytes.length === 0) throw new AppError("The file is empty");
   if (bytes.length > MAX_UPLOAD_BYTES) throw new AppError(`Files can be at most ${MAX_UPLOAD_BYTES / 1024 / 1024} MB`, 413);
   const id = randomBytes(16).toString("base64url");
@@ -86,9 +98,10 @@ export function saveAttachment(a: Actor, name: unknown, bytes: Uint8Array): Atta
     throw err;
   }
   try {
-    db.query("INSERT INTO attachments (id, workspace, name, content_type, size, uploader_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(
+    db.query("INSERT INTO attachments (id, workspace, team_id, name, content_type, size, uploader_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(
       id,
       workspace,
+      teamId,
       cleanName(name),
       sniff(bytes),
       bytes.length,
@@ -104,13 +117,16 @@ export function saveAttachment(a: Actor, name: unknown, bytes: Uint8Array): Atta
 
 /**
  * An attachment and its file, by id or by its URL (as found in markdown: a path or a full URL). 404 unless you're an
- * active member of its workspace (a key: its own). The id is looked up, never joined into a path as given.
+ * active member of its workspace (a key: its own) and, if it was uploaded in a team, see that team. The id is looked
+ * up, never joined into a path as given.
  */
 export function getAttachment(a: Actor, idOrUrl: string): { attachment: Attachment; path: string } {
   const path = URL.parse(idOrUrl, "http://docket")?.pathname ?? "";
   const id = /^[A-Za-z0-9_-]{22}$/.test(idOrUrl) ? idOrUrl : ATTACHMENT_URL.exec(path)?.[1];
   const row = id ? db.query<Row, [string]>(`${SELECT} WHERE a.id = ?`).get(id) : null;
-  if (!row || !a.workspaces.has(row.workspace)) throw new AppError("Attachment not found", 404);
+  if (!row || !a.workspaces.has(row.workspace) || (row.team_id !== null && !seesTeam(a.id, row.team_id))) {
+    throw new AppError("Attachment not found", 404);
+  }
   return { attachment: toAttachment(row), path: join(dir, row.id) };
 }
 
@@ -134,7 +150,8 @@ export const attachmentRoutes = {
           throw new AppError("Expected Content-Type: application/octet-stream", 415);
         }
         const bytes = new Uint8Array(await req.arrayBuffer());
-        return Response.json(saveAttachment(actorOf(req), new URL(req.url).searchParams.get("name"), bytes), { status: 201 });
+        const query = new URL(req.url).searchParams;
+        return Response.json(saveAttachment(actorOf(req), query.get("name"), bytes, query.get("team")), { status: 201 });
       } catch (err) {
         return error(err);
       }

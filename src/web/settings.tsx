@@ -28,6 +28,7 @@ import {
 } from "../shared/types";
 import { api } from "./api";
 import { auth, getMe, getYou } from "./auth";
+import { TeamMembers } from "./teams";
 import { LabelsPicker, Picker, PriorityPicker, RowMenu, StatusPicker, statusOptions } from "./pickers";
 import {
   ask,
@@ -62,8 +63,10 @@ import {
   type StatusLook,
 } from "./ui";
 
-export function SettingsPage({ section }: { section: "account" | "workspace" }) {
+export function SettingsPage({ section: asked }: { section: "account" | "workspace" }) {
   const { workspace } = useApp();
+  const guest = workspace?.role === "guest"; // a guest's settings are their account's alone
+  const section = guest ? "account" : asked;
   useEffect(() => {
     document.title = "Settings · Docket";
   }, []);
@@ -78,7 +81,7 @@ export function SettingsPage({ section }: { section: "account" | "workspace" }) 
           label="Settings"
           tabs={[
             ["/settings/account", "Account", section === "account"],
-            ["/settings/workspace", "Workspace", section === "workspace"],
+            ...(guest ? [] : [["/settings/workspace", "Workspace", section === "workspace"] as [string, string, boolean]]),
           ]}
         />
       </header>
@@ -488,7 +491,7 @@ function WorkspaceName({ workspace }: { workspace: Workspace }) {
 }
 
 function WorkspaceSettings({ workspace }: { workspace: Workspace }) {
-  const { members, loadDirectory } = useApp();
+  const { members, teams, loadDirectory } = useApp();
   const admin = workspace.role === "admin";
   const people = members.filter((m) => m.user.kind === "person");
   const agents = members.filter((m) => m.user.kind === "agent");
@@ -500,7 +503,7 @@ function WorkspaceSettings({ workspace }: { workspace: Workspace }) {
       <Labels team={null} />
       {admin && (
         <>
-          <Invite workspace={workspace.key} />
+          <Invite workspace={workspace.key} teams={teams ?? []} />
           <Agents workspace={workspace.key} agents={agents} reload={loadDirectory} />
           <Webhooks workspace={workspace.key} />
           <GitHub workspace={workspace.key} reload={loadDirectory} />
@@ -516,22 +519,31 @@ function Members({ workspace, members, reload, readOnly }: { workspace: string; 
   const actions = (m: WorkspaceMember): [string, () => void][] => {
     const { name } = m.user;
     if (m.suspendedAt) return [["Reinstate", () => update(m, { suspended: false })]];
-    const role = m.role === "admin" ? "member" : "admin";
     const suspend = async () => {
       const note =
         "They lose access to this workspace and its API keys stop working; if it's their only workspace, they're signed out everywhere. What they wrote stays theirs.";
       if (await ask(`Suspend ${name}? ${note}`, "Suspend")) update(m, { suspended: true });
     };
-    return [
-      [`Make ${role}`, () => update(m, { role })],
-      ["Suspend", suspend],
+    const guest = async () => {
+      const note = `They'll see only the teams they're in${m.teams.length ? ` (${m.teams.join(", ")})` : ": none yet"}, and nothing workspace-wide.`;
+      if (await ask(`Make ${name} a guest? ${note}`, "Make guest")) update(m, { role: "guest" });
+    };
+    const roles: [string, () => void][] = [
+      ["Make admin", () => update(m, { role: "admin" })],
+      ["Make member", () => update(m, { role: "member" })],
+      ["Make guest", guest],
     ];
+    return [...roles.filter(([label]) => label !== `Make ${m.role}`), ["Suspend", suspend]];
   };
   return (
     <Section title="Members" count={members.length}>
       <div className="settings-list">
         {members.map((m) => (
-          <MemberRow key={m.user.username} m={m} meta={meta(m.email, m.role === "admin" ? "Admin" : "Member", m.suspendedAt && "Suspended")}>
+          <MemberRow
+            key={m.user.username}
+            m={m}
+            meta={meta(m.email, ROLE_NAMES[m.role], m.role === "guest" && (m.teams.join(", ") || "No teams"), m.suspendedAt && "Suspended")}
+          >
             {!readOnly && <RowMenu label={`Manage ${m.user.name}`} actions={actions(m)} />}
           </MemberRow>
         ))}
@@ -540,16 +552,24 @@ function Members({ workspace, members, reload, readOnly }: { workspace: string; 
   );
 }
 
-/** An invite is a one-time link you hand over yourself: whoever opens it joins (there's no email to check). */
-function Invite({ workspace }: { workspace: string }) {
+const ROLE_NAMES: Record<Role, string> = { admin: "Admin", member: "Member", guest: "Guest", agent: "Agent" };
+
+/**
+ * An invite is a one-time link you hand over yourself: whoever opens it joins (there's no email to check). A guest's
+ * names the teams they'll see (at least one): Linear's guests see only those.
+ */
+function Invite({ workspace, teams }: { workspace: string; teams: Team[] }) {
   const [role, setRole] = useState<Exclude<Role, "agent">>("member");
+  const [picked, setPicked] = useState<string[]>([]);
   const { secret, show } = useSecret();
   const { busy, run } = useRun();
+  const guest = role === "guest";
   const submit = (e: FormEvent) => {
     e.preventDefault();
     run(async () => {
-      const link = await auth.invite(workspace, role);
-      show(linkSecret(link, <>Invite link for a new {role}.</>, "Send it to one person. Whoever opens it joins; it works once and expires in 15 minutes."));
+      const link = await auth.invite(workspace, role, guest ? picked : undefined);
+      const who = guest ? <>a guest in {picked.join(", ")}</> : <>a new {role}</>;
+      show(linkSecret(link, <>Invite link for {who}.</>, "Send it to one person. Whoever opens it joins; it works once and expires in 15 minutes."));
     });
   };
   return (
@@ -562,10 +582,23 @@ function Invite({ workspace }: { workspace: string }) {
           options={[
             ["member", "Member"],
             ["admin", "Admin"],
+            ["guest", "Guest"],
           ]}
           onChange={setRole}
         />
-        <button className="btn btn-primary" disabled={busy}>
+        {guest && (
+          <Picker
+            label="Teams"
+            multi
+            options={teams.map((t) => ({ value: t.key, label: t.name, icon: <TeamMark id={t.key} /> }))}
+            selected={picked}
+            onPick={(key) => setPicked((p) => (p.includes(key) ? p.filter((k) => k !== key) : [...p, key]))}
+            className="btn btn-sm"
+          >
+            {picked.length ? picked.join(", ") : "Pick teams"}
+          </Picker>
+        )}
+        <button className="btn btn-primary" disabled={busy || (guest && !picked.length)}>
           Create invite link
         </button>
       </form>
@@ -1280,6 +1313,7 @@ export function TeamSettingsPage({ teamKey }: { teamKey: string }) {
           team && (
             <div className="settings">
               <TeamGeneral key={team.key} team={team} />
+              <TeamMembers team={team} />
               <Workflow team={team} />
               <Automations team={team} />
               <Estimates team={team} />

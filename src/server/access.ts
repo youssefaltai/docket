@@ -1,6 +1,7 @@
 // Identity and access: accounts (people and agents), sessions, API keys, one-time codes (setup, invites,
 // sign-in links), and workspace membership. An account is a login; its username and name belong to each
 // membership. Every request acts as an Actor built here.
+import type { SQLQueryBindings } from "bun:sqlite";
 import { createHash, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import {
   API_KEY_SCOPES,
@@ -12,6 +13,7 @@ import {
   type Role,
   type Session,
   type SetupInput,
+  type TeamListing,
   type User,
   type UserKind,
   type UserRef,
@@ -59,6 +61,11 @@ let revoked: (r: { userId: number; sessionId?: number; keyId?: number }) => void
 /** Called when credentials stop working (sign out, revoke, suspend), so the server can close their sockets. */
 export function onRevoke(fn: typeof revoked) {
   revoked = fn;
+}
+
+/** What these accounts see changed (team membership, a team made private or public): their sockets reconnect with it. */
+export function revokeAccess(userIds: Iterable<number>) {
+  for (const userId of new Set(userIds)) revoked({ userId });
 }
 
 // --- Accounts and profiles ---
@@ -150,10 +157,13 @@ function insertAccount(kind: UserKind, email?: unknown): number {
     .get(kind, kind === "person" ? checkEmail(email) : null, now())!.id;
 }
 
-const PERSON_ROLES = ["admin", "member"] as const;
+const PERSON_ROLES = ["admin", "member", "guest"] as const;
 
-/** Adds an account to a workspace as `profile` (its username and name there). */
-function addMember(workspace: string, userId: number, role: Role, profile: { username?: unknown; name?: unknown }, time = now()) {
+/**
+ * Adds an account to a workspace as `profile` (its username and name there). It joins every public team there (so its
+ * sidebar shows them), unless it's a guest, and the teams in `teams` (a guest invite's), by id.
+ */
+function addMember(workspace: string, userId: number, role: Role, profile: { username?: unknown; name?: unknown }, time = now(), teams: number[] = []) {
   const username = checkUsername(profile.username, workspace);
   const name = checkName(profile.name);
   db.query("INSERT INTO workspace_members (workspace, user_id, username, name, role, created_at) VALUES (?, ?, ?, ?, ?, ?)").run(
@@ -164,6 +174,10 @@ function addMember(workspace: string, userId: number, role: Role, profile: { use
     role,
     time,
   );
+  const join = (where: string, ...params: SQLQueryBindings[]) =>
+    db.query(`INSERT OR IGNORE INTO team_members (team_id, user_id, created_at) SELECT id, ?, ? FROM teams WHERE workspace = ? AND ${where}`).run(userId, time, workspace, ...params);
+  if (role !== "guest") join("private = 0");
+  for (const id of teams) join("id = ?", id);
 }
 
 const setSuspended = (workspace: string, userId: number, at: string | null) =>
@@ -201,7 +215,7 @@ export function updateProfile(a: Actor, workspace: unknown, patch: { name?: unkn
   const name = patch.name === undefined ? current.name : checkName(patch.name);
   db.query("UPDATE workspace_members SET username = ?, name = ? WHERE workspace = ? AND user_id = ?").run(username, name, key, a.id);
   changed("member", key, username);
-  return toMember(memberRow(key, username));
+  return memberFor(a, key, username);
 }
 
 // --- Actors ---
@@ -286,6 +300,45 @@ export function requestWorkspace(a: Actor): string {
   return a.workspace;
 }
 
+// --- Team visibility: the one rule every team-scoped read and write goes through ---
+
+/**
+ * SQL: whether account `u` (an SQL expression) sees team `t` (an alias of `teams`), Linear's private teams and guests:
+ * as an active member of its workspace who is in the team, or, unless a guest, when the team is public. Admins are no
+ * exception: they see a private team once they join it.
+ */
+export const SEES_TEAM = (u: string, t: string) =>
+  `EXISTS (SELECT 1 FROM workspace_members sm WHERE sm.user_id = ${u} AND sm.workspace = ${t}.workspace AND sm.suspended_at IS NULL
+     AND ((${t}.private = 0 AND sm.role != 'guest') OR EXISTS (SELECT 1 FROM team_members st WHERE st.team_id = ${t}.id AND st.user_id = ${u})))`;
+
+/** The ids of the teams you see in `workspace` (default: the request's). Anything outside them is 404, like another workspace's. */
+export function visibleTeamIds(a: Actor, workspace = requestWorkspace(a)): number[] {
+  if (!a.workspaces.has(workspace)) return [];
+  return db
+    .query<{ id: number }, [string, number]>(`SELECT t.id FROM teams t WHERE t.workspace = ?1 AND ${SEES_TEAM("?2", "t")} ORDER BY t.id`)
+    .all(workspace, a.id)
+    .map((r) => r.id);
+}
+
+/** Whether account `userId` sees team `teamId`. */
+export const seesTeam = (userId: number, teamId: number) => db.query(`SELECT 1 FROM teams t WHERE t.id = ?1 AND ${SEES_TEAM("?2", "t")}`).get(teamId, userId) !== null;
+
+/** A guest sees only the teams they're in: nothing workspace-wide (views, other people, settings beyond their account). */
+export const isGuest = (a: Actor, workspace = requestWorkspace(a)) => a.workspaces.get(workspace) === "guest";
+
+/**
+ * The teams whose events a socket hears on each team's own topic: a guest's teams; for anyone else, the private teams
+ * they see (every non-guest hears public teams' events on the workspace's).
+ */
+export function heardTeams(a: Actor, workspace: string): number[] {
+  const seen = visibleTeamIds(a, workspace);
+  if (isGuest(a, workspace)) return seen;
+  return db
+    .query<{ id: number }, []>(`SELECT id FROM teams WHERE private = 1 AND id IN (${seen.join(", ") || "NULL"})`)
+    .all()
+    .map((t) => t.id);
+}
+
 function requireAdmin(a: Actor, workspace: unknown): string {
   const key = requireMember(a, workspace);
   if (a.workspaces.get(key) !== "admin") throw new AppError("Only workspace admins can do that", 403);
@@ -300,7 +353,7 @@ export function requirePerson(a: Actor, message = "Only people can do that") {
  * Managing access (keys, sessions, codes, invites, members, agents, webhooks, your profile) takes a signed-in
  * session: an API key that could mint credentials would outlive its own revocation.
  */
-function requireSession(a: Actor) {
+export function requireSession(a: Actor) {
   if (a.sessionId === null) throw new AppError("Sign in to the web app to manage access; API keys can't", 403);
 }
 
@@ -559,23 +612,25 @@ interface CodeRow {
   user_id: number | null;
   workspace: string | null;
   role: Role | null;
+  teams: string | null; // an invite's teams: JSON array of team ids
   expires_at: string;
   used_at: string | null;
 }
 
-function issueCode(fields: { purpose: CodeInfo["kind"]; userId?: number; workspace?: string; role?: Role; by?: number }) {
+function issueCode(fields: { purpose: CodeInfo["kind"]; userId?: number; workspace?: string; role?: Role; teams?: number[]; by?: number }) {
   const code = newCode();
   const time = Date.now();
   const expiresAt = new Date(time + CODE_TTL_MS).toISOString();
   db.query(
-    `INSERT INTO codes (code_hash, purpose, user_id, workspace, role, created_by, created_at, expires_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO codes (code_hash, purpose, user_id, workspace, role, teams, created_by, created_at, expires_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     hash(normalizeCode(code)),
     fields.purpose,
     fields.userId ?? null,
     fields.workspace ?? null,
     fields.role ?? null,
+    fields.teams?.length ? JSON.stringify(fields.teams) : null,
     fields.by ?? null,
     new Date(time).toISOString(),
     expiresAt,
@@ -639,7 +694,8 @@ export function redeemCode(
         .get(row.workspace!, userId);
       if (member?.suspended_at) throw new AppError("You were suspended from this workspace; ask an admin to reinstate you", 403);
       const usual: Partial<UserRef> = signedIn ? profileOf(userId) : {};
-      if (!member) addMember(row.workspace!, userId, row.role!, { username: profile.username ?? usual.username, name: profile.name ?? usual.name });
+      const there = { username: profile.username ?? usual.username, name: profile.name ?? usual.name };
+      if (!member) addMember(row.workspace!, userId, row.role!, there, now(), JSON.parse(row.teams ?? "[]"));
     }
     db.query("UPDATE codes SET used_at = ? WHERE id = ?").run(now(), row.id);
     const user = toUser(userId!, row.workspace);
@@ -677,11 +733,27 @@ export function recoverySignInLink(username: string, workspace?: string) {
   return issueCode({ purpose: "sign-in", userId: people[0]!.user_id, workspace: people.length === 1 ? people[0]!.workspace : undefined });
 }
 
-/** An invite: a one-time code the admin hands to someone, who joins with it (new account or existing). */
-export function invite(a: Actor, workspace: unknown, input: { role?: unknown }) {
+/**
+ * An invite: a one-time code the admin hands to someone, who joins with it (new account or existing). Redeeming it
+ * joins `teams` (keys of the workspace; an admin can join a private team anyway) besides every public team; a guest
+ * joins only `teams`, so a guest invite needs at least one.
+ */
+export function invite(a: Actor, workspace: unknown, input: { role?: unknown; teams?: unknown }) {
   const key = requireAdminSession(a, workspace);
   const role = checkOneOf(input.role ?? "member", PERSON_ROLES, "role");
-  return issueCode({ purpose: "invite", workspace: key, role, by: a.id });
+  if (input.teams !== undefined && (!Array.isArray(input.teams) || !input.teams.every((t) => typeof t === "string"))) {
+    throw new AppError('teams must be an array of team keys, e.g. ["BRD"]');
+  }
+  const teams = [...new Set(((input.teams ?? []) as string[]).map((k) => teamIdIn(key, k)))];
+  if (role === "guest" && !teams.length) throw new AppError("Pick at least one team for a guest");
+  return issueCode({ purpose: "invite", workspace: key, role, teams, by: a.id });
+}
+
+/** A team of `workspace`, by key (400 otherwise). */
+function teamIdIn(workspace: string, key: string): number {
+  const row = db.query<{ id: number }, [string, string]>("SELECT id FROM teams WHERE workspace = ? AND key = ?").get(workspace, key.trim().toUpperCase());
+  if (!row) throw new AppError(`Unknown team "${key}"`);
+  return row.id;
 }
 
 // --- Workspaces and members ---
@@ -705,7 +777,7 @@ const toWorkspace = (row: WorkspaceRow): Workspace => ({
 });
 
 const WORKSPACE_SELECT = `
-  SELECT w.*, m.role, (SELECT COUNT(*) FROM teams WHERE workspace = w.key) AS team_count
+  SELECT w.*, m.role, (SELECT COUNT(*) FROM teams t WHERE t.workspace = w.key AND ${SEES_TEAM("m.user_id", "t")}) AS team_count
   FROM workspaces w JOIN workspace_members m ON m.workspace = w.key AND m.user_id = ? AND m.suspended_at IS NULL`;
 
 const workspaceFor = (userId: number, key: string) =>
@@ -768,14 +840,30 @@ const MEMBER_SELECT = `
     ${isIntegration("m.user_id")} AS integration
   FROM workspace_members m JOIN users u ON u.id = m.user_id`;
 
-const toMember = (row: MemberRow): WorkspaceMember => ({
+const toMember = (row: MemberRow, teams: Map<number, string[]>): WorkspaceMember => ({
   user: toRef(row),
   email: row.email,
   role: row.role,
   joinedAt: row.joined_at,
   suspendedAt: row.suspended_at,
   integration: row.integration === 1,
+  teams: teams.get(row.id) ?? [],
 });
+
+/** Everyone's teams in `workspace`, by key: only the teams `a` sees. */
+function memberTeams(a: Actor, workspace: string): Map<number, string[]> {
+  const byMember = new Map<number, string[]>();
+  const rows = db
+    .query<{ user_id: number; key: string }, [string]>(
+      `SELECT tm.user_id, t.key FROM team_members tm JOIN teams t ON t.id = tm.team_id
+       WHERE t.workspace = ? AND t.id IN (${visibleTeamIds(a, workspace).join(", ") || "NULL"}) ORDER BY t.key`,
+    )
+    .all(workspace);
+  for (const r of rows) byMember.set(r.user_id, [...(byMember.get(r.user_id) ?? []), r.key]);
+  return byMember;
+}
+
+const memberFor = (a: Actor, workspace: string, username: string) => toMember(memberRow(workspace, username), memberTeams(a, workspace));
 
 function memberRow(workspace: string, username: unknown): MemberRow {
   const row =
@@ -788,12 +876,37 @@ function memberRow(workspace: string, username: unknown): MemberRow {
   return row;
 }
 
+/**
+ * The workspace's people, then agents. A guest sees only those who share a team with them: who see a team they're in
+ * (themselves included), so nobody else in the workspace shows.
+ */
 export function listMembers(a: Actor, workspace: unknown): WorkspaceMember[] {
   const key = requireMember(a, workspace);
+  const shares = `EXISTS (SELECT 1 FROM team_members g JOIN teams t ON t.id = g.team_id WHERE g.user_id = ${a.id} AND t.workspace = m.workspace
+    AND ${SEES_TEAM("m.user_id", "t")})`;
+  const teams = memberTeams(a, key);
   return db
-    .query<MemberRow, [string]>(`${MEMBER_SELECT} WHERE m.workspace = ? ORDER BY u.kind DESC, m.name COLLATE NOCASE`)
+    .query<MemberRow, [string]>(`${MEMBER_SELECT} WHERE m.workspace = ?${isGuest(a, key) ? ` AND ${shares}` : ""} ORDER BY u.kind DESC, m.name COLLATE NOCASE`)
     .all(key)
-    .map(toMember);
+    .map((row) => toMember(row, teams));
+}
+
+/**
+ * Every team of the workspace, for an admin to find one to join (Linear's admins see private teams in settings): its
+ * key, name, whether it's private, whether you're in it, and how many active members it has. Nothing inside it.
+ */
+export function listTeamListings(a: Actor, workspace: unknown): TeamListing[] {
+  const key = requireAdminSession(a, workspace);
+  type Row = { key: string; name: string; private: number; member: number; members: number };
+  return db
+    .query<Row, [string, number]>(
+      `SELECT t.key, t.name, t.private, EXISTS (SELECT 1 FROM team_members WHERE team_id = t.id AND user_id = ?2) AS member,
+         (SELECT COUNT(*) FROM team_members tm JOIN workspace_members m ON m.user_id = tm.user_id AND m.workspace = t.workspace AND m.suspended_at IS NULL
+          WHERE tm.team_id = t.id) AS members
+       FROM teams t WHERE t.workspace = ?1 ORDER BY t.key`,
+    )
+    .all(key, a.id)
+    .map((t) => ({ key: t.key, name: t.name, private: t.private === 1, member: t.member === 1, memberCount: t.members }));
 }
 
 const activeAdmins = (workspace: string) =>
@@ -837,8 +950,9 @@ export function updateMember(a: Actor, workspace: unknown, username: unknown, pa
     if (suspending) suspend(key, row);
     if (reinstating) setSuspended(key, row.id, null);
   }).immediate();
+  if (role !== row.role) revoked({ userId: row.id }); // a guest sees other teams than a member: sockets reconnect with what's current
   changed("member", key, row.username);
-  return toMember(memberRow(key, row.username));
+  return memberFor(a, key, row.username);
 }
 
 // --- Agents ---

@@ -3,7 +3,7 @@
 // caller alone, in the request's workspace: nobody sees, marks or deletes anyone else's notifications.
 import type { SQLQueryBindings } from "bun:sqlite";
 import type { Inbox, Notification, NotificationKind, UserKind } from "../shared/types.ts";
-import { type Actor, requestWorkspace, usernameOf } from "./access.ts";
+import { type Actor, requestWorkspace, SEES_TEAM, usernameOf } from "./access.ts";
 import { AppError, changed, db, knownAs, now } from "./db.ts";
 import { enqueue } from "./webhooks.ts";
 
@@ -12,6 +12,15 @@ export type Target = { issueId: number } | { documentId: number };
 
 const column = (t: Target) => ("issueId" in t ? "issue_id" : "document_id");
 const idOf = (t: Target) => ("issueId" in t ? t.issueId : t.documentId);
+
+/** The team an issue or doc is in: only those who see it hear about it. */
+export const teamOf = (t: Target) =>
+  db.query<{ team_id: number }, [number]>(`SELECT team_id FROM ${"issueId" in t ? "issues" : "documents"} WHERE id = ?`).get(idOf(t))!.team_id;
+
+/** SQL: the notification `n` isn't about an issue or doc in a team the reader doesn't see (the reader's id bound at `u`). */
+const aboutVisible = (u: string) =>
+  `NOT EXISTS (SELECT 1 FROM teams vt WHERE vt.id IN ((SELECT team_id FROM issues WHERE id = n.issue_id), (SELECT team_id FROM documents WHERE id = n.document_id))
+     AND NOT ${SEES_TEAM(u, "vt")})`;
 
 // --- Subscriptions ---
 
@@ -52,11 +61,12 @@ export function notify(recipients: Iterable<number>, e: Event, time: string) {
   const ids = [...new Set(recipients)].filter((id) => id !== e.actorId);
   if (!ids.length) return;
   const members = db
-    .query<{ user_id: number; username: string; name: string; kind: UserKind }, [string, string]>(
+    .query<{ user_id: number; username: string; name: string; kind: UserKind }, [string, string, number]>(
       `SELECT m.user_id, m.username, m.name, u.kind FROM workspace_members m JOIN users u ON u.id = m.user_id
-       WHERE m.workspace = ? AND m.suspended_at IS NULL AND m.user_id IN (SELECT value FROM json_each(?))`,
+       WHERE m.workspace = ? AND m.suspended_at IS NULL AND m.user_id IN (SELECT value FROM json_each(?))
+         AND EXISTS (SELECT 1 FROM teams vt WHERE vt.id = ? AND ${SEES_TEAM("m.user_id", "vt")})`,
     )
-    .all(e.workspace, JSON.stringify(ids));
+    .all(e.workspace, JSON.stringify(ids), teamOf(e.target));
   const insert = db.query(
     `INSERT INTO notifications (user_id, workspace, kind, actor_id, ${column(e.target)}, comment_id, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   );
@@ -110,7 +120,7 @@ const SELECT = `
   LEFT JOIN workspace_members am ON am.user_id = n.actor_id AND am.workspace = n.workspace
   LEFT JOIN issues i ON i.id = n.issue_id LEFT JOIN teams t ON t.id = i.team_id
   LEFT JOIN documents d ON d.id = n.document_id
-  WHERE n.user_id = ? AND n.workspace = ?`;
+  WHERE n.user_id = ?1 AND n.workspace = ?2 AND ${aboutVisible("?1")}`;
 
 const excerpt = (body: string) => body.replace(/\s+/g, " ").trim().slice(0, 200);
 
@@ -136,10 +146,11 @@ export function listInbox(a: Actor, { unread = false, limit = MAX_LIST }: { unre
     .query<Record<string, any>, [number, string]>(`${SELECT}${unread ? " AND n.read_at IS NULL" : ""} ORDER BY n.id DESC LIMIT ${Math.min(limit, MAX_LIST)}`)
     .all(a.id, workspace)
     .map(toNotification);
-  // Counted like the inbox shows them: one per issue or doc with anything unread.
+  // Counted like the inbox shows them: one per issue or doc with anything unread (in a team you see).
   const { n } = db
     .query<{ n: number }, [number, string]>(
-      "SELECT COUNT(DISTINCT COALESCE('i' || issue_id, 'd' || document_id)) AS n FROM notifications WHERE user_id = ? AND workspace = ? AND read_at IS NULL",
+      `SELECT COUNT(DISTINCT COALESCE('i' || n.issue_id, 'd' || n.document_id)) AS n FROM notifications n
+       WHERE n.user_id = ?1 AND n.workspace = ?2 AND n.read_at IS NULL AND ${aboutVisible("?1")}`,
     )
     .get(a.id, workspace)!;
   return { notifications, unread: n };
@@ -152,7 +163,9 @@ function scope(a: Actor, workspace: string, ids: unknown): { where: string; para
   if (!Array.isArray(ids) || !ids.every((id) => Number.isInteger(id))) throw new AppError("ids must be an array of notification ids");
   const list = JSON.stringify(ids);
   const mine = db
-    .query<{ id: number }, [number, string, string]>(`SELECT id FROM notifications WHERE ${where} AND id IN (SELECT value FROM json_each(?))`)
+    .query<{ id: number }, [number, string, string]>(
+      `SELECT id FROM notifications n WHERE n.user_id = ?1 AND n.workspace = ?2 AND ${aboutVisible("?1")} AND n.id IN (SELECT value FROM json_each(?3))`,
+    )
     .all(a.id, workspace, list)
     .map((r) => r.id);
   const missing = ids.find((id) => !mine.includes(id));

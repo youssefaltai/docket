@@ -105,7 +105,8 @@ export interface User extends UserRef {
 }
 
 // Workspace roles. Agents are members with role "agent": they work in teams but manage nothing (no teams, members or access).
-export type Role = "admin" | "member" | "agent";
+// Guests see only the teams they're added to, and nothing workspace-wide (views, settings beyond their account).
+export type Role = "admin" | "member" | "guest" | "agent";
 
 /** The first segment of app URLs other than a workspace's (/<ws>/…): no workspace can take these keys. */
 export const RESERVED_WORKSPACE_KEYS = ["api", "doc", "docs", "icons", "issue", "login", "mcp", "settings", "setup", "t", "ws"];
@@ -114,7 +115,7 @@ export interface Workspace {
   key: string; // URL-safe lowercase slug, e.g. "acme"; not one of RESERVED_WORKSPACE_KEYS
   name: string;
   role: Role; // yours
-  teamCount: number;
+  teamCount: number; // the teams you can see
   createdAt: string;
   updatedAt: string;
 }
@@ -133,6 +134,7 @@ export interface WorkspaceMember {
   joinedAt: string;
   suspendedAt: string | null; // suspended members can't reach the workspace; their history stays theirs
   integration: boolean; // an integration's account (GitHub's): never picked, delegated to, given a token or removed as an agent
+  teams: string[]; // the teams they're in, of those you can see (keys)
 }
 
 /** GET /api/me. */
@@ -207,8 +209,22 @@ export interface Team {
   currentCycle: number | null; // the current cycle's number, if one is running
   counts: Record<string, number>; // live issues per status key; 0 for each of the team's statuses without any
   docCount: number;
+  private: boolean; // only its members see it (admins too, once they join)
+  member: boolean; // you're in it
   createdAt: string; // ISO 8601
   updatedAt: string;
+}
+
+/**
+ * GET /api/workspaces/:key/teams (admins): every team of the workspace, private ones you aren't in too, by key and name
+ * only (nothing inside them), so an admin can find one to join.
+ */
+export interface TeamListing {
+  key: string;
+  name: string;
+  private: boolean;
+  member: boolean; // you're in it
+  memberCount: number; // its active members
 }
 
 export interface TeamInput {
@@ -220,6 +236,7 @@ export interface TeamInput {
   autoCloseChildren?: boolean; // default false
   autoArchiveDays?: number | null; // default null (never)
   estimateScale?: EstimateScale | null; // default null (off)
+  private?: boolean; // default false; the creator is its first member either way (PATCH: admins only)
 }
 
 // The key and workspace never change.
@@ -720,6 +737,7 @@ export interface Attachment {
   contentType: string; // sniffed by Docket, never the uploader's claim
   size: number;
   uploader: UserRef;
+  team: string | null; // the team it was uploaded in (only those who see the team get it), or null: the workspace's
   createdAt: string;
 }
 

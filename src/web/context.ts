@@ -44,6 +44,15 @@ export interface AppState {
 export const AppContext = createContext<AppState>(null!);
 export const useApp = () => useContext(AppContext);
 
+/** Whether a member sees a team (the server's rule): they're in it, or, unless a guest, it's public. */
+export const seesTeam = (m: WorkspaceMember, team: Team | undefined) => !team || m.teams.includes(team.key) || (!team.private && m.role !== "guest");
+
+/**
+ * The team of what's being written (an issue, its comments, a doc): editors upload files to it, so only those who see
+ * the team can open them, and offer @mentions of those people only. Null: the workspace's.
+ */
+export const EditorTeam = createContext<string | null>(null);
+
 /** Bumped (debounced) on every server event; views refetch when it changes. */
 export const LiveContext = createContext(0);
 export const useLive = () => useContext(LiveContext);

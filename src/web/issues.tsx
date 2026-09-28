@@ -248,16 +248,18 @@ export function IssuesView({ teamKey, cycle }: { teamKey: string | null; cycle?:
           </button>
         )}
         <LayoutToggle layout={view} onChange={changeView} />
-        <button
-          className="icon-btn"
-          onClick={() =>
-            app.newView({ filter: { team: teamKey ?? undefined, cycle: cycle?.toString(), q, label, assignee, delegate, due: due || undefined }, display: { layout: view } })
-          }
-          aria-label="Save as view"
-          title="Save as view"
-        >
-          <ViewsIcon />
-        </button>
+        {app.workspace?.role !== "guest" && (
+          <button
+            className="icon-btn"
+            onClick={() =>
+              app.newView({ filter: { team: teamKey ?? undefined, cycle: cycle?.toString(), q, label, assignee, delegate, due: due || undefined }, display: { layout: view } })
+            }
+            aria-label="Save as view"
+            title="Save as view"
+          >
+            <ViewsIcon />
+          </button>
+        )}
       </ListHeader>
       {shown && <CycleCard cycle={shown} className="cycle-bar" />}
       <div className={cls("content", view === "board" && !!issues?.length && "content-board")}>{body}</div>
@@ -672,7 +674,7 @@ function IssueRow({ issue, onPatch, selection }: { issue: IssueSummary; onPatch:
       <EstimateChip issue={issue} />
       <DueChip issue={issue} />
       <Labels labels={issue.labels} max={3} />
-      <AssigneePicker value={issue.assignee} onChange={(assignee) => set({ assignee })} className="row-btn" align="end" cmd="assignee" />
+      <AssigneePicker team={issue.team} value={issue.assignee} onChange={(assignee) => set({ assignee })} className="row-btn" align="end" cmd="assignee" />
       <time className="row-time" dateTime={issue.updatedAt} title={`Updated ${fullDate(issue.updatedAt)}`}>
         {timeAgo(issue.updatedAt)}
       </time>
@@ -812,7 +814,7 @@ function Card({
         <span className="row-id">{issue.id}</span>
         <span className="grow" />
         <SelectBox id={issue.id} selection={selection} />
-        <AssigneePicker value={issue.assignee} onChange={(assignee) => set({ assignee })} className="row-btn" align="end" cmd="assignee" />
+        <AssigneePicker team={issue.team} value={issue.assignee} onChange={(assignee) => set({ assignee })} className="row-btn" align="end" cmd="assignee" />
       </div>
       <Link to={`/issue/${issue.id}`} className="card-title" data-nav dir="auto" draggable={false}>
         {issue.title}

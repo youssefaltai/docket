@@ -11,6 +11,7 @@ import {
   CloseIcon,
   Comments,
   DocIcon,
+  EditorTeam,
   EmptyState,
   HistoryIcon,
   Kbd,
@@ -358,6 +359,7 @@ export function DocPage({ slug }: { slug: string }) {
   return (
     <>
       {header}
+      <EditorTeam.Provider value={doc.team}>
       <div className="doc">
         <div className="doc-scroll" ref={scroller}>
           <div className="doc-grid">
@@ -503,6 +505,7 @@ export function DocPage({ slug }: { slug: string }) {
           />
         )}
       </div>
+      </EditorTeam.Provider>
     </>
   );
 }

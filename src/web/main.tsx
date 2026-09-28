@@ -17,6 +17,7 @@ import { Picker } from "./pickers";
 import { ProjectPage, ProjectsView } from "./projects";
 import { SettingsPage, TeamSettingsPage } from "./settings";
 import { ShortcutsHelp } from "./shortcuts";
+import { TeamsPage } from "./teams";
 import { TrashView } from "./trash";
 import { TriageView } from "./triage";
 import { CustomViewPage, ViewsPage } from "./views";
@@ -28,6 +29,8 @@ import {
   DocIcon,
   EmptyState,
   InboxIcon,
+  LockIcon,
+  TeamsIcon,
   IssuesIcon,
   Kbd,
   Link,
@@ -367,6 +370,8 @@ function App() {
     <InboxView />
   ) : route.view === "my" ? (
     <MyIssuesView key={route.tab} tab={route.tab} />
+  ) : route.view === "teams" ? (
+    <TeamsPage />
   ) : route.view === "views" ? (
     <ViewsPage />
   ) : route.view === "customview" ? (
@@ -442,7 +447,10 @@ function routeTeam(route: Route, docTeam: string | null): string | null {
 
 function Sidebar({ route, active, onSwitch }: { route: Route; active: string | null; onSwitch: (key: string) => void }) {
   const { workspaces, workspace, teams, views, inbox, newIssue, newTeam, newWorkspace } = useApp();
+  const guest = workspace?.role === "guest"; // only their teams: no views, no new teams
   const favorites = views?.filter((v) => v.favorite) ?? [];
+  // Your teams, and the one you're on if you aren't in it (a public team you opened from Browse teams).
+  const mine = teams?.filter((t) => t.member || t.key === active);
   const total = teams?.reduce((n, t) => n + openCount(t), 0) ?? 0;
   const docs = teams?.reduce((n, t) => n + t.docCount, 0) ?? 0;
   const options = [
@@ -503,13 +511,15 @@ function Sidebar({ route, active, onSwitch }: { route: Route; active: string | n
           <ProjectIcon />
           <span className="nav-label">Projects</span>
         </Link>
-        <Link
-          to="/views"
-          className={cls("nav-item", (on("views") || (route.view === "customview" && !favorites.some((v) => v.id === route.id))) && "active")}
-        >
-          <ViewsIcon />
-          <span className="nav-label">Views</span>
-        </Link>
+        {!guest && (
+          <Link
+            to="/views"
+            className={cls("nav-item", (on("views") || (route.view === "customview" && !favorites.some((v) => v.id === route.id))) && "active")}
+          >
+            <ViewsIcon />
+            <span className="nav-label">Views</span>
+          </Link>
+        )}
         {getMe().chat && <ChatNavItem />}
         {favorites.length > 0 && (
           <div className="nav-section">
@@ -525,25 +535,33 @@ function Sidebar({ route, active, onSwitch }: { route: Route; active: string | n
           </Link>
         ))}
         <div className="nav-section">
-          <span>Teams</span>
-          <button className="icon-btn xs" onClick={newTeam} aria-label="New team" title="New team">
-            <PlusIcon />
-          </button>
+          <span>Your teams</span>
+          {!guest && (
+            <button className="icon-btn xs" onClick={newTeam} aria-label="New team" title="New team">
+              <PlusIcon />
+            </button>
+          )}
         </div>
-        {teams?.map((t) => (
+        {mine?.map((t) => (
           <Link key={t.key} to={`/t/${t.key}`} className={cls("nav-item", active === t.key && "active")}>
             <TeamMark id={t.key} />
             <span className="nav-label" dir="auto">
               {t.name}
             </span>
+            {t.private && <LockIcon className="team-lock" aria-label="Private" />}
             {openCount(t) > 0 && <span className="nav-count">{openCount(t)}</span>}
           </Link>
         ))}
-        {teams?.length === 0 && (
+        {teams?.length === 0 && !guest ? (
           <button className="nav-item nav-muted" onClick={newTeam}>
             <PlusIcon />
             <span className="nav-label">Create a team</span>
           </button>
+        ) : (
+          <Link to="/teams" className={cls("nav-item nav-muted", on("teams") && "active")}>
+            <TeamsIcon />
+            <span className="nav-label">Browse teams</span>
+          </Link>
         )}
       </nav>
       <AccountMenu />

@@ -376,6 +376,18 @@ describe("branch names and where links show", () => {
   });
 });
 
+describe("private teams", () => {
+  test("the integration acts for the workspace: public teams, and private ones only once it's added to them", async () => {
+    expect((await s.api("POST", "/api/teams", { key: "PRV", name: "Private", private: true })).status).toBe(201);
+    const id = (await s.api("POST", "/api/issues", { team: "PRV", title: "Hidden fix" })).body.id;
+    expect((await deliver("pull_request", pr(50, { title: `Fixes ${id}` }))).body).toEqual({ linked: [], moved: {} });
+    expect((await get(id)).links).toEqual([]);
+    expect((await s.api("POST", "/api/teams/PRV/members", { username: "github" })).status).toBe(200);
+    expect((await deliver("pull_request", pr(50, { title: `Fixes ${id}` }))).body).toEqual({ linked: [id], moved: { [id]: "in_review" } });
+    expect((await s.api("DELETE", "/api/teams/PRV/members/github")).status).toBe(200);
+  });
+});
+
 describe("disconnecting", () => {
   test("deliveries stop, the account is suspended (history keeps it); reconnecting reinstates it with a new secret", async () => {
     const id = await issue("Before disconnect");

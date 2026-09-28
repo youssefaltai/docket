@@ -261,7 +261,7 @@ test("turning cycles off ends the current one now and removes the upcoming ones,
 test("MCP: list_cycles, list_teams and get_issue show cycles; list_issues and update_issue take them", async () => {
   expect(await s.tool("list_teams")).toMatch(/^CYC · CYC · .* · cycles every 2 weeks, current 5$/m);
   expect(await s.tool("list_teams")).toMatch(/^FUT · FUT · .* · cycles every week$/m);
-  expect(await s.tool("list_teams")).toMatch(/^OFF · OFF · workspace acme · \d+ open · statuses: [^·]+$/m);
+  expect(await s.tool("list_teams")).toMatch(/^OFF · OFF · workspace acme · member · \d+ open · statuses: [^·]+$/m);
   const text = await bot.tool("list_cycles", { team: "cyc" });
   expect(text.split("\n")[0]).toMatch(/^Cycle 1 · completed · \d{4}-\d{2}-\d{2} – \d{4}-\d{2}-\d{2} · 1\/3 done · 50%$/);
   expect(text).toContain(`Cycle 5 · current · ${today().slice(0, 10)} – ${plus(today(), 14).slice(0, 10)} · 0/0 done · 0%`);

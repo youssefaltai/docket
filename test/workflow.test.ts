@@ -136,7 +136,7 @@ test("completedAt, overdue and open counts follow the category, not the key", as
   expect((await patch(issue.id, { status: "shipped" })).body.completedAt).toBeString();
   const wf = await team("WF");
   expect(wf.counts.shipped).toBe(1);
-  expect(await s.tool("list_teams")).toMatch(/^WF · WF · workspace acme · \d+ open · statuses: backlog \(default\), .*shipped/m);
+  expect(await s.tool("list_teams")).toMatch(/^WF · WF · workspace acme · member · \d+ open · statuses: backlog \(default\), .*shipped/m);
 });
 
 test("the default status: new issues start there over REST and MCP; it must be backlog or unstarted", async () => {
@@ -227,7 +227,7 @@ test("triage: turned on by adding its status and off by deleting it; its issues 
   const waiting = await create("TRI", { status: "triage" });
   expect(waiting).toMatchObject({ status: "triage", statusCategory: "triage" });
   const open = await create("TRI", { status: "todo" });
-  expect(await s.tool("list_teams")).toContain("TRI · TRI · workspace acme · 1 open · statuses: triage, backlog (default), todo,");
+  expect(await s.tool("list_teams")).toContain("TRI · TRI · workspace acme · member · 1 open · statuses: triage, backlog (default), todo,");
   const mcp = await s.tool("list_issues", { team: "TRI" });
   expect([mcp.includes(open.id), mcp.includes(waiting.id)]).toEqual([true, false]);
   expect(await s.tool("list_issues", { team: "TRI", category: ["triage"] })).toBe(`${waiting.id} · triage · no priority · An issue`);

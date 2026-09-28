@@ -69,11 +69,11 @@ export interface TestServer {
   /**
    * Invites a person into a workspace (default: setup's, invited by `by`, default admin) as `handle` and signs them in. `as` labels
    * the test user (default: the handle), so the same handle can be a different person elsewhere. For an existing test user it adds
-   * the workspace, and a key for it: they join as their usual profile unless `username` or `name` says otherwise.
+   * the workspace, and a key for it: they join as their usual profile unless `username` or `name` says otherwise. `teams`: the invite's (a guest's need one).
    */
   user: (
     handle: string,
-    opts?: { role?: "admin" | "member"; workspace?: string; name?: string; username?: string; by?: string; as?: string },
+    opts?: { role?: "admin" | "member" | "guest"; teams?: string[]; workspace?: string; name?: string; username?: string; by?: string; as?: string },
   ) => Promise<Caller>;
   /** Signs a person in again through the server's sign-in-link CLI (`handle [workspace]`), with a fresh session and API keys; labels them `handle`. */
   signIn: (handle: string, workspace?: string) => Promise<Caller>;
@@ -227,8 +227,8 @@ export async function startServer(
     anon,
     with: (creds, via = "bearer") => caller(null, creds, via),
     as,
-    async user(handle, { role = "member", workspace: key = workspace!, name, username, by = "admin", as: label = handle } = {}) {
-      const invite = await as(by).api("POST", `/api/workspaces/${key}/invites`, { role });
+    async user(handle, { role = "member", teams, workspace: key = workspace!, name, username, by = "admin", as: label = handle } = {}) {
+      const invite = await as(by).api("POST", `/api/workspaces/${key}/invites`, { role, teams });
       if (invite.status >= 300) throw new Error(`invite ${label}: ${invite.status} ${JSON.stringify(invite.body)}`);
       // An existing user accepts while signed in (as their usual profile unless told otherwise); a new one creates an account.
       const known = users.get(label);
