@@ -4,6 +4,7 @@ import type {
   ApiKeyScope,
   CodeInfo,
   CodeLink,
+  GitHubConnection,
   Me,
   Role,
   Session,
@@ -76,4 +77,8 @@ export const auth = {
   deleteWebhook: (workspace: string, id: number) => request<unknown>("DELETE", `${ws(workspace)}/webhooks/${id}`),
   rotateWebhookSecret: (workspace: string, id: number) => request<{ secret: string }>("POST", `${ws(workspace)}/webhooks/${id}/secret`),
   webhookDeliveries: (workspace: string, id: number) => request<WebhookDelivery[]>("GET", `${ws(workspace)}/webhooks/${id}/deliveries`),
+
+  github: (workspace: string) => request<GitHubConnection>("GET", `${ws(workspace)}/github`),
+  connectGitHub: (workspace: string) => request<{ url: string; secret: string }>("POST", `${ws(workspace)}/github`),
+  disconnectGitHub: (workspace: string) => request<unknown>("DELETE", `${ws(workspace)}/github`),
 };

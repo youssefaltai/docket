@@ -44,6 +44,11 @@ export const CalendarIcon = icon("M3.5 3.5h9a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1h-9a1 
 const Dots = icon("M3.5 8h.01M8 8h.01M12.5 8h.01");
 export const MoreIcon = (props: IconProps) => <Dots strokeWidth={2.4} {...props} />;
 export const CopyIcon = icon("M5.5 5.5h7v7h-7zM10.5 5.5v-2h-7v7h2");
+export const BranchIcon = icon("M4.5 2v8.5M4.5 13.5a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zM11.5 5.5a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zM11.5 5.5c0 3.5-7 2-7 5");
+export const PullRequestIcon = icon(
+  "M4.5 5v6M4.5 5a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zM4.5 14a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zM11.5 14a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zM11.5 11V6a2 2 0 0 0-2-2H7.5M9 2.5L7.5 4 9 5.5",
+);
+export const CommitIcon = icon("M8 10a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM2 8h4M10 8h4");
 export const ProjectIcon = icon("M8 1.75l5.5 3.1v6.3L8 14.25l-5.5-3.1v-6.3zM2.5 4.85L8 8l5.5-3.15M8 8v6.25");
 export const DocIcon =icon("M3.5 2.5a1 1 0 0 1 1-1h4.5l3.5 3.5v8.5a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1zM9 1.5V5h3.5M6 8.5h4M6 11h2.5");
 export const HistoryIcon = icon("M2 8a6 6 0 1 0 6-6 6.5 6.5 0 0 0-4.5 1.8L2 5.3M2 2v3.3h3.3M8 4.7V8l2.7 1.3");

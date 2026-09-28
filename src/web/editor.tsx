@@ -51,7 +51,7 @@ export function useMentionable(query: string | undefined): UserRef[] {
   const { members } = useApp();
   if (query === undefined) return [];
   return members
-    .filter((m) => !m.suspendedAt && !isMe(m.user))
+    .filter((m) => !m.suspendedAt && !m.integration && !isMe(m.user))
     .map((m) => m.user)
     .filter((u) => u.username.startsWith(query) || u.name.toLowerCase().startsWith(query))
     .sort((a, b) => Number(a.kind === "agent") - Number(b.kind === "agent"))

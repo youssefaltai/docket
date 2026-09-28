@@ -23,7 +23,7 @@ const HOSTS = new Set([
   "[::1]",
   ...(process.env.DOCKET_HOSTS ?? "").split(",").map((h) => h.trim().toLowerCase()).filter(Boolean),
 ]);
-const hostAllowed = (req: Request) => HOSTS.has((req.headers.get("host") ?? "").toLowerCase().replace(/:\d+$/, ""));
+export const hostAllowed = (req: Request) => HOSTS.has((req.headers.get("host") ?? "").toLowerCase().replace(/:\d+$/, ""));
 const forbiddenHost = () => json({ error: "Host not allowed (see DOCKET_HOSTS)" }, 403);
 
 /** Cookies ride along on same-site requests, so a cookie-authed WebSocket must come from our own origin. */

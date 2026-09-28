@@ -31,6 +31,7 @@ export const SHORTCUT_GROUPS: { title: string; rows: [string, string][] }[] = [
       ["D", "Set delegate"],
       ["L", "Set labels"],
       ["I", "Claim (assign to me)"],
+      [`${MOD}⇧.`, "Issue page: copy its git branch name"],
       [`${MOD}⌫`, "Delete to trash"],
     ],
   },

@@ -1,6 +1,6 @@
 // Issue page: title, description, sub-issues, comments and the properties panel.
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ESTIMATE_VALUES, PRIORITY_LABELS, type Issue } from "../shared/types";
+import { ESTIMATE_VALUES, PRIORITY_LABELS, type Issue, type IssueLink } from "../shared/types";
 import { HttpError, api } from "./api";
 import { RichEditor } from "./editor";
 import { SubscribeButton } from "./inbox";
@@ -25,6 +25,9 @@ import {
   ArchivedBanner,
   Avatar,
   ago,
+  BranchIcon,
+  CommitIcon,
+  PullRequestIcon,
   CalendarIcon,
   EstimateIcon,
   ChevronRightIcon,
@@ -72,6 +75,7 @@ import {
   type CommentActions,
   useIssueShortcuts,
   useResolved,
+  useKeydown,
   TrashBanner,
 } from "./ui";
 import { deleteToTrash } from "./trashActions";
@@ -251,6 +255,7 @@ export function IssuePage({ id }: { id: string }) {
           <button className="icon-btn" onClick={copyId} aria-label="Copy ID" title="Copy ID">
             <CopyIcon />
           </button>
+          <CopyBranchButton branch={issue.branchName} />
           {!issue.deletedAt && (
             <button className="icon-btn" data-cmd="delete" onClick={remove} aria-label="Delete issue" title="Delete issue">
               <TrashIcon />
@@ -290,6 +295,7 @@ export function IssuePage({ id }: { id: string }) {
               />
               <SubIssues issue={issue} onPatch={patchChild} />
               <Docs issue={issue} />
+              <Links issue={issue} />
               {!issue.deletedAt && <Activity issue={issue} actions={comments} />}
             </fieldset>
           </div>
@@ -301,6 +307,21 @@ export function IssuePage({ id }: { id: string }) {
         </aside>
       </div>
     </>
+  );
+}
+
+/** Copies the issue's git branch name for you: "ana/dkt-12-fix-login" (also ⌘/Ctrl+Shift+. on the issue page). */
+function CopyBranchButton({ branch }: { branch: string }) {
+  const copy = () => copyText(branch, `Copied ${branch}`);
+  useKeydown((e) => {
+    if (!(e.metaKey || e.ctrlKey) || !e.shiftKey || e.altKey || e.code !== "Period") return;
+    e.preventDefault();
+    copy();
+  });
+  return (
+    <button className="icon-btn" onClick={copy} aria-label="Copy git branch name" title={`Copy git branch name (${MOD}⇧.)`}>
+      <BranchIcon />
+    </button>
   );
 }
 
@@ -480,6 +501,53 @@ function Docs({ issue }: { issue: Issue }) {
             </time>
           </div>
         ))}
+      </div>
+    </Section>
+  );
+}
+
+const PR_STATES = { draft: "Draft", open: "Open", merged: "Merged", closed: "Closed" };
+
+/** A link's URL if it's http(s): titles and URLs come from GitHub payloads, so nothing else becomes an href. */
+function webUrl(url: string): string | undefined {
+  try {
+    const { protocol, href } = new URL(url);
+    return protocol === "https:" || protocol === "http:" ? href : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Opens GitHub in a new tab; the title is plain text. */
+const LinkTitle = ({ link }: { link: IssueLink }) => (
+  <a className="row-title" href={webUrl(link.url)} target="_blank" rel="noopener noreferrer" dir="auto">
+    {link.title || link.url}
+  </a>
+);
+
+/** Pull requests (and, below them, commits) that GitHub linked to this issue. */
+function Links({ issue }: { issue: Issue }) {
+  if (!issue.links.length) return null;
+  const prs = issue.links.filter((l) => l.kind === "pull_request");
+  return (
+    <Section title="Pull requests" count={prs.length || undefined}>
+      <div className="subs">
+        {issue.links.map((l) =>
+          l.kind === "pull_request" ? (
+            <div className="row sub" key={l.url}>
+              <PullRequestIcon className={cls("link-icon", l.state && `pr-${l.state}`)} />
+              <LinkTitle link={l} />
+              {l.number !== null && <span className="mono muted">#{l.number}</span>}
+              <span className="grow" />
+              {l.state && <span className={cls("pr-state", `pr-${l.state}`)}>{PR_STATES[l.state]}</span>}
+            </div>
+          ) : (
+            <div className="row sub link-commit" key={l.url}>
+              <CommitIcon className="link-icon" />
+              <LinkTitle link={l} />
+            </div>
+          ),
+        )}
       </div>
     </Section>
   );

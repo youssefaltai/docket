@@ -132,6 +132,7 @@ export interface WorkspaceMember {
   role: Role;
   joinedAt: string;
   suspendedAt: string | null; // suspended members can't reach the workspace; their history stays theirs
+  integration: boolean; // an integration's account (GitHub's): never picked, delegated to, given a token or removed as an agent
 }
 
 /** GET /api/me. */
@@ -395,6 +396,20 @@ export interface Issue extends IssueSummary {
   docs: DocumentSummary[]; // documents whose content mentions this issue
   subscribed: boolean; // you (the caller) get its new comments and status changes in your inbox
   reactions: Reaction[]; // emoji reactions on the description
+  branchName: string; // the git branch to use for it, for the caller: "ana/dkt-12-fix-login"
+  links: IssueLink[]; // pull requests, then commits, that mention it (the GitHub integration)
+}
+
+/** A pull request or commit linked to an issue by the GitHub integration. Its title comes from GitHub: plain text. */
+export interface IssueLink {
+  url: string; // http(s)
+  kind: "pull_request" | "commit";
+  title: string; // the PR's title, or the commit message's first line
+  number: number | null; // the PR's number
+  state: "draft" | "open" | "merged" | "closed" | null; // PRs only
+  closes: boolean; // a closing link (branch, title or closing word) moves the issue along; a contributing one only links
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface DocumentSummary {
@@ -633,6 +648,13 @@ export interface Inbox {
 export const WEBHOOK_RESOURCES = ["Issue", "Comment", "Document", "Notification"] as const;
 export type WebhookResource = (typeof WEBHOOK_RESOURCES)[number];
 export type WebhookAction = "create" | "update" | "remove";
+
+/** A workspace's GitHub integration (admins, in a browser session). The secret is shown once: by connecting, or a new secret. */
+export interface GitHubConnection {
+  connected: boolean;
+  url: string; // the payload URL to give GitHub
+  account: UserRef | null; // the GitHub agent account its changes are made as; null before the first connect
+}
 
 /** Never carries the secret: it's shown once, by create and rotate. */
 export interface Webhook {

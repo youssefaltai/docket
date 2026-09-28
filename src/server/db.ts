@@ -681,6 +681,29 @@ const MIGRATIONS: (string | (() => void))[] = [
   );
   CREATE INDEX issue_template_labels_label ON issue_template_labels(label_id);
   `,
+  // The GitHub integration: a workspace's signed incoming webhook, whose changes are made as its own agent account, and
+  // the pull requests and commits it links to issues. The secret verifies deliveries, so it's kept in the clear (shown once).
+  `
+  CREATE TABLE github_integrations (
+    workspace TEXT PRIMARY KEY REFERENCES workspaces(key) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id), -- the GitHub agent account
+    secret TEXT,                                   -- verifies X-Hub-Signature-256; NULL: disconnected
+    created_by INTEGER NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE issue_links (
+    issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+    url TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('pull_request', 'commit')),
+    title TEXT NOT NULL,          -- the PR's title, or the commit's first line
+    number INTEGER,               -- the PR's number
+    state TEXT CHECK (state IN ('draft', 'open', 'merged', 'closed')), -- PRs only
+    closes INTEGER NOT NULL CHECK (closes IN (0, 1)), -- 1: closing (branch, title or closing word); 0: contributing
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (issue_id, url)
+  );
+  `,
 ];
 
 db.run("PRAGMA foreign_keys = OFF"); // a migration may rebuild a table (SQLite's 12-step ALTER); checked before each commit
@@ -767,7 +790,7 @@ export function checkOneOf<T extends string | number>(value: unknown, allowed: r
 }
 
 /** "Q3 Roadmap: Café!" → "q3-roadmap-cafe"; "" when nothing Latin is left (e.g. an Arabic title). */
-function slugify(title: string): string {
+export function slugify(title: string): string {
   return title
     .normalize("NFKD")
     .replace(/[\u0300-\u036f]/g, "")

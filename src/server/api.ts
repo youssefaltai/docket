@@ -3,6 +3,7 @@ import type { CustomViewInput, DocumentInput, IssueFilter, IssueInput, IssueTemp
 import * as access from "./access.ts";
 import { actorOf, isJson } from "./auth.ts";
 import { AppError } from "./db.ts";
+import * as github from "./github.ts";
 import { originOf } from "./http.ts";
 import * as inbox from "./inbox.ts";
 import * as tracker from "./tracker.ts";
@@ -149,6 +150,11 @@ export const apiRoutes = {
     POST: handle<"/api/workspaces/:key/agents/:username/token">((req) =>
       access.rotateAgentToken(actorOf(req), req.params.key, req.params.username),
     ),
+  },
+  "/api/workspaces/:key/github": {
+    GET: handle<"/api/workspaces/:key/github">((req) => github.connection(actorOf(req), req.params.key, req)),
+    POST: handle<"/api/workspaces/:key/github">((req) => github.connect(actorOf(req), req.params.key, req), 201),
+    DELETE: handle<"/api/workspaces/:key/github">((req) => github.disconnect(actorOf(req), req.params.key)),
   },
   "/api/workspaces/:key/webhooks": {
     GET: handle<"/api/workspaces/:key/webhooks">((req) => webhooks.listWebhooks(actorOf(req), req.params.key)),

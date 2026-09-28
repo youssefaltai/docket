@@ -1,4 +1,4 @@
-// Settings: your account (profile, devices, API keys) and, for admins, the workspace (members, invites, agents, webhooks).
+// Settings: your account (profile, devices, API keys) and, for admins, the workspace (members, invites, agents, webhooks, GitHub).
 import { Fragment, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import {
   CATEGORY_COLORS,
@@ -503,6 +503,7 @@ function WorkspaceSettings({ workspace }: { workspace: Workspace }) {
           <Invite workspace={workspace.key} />
           <Agents workspace={workspace.key} agents={agents} reload={loadDirectory} />
           <Webhooks workspace={workspace.key} />
+          <GitHub workspace={workspace.key} reload={loadDirectory} />
         </>
       )}
     </>
@@ -624,11 +625,15 @@ function Agents({ workspace, agents, reload }: { workspace: string; agents: Work
       )}
       {agents.length > 0 && (
         <div className="settings-list">
-          {agents.map((m) => (
-            <MemberRow key={m.user.username} m={m} meta={meta(m.suspendedAt ? "Removed" : `Added ${ago(m.joinedAt)}`)}>
-              <RowMenu label={`Manage ${m.user.name}`} actions={actions(m)} />
-            </MemberRow>
-          ))}
+          {agents.map((m) =>
+            m.integration ? (
+              <MemberRow key={m.user.username} m={m} meta={meta("GitHub integration", m.suspendedAt && "Disconnected")} />
+            ) : (
+              <MemberRow key={m.user.username} m={m} meta={meta(m.suspendedAt ? "Removed" : `Added ${ago(m.joinedAt)}`)}>
+                <RowMenu label={`Manage ${m.user.name}`} actions={actions(m)} />
+              </MemberRow>
+            ),
+          )}
         </div>
       )}
     </Section>
@@ -777,6 +782,82 @@ function Webhooks({ workspace }: { workspace: string }) {
               {log === h.id && <Deliveries workspace={workspace} id={h.id} />}
             </Fragment>
           ))}
+        </div>
+      )}
+    </Section>
+  );
+}
+
+/** GitHub's webhook: PRs and commits link to issues by identifier and move them along, as the workspace's @github. */
+function GitHub({ workspace, reload }: { workspace: string; reload: () => void }) {
+  const github = useFetch(() => auth.github(workspace), [workspace]);
+  const { secret, show } = useSecret();
+  const { busy, run } = useRun();
+  const done = () => {
+    github.reload();
+    reload(); // the members list: its account
+  };
+  const connect = () =>
+    run(async () => {
+      const { url, secret } = await auth.connectGitHub(workspace);
+      show({
+        lead: (
+          <>
+            In your GitHub repo or organization: Settings → Webhooks → Add webhook. Payload URL <span className="mono">{url}</span>, Content type
+            application/json, this secret, and the events Pull requests and Pushes.
+          </>
+        ),
+        value: secret,
+        note: "Shown once.",
+        copies: [
+          ["URL", url],
+          ["secret", secret],
+        ],
+      });
+      done();
+    });
+  const actions: [string, () => void][] = [
+    [
+      "New secret",
+      async () => {
+        if (await ask("New secret for GitHub? The old one stops working at once: paste the new one into the webhook on GitHub.", "New secret")) connect();
+      },
+    ],
+    [
+      "Disconnect",
+      async () => {
+        if (await ask("Disconnect GitHub? Its deliveries are refused; issue history keeps what it did.", "Disconnect"))
+          run(() => auth.disconnectGitHub(workspace).then(done));
+      },
+    ],
+  ];
+  const connection = github.data;
+  return (
+    <Section
+      title="GitHub"
+      action={
+        connection &&
+        !connection.connected && (
+          <button className="btn btn-sm" disabled={busy} onClick={connect}>
+            Connect GitHub
+          </button>
+        )
+      }
+    >
+      <p className="settings-hint">
+        Pull requests and commits that mention an issue (its branch name, title, or "Fixes BRD-12") are linked to it. Opening a PR moves the issue to
+        In Review, and merging it to Done.
+      </p>
+      {secret}
+      {connection?.connected && (
+        <div className="settings-list">
+          <Row
+            icon={connection.account && <Avatar user={connection.account} />}
+            title={<>Connected as @{connection.account?.username}</>}
+            meta={<span className="mono">{connection.url}</span>}
+          >
+            <RowMenu label="Manage GitHub" actions={actions} />
+          </Row>
         </div>
       )}
     </Section>

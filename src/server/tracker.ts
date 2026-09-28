@@ -37,6 +37,7 @@ import {
   type Issue,
   type IssueFilter,
   type IssueInput,
+  type IssueLink,
   type IssuePage,
   type IssuePatch,
   type IssueSummary,
@@ -73,7 +74,7 @@ import {
   type WorkflowStatusInput,
   type WorkflowStatusPatch,
 } from "../shared/types.ts";
-import { type Actor, activeMemberId, requestWorkspace, requirePerson, systemUserId } from "./access.ts";
+import { type Actor, activeMemberId, requestWorkspace, requirePerson, systemUserId, usernameOf } from "./access.ts";
 import {
   AppError,
   BUMPED_AT,
@@ -88,6 +89,7 @@ import {
   optionalText,
   pickSlug,
   requireText,
+  slugify,
 } from "./db.ts";
 import * as inbox from "./inbox.ts";
 import { enqueue } from "./webhooks.ts";
@@ -1563,6 +1565,8 @@ export function getIssue(a: Actor, identifier: string): Issue {
     docs,
     subscribed: inbox.isSubscribed(a.id, { issueId: id }),
     reactions: listReactions(row.workspace, [`issue:${id}`]).get(`issue:${id}`) ?? [],
+    branchName: branchName(usernameOf(a) ?? "me", `${row.team_key}-${row.number}`, row.title),
+    links: listLinks(id),
   };
 }
 
@@ -1758,6 +1762,96 @@ export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Is
   for (const r of new Set(refs)) changed("issue", workspace, r);
   for (const p of new Set(projects)) if (p) changed("project", workspace, p);
   return issue;
+}
+
+// --- Links: pull requests and commits (the GitHub integration) ---
+
+/**
+ * The git branch for an issue, for `username`: "ana/dkt-12-fix-login". The title's slug is cut at a dash to at most 40
+ * characters, and left out when nothing Latin is left (an Arabic title: "ana/dkt-12"). The username is made ref-safe.
+ */
+function branchName(username: string, identifier: string, title: string): string {
+  const user = username.replace(/\.{2,}/g, ".").replace(/\.(lock)?$/, "-$1");
+  let slug = slugify(title);
+  if (slug.length > 40) {
+    const cut = slug.slice(0, 41);
+    slug = cut.includes("-") ? cut.slice(0, cut.lastIndexOf("-")) : slug.slice(0, 40);
+  }
+  return `${user}/${identifier.toLowerCase()}${slug ? `-${slug}` : ""}`;
+}
+
+type LinkRow = { url: string; kind: IssueLink["kind"]; title: string; number: number | null; state: IssueLink["state"]; closes: number; created_at: string; updated_at: string };
+
+const listLinks = (issueId: number): IssueLink[] =>
+  db
+    .query<LinkRow, [number]>("SELECT * FROM issue_links WHERE issue_id = ? ORDER BY kind = 'commit', created_at, url")
+    .all(issueId)
+    .map((r) => ({ url: r.url, kind: r.kind, title: r.title, number: r.number, state: r.state, closes: r.closes === 1, createdAt: r.created_at, updatedAt: r.updated_at }));
+
+export type LinkInput = Pick<IssueLink, "url" | "kind" | "title" | "number" | "state" | "closes">;
+
+/**
+ * Links a pull request or commit to a live issue of the actor's workspace, or updates its link (title, state, closing).
+ * Returns the issue's identifier and whether the link is new or changed (which bumps the issue), or null when
+ * `identifier` names no live issue there: unknown, another workspace's, trashed or archived.
+ */
+export function linkIssue(a: Actor, identifier: string, link: LinkInput): { id: string; changed: boolean } | null {
+  let issue: ReturnType<typeof issueRef>;
+  try {
+    issue = issueRef(a, identifier);
+  } catch (e) {
+    if (e instanceof AppError) return null;
+    throw e;
+  }
+  if (issue.deleted_at || issue.archived_at) return null;
+  const values = [link.kind, link.title, link.number, link.state, link.closes ? 1 : 0] as const;
+  const fresh = db.transaction(() => {
+    const was = db
+      .query<LinkRow, [number, string]>("SELECT * FROM issue_links WHERE issue_id = ? AND url = ?")
+      .get(issue.id, link.url);
+    if (was && JSON.stringify([was.kind, was.title, was.number, was.state, was.closes]) === JSON.stringify(values)) return false;
+    const time = now();
+    db.query(
+      `INSERT INTO issue_links (issue_id, url, kind, title, number, state, closes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (issue_id, url) DO UPDATE SET kind = excluded.kind, title = excluded.title, number = excluded.number,
+         state = excluded.state, closes = excluded.closes, updated_at = excluded.updated_at`,
+    ).run(issue.id, link.url, ...values, time, time);
+    bumpIssues([issue.id], time);
+    return true;
+  }).immediate();
+  if (fresh) changed("issue", issue.workspace, issue.ref);
+  return { id: issue.ref, changed: fresh };
+}
+
+/**
+ * Moves an issue along for a closing link (the GitHub integration's fixed automation, by status category), as the
+ * actor's own change: a draft PR moves a triage, backlog or unstarted issue to its team's first started status; an open
+ * one moves it, or a started one, to in_review where the team has that status; a merge (or a closing commit on the
+ * default branch) moves anything open to the team's first completed status, unless another closing PR of the issue is
+ * still open or a draft. Completed and canceled issues never move. Returns the status it moved to, or null.
+ */
+export function advanceIssue(a: Actor, identifier: string, event: "draft" | "open" | "merged", url: string): string | null {
+  const { id, team, ref } = liveIssue(a, identifier);
+  const { status, category } = db
+    .query<{ status: string; category: StatusCategory }, [number]>(
+      "SELECT i.status, ws.category FROM issues i JOIN workflow_statuses ws ON ws.team_id = i.team_id AND ws.key = i.status WHERE i.id = ?",
+    )
+    .get(id)!;
+  const statuses = teamStatuses(team.id);
+  const unstarted = category === "triage" || category === "backlog" || category === "unstarted";
+  const otherOpen = () =>
+    db
+      .query("SELECT 1 FROM issue_links WHERE issue_id = ? AND url != ? AND kind = 'pull_request' AND closes = 1 AND state IN ('open', 'draft')")
+      .get(id, url);
+  const to =
+    event === "draft"
+      ? unstarted && statuses.find((s) => s.category === "started")
+      : event === "open"
+        ? (unstarted || category === "started") && status !== "in_review" && statuses.find((s) => s.key === "in_review")
+        : !isClosed(category) && !otherOpen() && statuses.find((s) => s.category === "completed");
+  if (!to) return null;
+  updateIssue(a, ref, { status: to.key });
+  return to.key;
 }
 
 // --- Auto-close (Linear's per-team settings) ---
