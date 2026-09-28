@@ -8,6 +8,7 @@ import {
   DEFAULT_WORKFLOW,
   DUE_FILTERS,
   DUPLICATE_STATUS,
+  ESTIMATE_SCALES,
   ISSUE_SORTS,
   PRIORITIES,
   STATUS_CATEGORIES,
@@ -22,6 +23,7 @@ import {
   type DocumentSummary,
   type DocumentVersion,
   type DocumentVersionSummary,
+  type EstimateScale,
   type Issue,
   type IssueFilter,
   type IssueInput,
@@ -66,6 +68,19 @@ import * as inbox from "./inbox.ts";
 import { enqueue } from "./webhooks.ts";
 
 const checkPriority = (value: unknown) => checkOneOf(value as Priority, PRIORITIES, "priority (0 none, 1 urgent, 2 high, 3 medium, 4 low)");
+
+/** A team's estimate scale, or null (estimates off). */
+const checkScale = (value: unknown) => (value === null ? null : checkOneOf(value as EstimateScale, ESTIMATE_SCALES, "estimateScale"));
+
+/** An estimate: a 1–5 position in the team's scale, or null; only where the team has estimates on. */
+function checkEstimate(teamId: number, value: unknown): number | null {
+  const { estimate_scale } = db.query<{ estimate_scale: string | null }, [number]>("SELECT estimate_scale FROM teams WHERE id = ?").get(teamId)!;
+  if (!estimate_scale) throw new AppError("Turn on estimates for this team first");
+  if (value !== null && !(Number.isInteger(value) && (value as number) >= 1 && (value as number) <= 5)) {
+    throw new AppError("estimate must be a position in the team's scale, 1 to 5, or null");
+  }
+  return value as number | null;
+}
 
 /** A calendar date, "YYYY-MM-DD", that exists (no 2026-02-30). */
 function checkDueOn(value: unknown): string {
@@ -366,6 +381,7 @@ interface TeamRow {
   auto_close_parent: number; // 0 or 1
   auto_close_children: number;
   auto_archive_days: number | null; // null: never; else days after completed_at
+  estimate_scale: EstimateScale | null;
   statuses: string; // JSON array of WorkflowStatus, in workflow order
   counts: string; // JSON object: status → issue count, statuses without issues left out
   doc_count: number;
@@ -401,6 +417,7 @@ function toTeam(row: TeamRow): Team {
     autoCloseParent: row.auto_close_parent === 1,
     autoCloseChildren: row.auto_close_children === 1,
     autoArchiveDays: row.auto_archive_days,
+    estimateScale: row.estimate_scale,
     counts: { ...Object.fromEntries(statuses.map((s) => [s.key, 0])), ...JSON.parse(row.counts) },
     docCount: row.doc_count,
     createdAt: row.created_at,
@@ -439,6 +456,7 @@ export function createTeam(a: Actor, input: TeamInput): Team {
   const autoCloseParent = checkFlag(input.autoCloseParent ?? false, "autoCloseParent");
   const autoCloseChildren = checkFlag(input.autoCloseChildren ?? false, "autoCloseChildren");
   const autoArchiveDays = input.autoArchiveDays === undefined ? null : checkAutoArchiveDays(input.autoArchiveDays);
+  const estimateScale = checkScale(input.estimateScale ?? null);
   if (db.query("SELECT 1 FROM teams WHERE workspace = ? AND key = ?").get(workspace, key)) {
     throw new AppError(`Team key ${key} is taken in this workspace`, 409);
   }
@@ -446,9 +464,9 @@ export function createTeam(a: Actor, input: TeamInput): Team {
   db.transaction(() => {
     const { id } = db
       .query<{ id: number }, SQLQueryBindings[]>(
-        "INSERT INTO teams (key, workspace, name, description, auto_close_parent, auto_close_children, auto_archive_days, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+        "INSERT INTO teams (key, workspace, name, description, auto_close_parent, auto_close_children, auto_archive_days, estimate_scale, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
       )
-      .get(key, workspace, name, description, autoCloseParent, autoCloseChildren, autoArchiveDays, time, time)!;
+      .get(key, workspace, name, description, autoCloseParent, autoCloseChildren, autoArchiveDays, estimateScale, time, time)!;
     const insert = db.query("INSERT INTO workflow_statuses (team_id, key, name, category, color, position) VALUES (?, ?, ?, ?, ?, ?)");
     for (const s of DEFAULT_WORKFLOW) insert.run(id, s.key, s.name, s.category, s.color, s.position);
   })();
@@ -472,8 +490,9 @@ function checkAutoArchiveDays(value: unknown): number | null {
 }
 
 /**
- * Renames or redescribes a team, sets where its new issues start (a backlog or unstarted status), or switches
- * auto-close. Teams never change workspace: their issues, people and links belong to it.
+ * Renames or redescribes a team, sets where its new issues start (a backlog or unstarted status), switches
+ * auto-close, or sets its estimate scale (null turns estimates off: issues keep theirs, hidden until it's back on).
+ * Teams never change workspace: their issues, people and links belong to it.
  */
 export function updateTeam(a: Actor, key: string, patch: TeamPatch & { workspace?: unknown }): Team {
   requirePerson(a, NO_AGENT_TEAMS);
@@ -490,9 +509,10 @@ export function updateTeam(a: Actor, key: string, patch: TeamPatch & { workspace
   const autoCloseParent = patch.autoCloseParent === undefined ? row.auto_close_parent : checkFlag(patch.autoCloseParent, "autoCloseParent");
   const autoCloseChildren = patch.autoCloseChildren === undefined ? row.auto_close_children : checkFlag(patch.autoCloseChildren, "autoCloseChildren");
   const autoArchiveDays = patch.autoArchiveDays === undefined ? row.auto_archive_days : checkAutoArchiveDays(patch.autoArchiveDays);
+  const estimateScale = patch.estimateScale === undefined ? row.estimate_scale : checkScale(patch.estimateScale);
   db.query(
-    "UPDATE teams SET name = ?, description = ?, default_status = ?, auto_close_parent = ?, auto_close_children = ?, auto_archive_days = ?, updated_at = ? WHERE id = ?",
-  ).run(name, description, defaultStatus, autoCloseParent, autoCloseChildren, autoArchiveDays, now(), row.id);
+    "UPDATE teams SET name = ?, description = ?, default_status = ?, auto_close_parent = ?, auto_close_children = ?, auto_archive_days = ?, estimate_scale = ?, updated_at = ? WHERE id = ?",
+  ).run(name, description, defaultStatus, autoCloseParent, autoCloseChildren, autoArchiveDays, estimateScale, now(), row.id);
   changed("team", row.workspace, row.key);
   return toTeam(teamRow(a, row.key));
 }
@@ -662,6 +682,8 @@ type IssueRow = Record<string, unknown> & {
   status_category: StatusCategory;
   status_position: number;
   priority: Priority;
+  estimate: number | null; // its stored position, kept while its team has estimates off
+  estimate_scale: string | null; // its team's
   label_paths: string; // JSON array of its labels' paths (issues.labels is legacy: migration 17 moved it to issue_labels)
   parent: string | null; // identifier
   blocked_by: string; // JSON array of identifiers
@@ -680,7 +702,7 @@ type IssueRow = Record<string, unknown> & {
 const ident = (team: string, issue: string) => `${team}.key || '-' || ${issue}.number`;
 
 const ISSUE_SELECT = `
-  SELECT i.*, t.key AS team_key, t.workspace, ws.category AS status_category, ws.position AS status_position, ${ident("pt", "p")} AS parent,
+  SELECT i.*, t.key AS team_key, t.workspace, t.estimate_scale, ws.category AS status_category, ws.position AS status_position, ${ident("pt", "p")} AS parent,
     ${userCols("ua", "assignee")}, ${userCols("ud", "delegate")}, ${userCols("uc", "creator")},
     (SELECT json_group_array(path) FROM (
       SELECT ${LABEL_PATH} AS path FROM issue_labels x JOIN labels l ON l.id = x.label_id LEFT JOIN labels g ON g.id = l.parent_id
@@ -729,6 +751,7 @@ const toSummary = (row: IssueRow): IssueSummary => ({
   status: row.status,
   statusCategory: row.status_category,
   priority: row.priority,
+  estimate: row.estimate_scale ? row.estimate : null, // hidden, not cleared, while its team has estimates off
   labels: JSON.parse(row.label_paths),
   assignee: ref(row, "assignee"),
   delegate: ref(row, "delegate"),
@@ -896,6 +919,7 @@ function issueColumns(a: Actor, workspace: string, team: TeamRef, patch: IssuePa
   if (patch.description !== undefined) cols.description = optionalText(patch.description, "description");
   if (patch.status !== undefined) cols.status = statusOf(team, patch.status).key;
   if (patch.priority !== undefined) cols.priority = checkPriority(patch.priority);
+  if (patch.estimate !== undefined) cols.estimate = checkEstimate(team.id, patch.estimate);
   for (const [field, kind] of [["assignee", "person"], ["delegate", "agent"]] as const) {
     const value = patch[field];
     if (value === undefined) continue;
@@ -1170,6 +1194,7 @@ const TRACKED: [ActivityKind, (row: IssueRow) => unknown][] = [
   ["description", (r) => r.description],
   ["status", (r) => r.status],
   ["priority", (r) => r.priority],
+  ["estimate", (r) => r.estimate],
   ["assignee", (r) => r.assignee_id],
   ["delegate", (r) => r.delegate_id],
   ["labels", (r) => JSON.parse(r.label_paths)],
@@ -1272,6 +1297,7 @@ export function createIssue(a: Actor, input: IssueInput): Issue {
     delegate_id: null,
     parent_id: null,
     due_on: null,
+    estimate: null,
     ...issueColumns(a, team.workspace, team, input),
     title: requireText(input.title, "title"),
   };

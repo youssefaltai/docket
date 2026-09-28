@@ -42,6 +42,7 @@ const MY_TAB_LABEL: Record<MyTab, string> = { assigned: "Assigned", created: "Cr
 const PROPS: [string, string][] = [
   ["status", "Set status"],
   ["priority", "Set priority"],
+  ["estimate", "Set estimate"],
   ["assignee", "Set assignee"],
   ["delegate", "Set delegate"],
   ["team", "Move to team"],

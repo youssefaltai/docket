@@ -8,9 +8,9 @@ import {
 } from "react";
 import { api } from "./api";
 import { getYou } from "./auth";
-import type { IssueSummary, Label, Team, UserRef } from "../shared/types";
+import { ESTIMATE_VALUES, type IssueSummary, type Label, type Team, type UserRef } from "../shared/types";
 import { useApp } from "./context";
-import { ArchiveIcon, CalendarIcon, PlusIcon, SearchIcon, SettingsIcon, MenuIcon, TrashIcon } from "./icons";
+import { ArchiveIcon, CalendarIcon, EstimateIcon, PlusIcon, SearchIcon, SettingsIcon, MenuIcon, TrashIcon } from "./icons";
 import { Link } from "./routing";
 import { isClosedCategory, issueStatus, triageCount, useAutosize, useRun } from "./hooks";
 import { errorToast } from "./toast";
@@ -92,6 +92,40 @@ export function DueChip({ issue }: { issue: IssueSummary }) {
     <span className={cls("due", due.tone)} title={due.title}>
       <CalendarIcon />
       {due.short}
+    </span>
+  );
+}
+
+/**
+ * An issue's estimate as its team's scale shows it ("5", "M") and the points it adds to a sum (t-shirt sizes count
+ * their position); null without one, or while its team has estimates off.
+ */
+export function estimateOf(teams: Team[] | null, issue: Pick<IssueSummary, "team" | "estimate">) {
+  const scale = teams?.find((t) => t.key === issue.team)?.estimateScale;
+  if (!scale || !issue.estimate) return null;
+  const value = ESTIMATE_VALUES[scale][issue.estimate - 1]!;
+  return { value, points: scale === "tshirt" ? issue.estimate : Number(value) };
+}
+
+export function EstimateChip({ issue }: { issue: IssueSummary }) {
+  const estimate = estimateOf(useApp().teams, issue);
+  if (!estimate) return null;
+  return (
+    <span className="estimate" title={`Estimate: ${estimate.value}`}>
+      <EstimateIcon />
+      {estimate.value}
+    </span>
+  );
+}
+
+/** A status group's count, plus its summed estimate when any issue in view has one: "4 · 13". */
+export function GroupCount({ items, sum }: { items: IssueSummary[]; sum: boolean }) {
+  const { teams } = useApp();
+  const points = items.reduce((total, i) => total + (estimateOf(teams, i)?.points ?? 0), 0);
+  return (
+    <span className="count" title={sum ? `Estimate: ${points}` : undefined}>
+      {items.length}
+      {sum && ` · ${points}`}
     </span>
   );
 }

@@ -13,6 +13,8 @@ import {
   ChevronDownIcon,
   DueChip,
   EmptyState,
+  EstimateChip,
+  GroupCount,
   IssuesIcon,
   Kbd,
   LabelChip,
@@ -32,6 +34,7 @@ import {
   TagIcon,
   cls,
   errorToast,
+  estimateOf,
   fullDate,
   nav,
   toPatch,
@@ -335,13 +338,14 @@ function useGroups(team: string | null | undefined, issues: IssueSummary[], boar
   const { teams } = useApp();
   const scope = (teams ?? []).filter((t) => !team || t.key === team);
   const groups = statusGroups(scope, issues).filter((s) => s.category !== "triage" && !(board && s.category === "canceled"));
-  return { groups, sorted: useMemo(() => sortIssues(issues, teams), [issues, teams]) };
+  const sum = issues.some((i) => estimateOf(teams, i)); // counts show estimate totals once anything in view has one
+  return { groups, sum, sorted: useMemo(() => sortIssues(issues, teams), [issues, teams]) };
 }
 
 export function IssueList({ issues, team, onPatch, selection }: { issues: IssueSummary[]; team?: string | null; onPatch: Patch; selection: Selection }) {
   // Completed and canceled groups start collapsed; `toggled` holds the groups flipped from that.
   const [toggled, setToggled] = useState(() => new Set<string>());
-  const { groups, sorted } = useGroups(team, issues);
+  const { groups, sum, sorted } = useGroups(team, issues);
   const toggle = (key: string) =>
     setToggled((cur) => {
       const next = new Set(cur);
@@ -361,7 +365,7 @@ export function IssueList({ issues, team, onPatch, selection }: { issues: IssueS
               <button className="group-toggle" onClick={() => toggle(status.key)} aria-expanded={open}>
                 <ChevronDownIcon className={cls("caret", !open && "caret-closed")} />
                 <StatusIconLabel status={status} />
-                <span className="count">{items.length}</span>
+                <GroupCount items={items} sum={sum} />
               </button>
               <NewInStatus status={status} />
             </div>
@@ -425,6 +429,7 @@ function IssueRow({ issue, onPatch, selection }: { issue: IssueSummary; onPatch:
       </Link>
       <Blocked by={issue.blockedBy} />
       <span className="grow" />
+      <EstimateChip issue={issue} />
       <DueChip issue={issue} />
       <Labels labels={issue.labels} max={3} />
       <AssigneePicker value={issue.assignee} onChange={(assignee) => set({ assignee })} className="row-btn" align="end" cmd="assignee" />
@@ -458,7 +463,7 @@ function Labels({ labels, max }: { labels: string[]; max: number }) {
 export function Board({ issues, team, onPatch, selection }: { issues: IssueSummary[]; team?: string | null; onPatch: Patch; selection: Selection }) {
   const [dragging, setDragging] = useState<string | null>(null);
   const [over, setOver] = useState<string | null>(null);
-  const { groups, sorted } = useGroups(team, issues, true);
+  const { groups, sum, sorted } = useGroups(team, issues, true);
 
   const drop = (status: string) => {
     const issue = issues.find((i) => i.id === dragging);
@@ -491,7 +496,7 @@ export function Board({ issues, team, onPatch, selection }: { issues: IssueSumma
           >
             <div className="column-head">
               <StatusIconLabel status={status} />
-              <span className="count">{items.length}</span>
+              <GroupCount items={items} sum={sum} />
               <span className="grow" />
               <NewInStatus status={status} />
             </div>
@@ -560,6 +565,7 @@ function Card({
       <div className="card-meta">
         <PriorityPicker value={issue.priority} onChange={(priority) => set({ priority })} className="row-btn chip-icon" cmd="priority" />
         <Blocked by={issue.blockedBy} />
+        <EstimateChip issue={issue} />
         <DueChip issue={issue} />
         <Labels labels={issue.labels} max={2} />
       </div>

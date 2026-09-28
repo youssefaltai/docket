@@ -781,6 +781,21 @@ fieldset.plain {
 .due-now {
   color: var(--danger);
 }
+/* An issue's estimate on rows and cards: its team's scale value. */
+.estimate {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.estimate > svg {
+  width: 11px;
+  height: 11px;
+}
 .due-soon {
   color: var(--urgent);
 }

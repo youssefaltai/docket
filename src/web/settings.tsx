@@ -3,9 +3,12 @@ import { Fragment, useEffect, useState, type FormEvent, type ReactNode } from "r
 import {
   CATEGORY_COLORS,
   DUPLICATE_STATUS,
+  ESTIMATE_SCALES,
+  ESTIMATE_VALUES,
   STATUS_CATEGORIES,
   type ApiKeyScope,
   type CodeLink,
+  type EstimateScale,
   type Label,
   type LabelPatch,
   type Role,
@@ -1086,6 +1089,7 @@ export function TeamSettingsPage({ teamKey }: { teamKey: string }) {
               <TeamGeneral key={team.key} team={team} />
               <Workflow team={team} />
               <Automations team={team} />
+              <Estimates team={team} />
               <Labels team={team.key} />
             </div>
           )
@@ -1219,6 +1223,36 @@ function Automations({ team }: { team: Team }) {
           ))}
         </select>
       </Field>
+    </Section>
+  );
+}
+
+const SCALE_NAMES: Record<EstimateScale, string> = { exponential: "Exponential", fibonacci: "Fibonacci", linear: "Linear", tshirt: "T-shirt sizes" };
+
+/** Linear's estimates, off by default: a switch, and the scale's select while it's on. Off hides issues' estimates but keeps them. */
+function Estimates({ team }: { team: Team }) {
+  const { reloadTeams } = useApp();
+  const scale = team.estimateScale;
+  const set = (estimateScale: EstimateScale | null) => api.updateTeam(team.key, { estimateScale }).then(reloadTeams, errorToast);
+  return (
+    <Section title="Estimates">
+      <label className="workflow-switch">
+        <input type="checkbox" checked={!!scale} onChange={(e) => set(e.target.checked ? "fibonacci" : null)} />
+        <span>
+          <b>Estimates</b> <span className="muted">Size issues on a scale; lists and boards total them per status. Turning them off hides estimates without deleting them.</span>
+        </span>
+      </label>
+      {scale && (
+        <Field label="Scale">
+          <select className="input" value={scale} onChange={(e) => set(e.target.value as EstimateScale)}>
+            {ESTIMATE_SCALES.map((s) => (
+              <option key={s} value={s}>
+                {SCALE_NAMES[s]} ({ESTIMATE_VALUES[s].join(", ")})
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
     </Section>
   );
 }

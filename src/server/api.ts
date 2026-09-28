@@ -47,7 +47,7 @@ async function patch(req: Request, what: string, fields: readonly string[], why:
   return data;
 }
 
-const ISSUE_FIELDS = ["title", "description", "team", "status", "priority", "labels", "assignee", "delegate", "parent", "blockedBy", "relatedTo", "duplicateOf", "dueOn", "baseUpdatedAt"];
+const ISSUE_FIELDS = ["title", "description", "team", "status", "priority", "labels", "assignee", "delegate", "parent", "blockedBy", "relatedTo", "duplicateOf", "dueOn", "estimate", "baseUpdatedAt"];
 const DOCUMENT_FIELDS = ["title", "content", "edits", "team", "position", "checkpoint", "baseUpdatedAt"];
 
 const param = (req: Request, name: string) => new URL(req.url).searchParams.get(name) || undefined;
@@ -174,7 +174,7 @@ export const apiRoutes = {
       tracker.updateTeam(
         actorOf(req),
         req.params.key,
-        await patch(req, "a team", ["name", "description", "defaultStatus", "autoCloseParent", "autoCloseChildren", "autoArchiveDays"], {
+        await patch(req, "a team", ["name", "description", "defaultStatus", "autoCloseParent", "autoCloseChildren", "autoArchiveDays", "estimateScale"], {
           workspace: "Teams can't move between workspaces",
           key: "A team's key never changes",
         }),

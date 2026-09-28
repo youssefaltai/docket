@@ -2,8 +2,10 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
+  ESTIMATE_VALUES,
   PRIORITIES,
   PRIORITY_LABELS,
+  type EstimateScale,
   type IssueSummary,
   type Priority,
   type UserKind,
@@ -14,6 +16,7 @@ import {
   Avatar,
   CheckIcon,
   CloseIcon,
+  EstimateIcon,
   LabelDot,
   PlusIcon,
   PriorityIcon,
@@ -284,6 +287,29 @@ export function PriorityPicker({
       {...rest}
     >
       {children ?? <PriorityIcon priority={value} />}
+    </Picker>
+  );
+}
+
+/** A position (1–5) in the team's estimate scale, shown as the scale's values, or none. */
+export function EstimatePicker({
+  scale,
+  value,
+  onChange,
+  children,
+  ...rest
+}: Trigger & { scale: EstimateScale; value: number | null; onChange: (estimate: number | null) => void }) {
+  const options = [{ value: "", label: "No estimate" }, ...ESTIMATE_VALUES[scale].map((v, i) => ({ value: String(i + 1), label: v, icon: <EstimateIcon /> }))];
+  return (
+    <Picker
+      label="Set estimate"
+      valueText={value ? ESTIMATE_VALUES[scale][value - 1] : "No estimate"}
+      options={options}
+      selected={[String(value ?? "")]}
+      onPick={(v) => (Number(v) || null) !== value && onChange(Number(v) || null)}
+      {...rest}
+    >
+      {children}
     </Picker>
   );
 }
