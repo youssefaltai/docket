@@ -18,6 +18,7 @@ import {
   STATUS_CATEGORIES,
   type Activity,
   type Comment,
+  type Cycle,
   type Document,
   type DocumentSummary,
   type EstimateScale,
@@ -46,7 +47,7 @@ type Here = { origin: string; workspace: string; workspaceName: string; username
 const instructions = (a: Actor, here: Here) => `You're connected to Docket at ${here.origin}, workspace "${here.workspaceName}" (${here.workspace}), as @${here.username} (${a.kind}). Every tool acts there.
 Docket is an issue tracker shared by people and agents, modeled on Linear.
 - Workspace → team → issues and docs. Your key works in one workspace: everything you list, read and change is there.
-- Teams have a 2–5 letter key (e.g. BRD), unique within this workspace. Issues are identified as KEY-number, e.g. BRD-12.
+- Teams have a 2–5 letter key (e.g. BRD), unique within this workspace. Issues are identified as KEY-number, e.g. BRD-12. A team may use cycles, repeating 1–8 week planning periods (list_cycles); unfinished issues roll over to the next cycle when one ends.
 - Each team has its own statuses, named by key (list_teams shows them), in Linear's fixed categories: triage (new, not yet accepted), backlog, unstarted, started, completed, canceled. By default a team has backlog, todo, in_progress, in_review, done, canceled and duplicate. Priority: 0 none, 1 urgent, 2 high, 3 medium, 4 low.
 - People and agents are named by username (@alice), unique within this workspace. An issue's assignee is a person who owns it; its delegate is an agent working on it for them. "me" means you.
 ${
@@ -85,6 +86,11 @@ const estimate = z
   .min(1)
   .max(5)
   .describe("A position in the team's estimate scale, 1 (smallest) to 5, if the team has estimates on (list_teams shows its scale and values)");
+const cycle = z
+  .union([z.number().int(), z.enum(["current", "next"])])
+  .describe(
+    'The team\'s cycle: its number, "current" or "next"; null to take it out. Only for teams that use cycles (list_teams says so). Unfinished issues roll over to the next cycle automatically.',
+  );
 const assignee = z.string().describe('A person\'s username (see list_members), or "me"');
 const delegate = z.string().describe('An agent\'s username (see list_members), or "me" if you are one');
 
@@ -155,6 +161,7 @@ function details(issue: Issue, scale: EstimateScale | null): string {
     issue.previousIdentifiers.length > 0 && `previously ${issue.previousIdentifiers.join(", ")}`,
     issue.project && `project ${issue.project}`,
     issue.milestone && `milestone ${issue.milestone}`,
+    issue.cycle !== null && `cycle ${issue.cycle}`,
     `created by ${at(issue.creator)}`,
     issue.parent && `parent ${issue.parent}`,
     issue.blockedBy.length > 0 && `blocked by ${issue.blockedBy.join(", ")}`,
@@ -324,6 +331,11 @@ function projectDetails(p: Project): string {
   return parts.join("\n\n");
 }
 
+/** One line per cycle: `Cycle 12 · current · 2026-09-28 – 2026-10-12 · 3/8 done · 44%` (the end is exclusive: the next cycle's start). */
+function cycleLine(c: Cycle): string {
+  return [`Cycle ${c.number}`, c.state, `${c.startsAt.slice(0, 10)} – ${c.endsAt.slice(0, 10)}`, `${c.completedCount}/${c.issueCount} done`, percent(c.progress)].join(" · ");
+}
+
 /** One line per notification: `#41 · unread · delegated · BRD-12 Fix login · by @ana · 5m ago · "excerpt"`. */
 function notificationLine(n: Notification): string {
   const target = n.issue ? `${n.issue.id} ${n.issue.title}` : n.document ? `doc ${n.document.slug} (${n.document.title})` : "";
@@ -413,7 +425,7 @@ function createServer(a: Actor, origin: string): McpServer {
     "list_teams",
     {
       description:
-        "List the workspace's teams, one line each: key · name · workspace · open count · status keys in workflow order, the default for new issues marked, and the estimate scale if the team has estimates on (an issue's estimate is a position 1-5 in it). A team's key (e.g. BRD) prefixes its issue identifiers (BRD-12). Statuses are per team: use a team's own keys for its issues (categories: triage, backlog, unstarted, started, completed, canceled; structuredContent has each status's name and category).",
+        "List the workspace's teams, one line each: key · name · workspace · open count · status keys in workflow order, the default for new issues marked, the estimate scale if the team has estimates on (an issue's estimate is a position 1-5 in it), and its cycle length and current cycle if it uses cycles. A team's key (e.g. BRD) prefixes its issue identifiers (BRD-12). Statuses are per team: use a team's own keys for its issues (categories: triage, backlog, unstarted, started, completed, canceled; structuredContent has each status's name and category).",
       annotations: { readOnlyHint: true },
     },
     () => {
@@ -422,7 +434,9 @@ function createServer(a: Actor, origin: string): McpServer {
         const open = t.statuses.filter((s) => ACTIVE_CATEGORIES.includes(s.category)).reduce((sum, s) => sum + (t.counts[s.key] ?? 0), 0);
         const statuses = t.statuses.map((s) => (s.key === t.defaultStatus ? `${s.key} (default)` : s.key)).join(", ");
         const estimates = t.estimateScale && `estimates: ${t.estimateScale} (${ESTIMATE_VALUES[t.estimateScale].join(", ")})`;
-        return [t.key, t.name, `workspace ${t.workspace}`, `${open} open`, `statuses: ${statuses}`, estimates].filter(Boolean).join(" · ");
+        const cycles =
+          t.cycleWeeks && `cycles every ${t.cycleWeeks === 1 ? "week" : `${t.cycleWeeks} weeks`}${t.currentCycle === null ? "" : `, current ${t.currentCycle}`}`;
+        return [t.key, t.name, `workspace ${t.workspace}`, `${open} open`, `statuses: ${statuses}`, estimates, cycles].filter(Boolean).join(" · ");
       });
       return result(lines.join("\n") || "No teams yet.", { teams });
     },
@@ -487,6 +501,20 @@ function createServer(a: Actor, origin: string): McpServer {
   );
 
   register(
+    "list_cycles",
+    {
+      description:
+        "List a team's cycles (its repeating planning periods, if it uses them), one line each: Cycle N · current|upcoming|completed · start – end dates · done/total issues · progress %. Put an issue in one with create_issue or update_issue's `cycle`.",
+      inputSchema: { team: teamKey },
+      annotations: { readOnlyHint: true },
+    },
+    ({ team }) => {
+      const cycles = tracker.listCycles(a, team);
+      return result(cycles.map(cycleLine).join("\n") || `${team.trim().toUpperCase()} has no cycles.`, { cycles });
+    },
+  );
+
+  register(
     "list_issues",
     {
       description:
@@ -507,6 +535,10 @@ function createServer(a: Actor, origin: string): McpServer {
         creator: assignee.optional().describe('Who filed it: a username, or "me"'),
         parent: identifier.optional().describe("Only sub-issues of this issue, e.g. BRD-12"),
         project: projectSlug.optional().describe("Only issues in this project (slug, see list_projects)"),
+        cycle: z
+          .union([z.number().int(), z.literal("current")])
+          .optional()
+          .describe('Only issues in this cycle: "current" (each team\'s current cycle) or a number (with team)'),
         query: z.string().optional().describe("Text to find in identifier, title or description"),
         subscribed: z.boolean().optional().describe("true: only issues you're subscribed to"),
         due: z
@@ -520,9 +552,9 @@ function createServer(a: Actor, origin: string): McpServer {
       },
       annotations: { readOnlyHint: true },
     },
-    ({ status, category, query, limit = 50, after, ...filter }) => {
+    ({ status, category, query, cycle, limit = 50, after, ...filter }) => {
       const scope = status || category ? { status, category } : { category: ACTIVE_CATEGORIES };
-      const { issues, pageInfo } = tracker.listIssuesPage(a, { ...filter, ...scope, q: query }, { first: limit, after });
+      const { issues, pageInfo } = tracker.listIssuesPage(a, { ...filter, ...scope, cycle: cycle?.toString(), q: query }, { first: limit, after });
       const lines = issues.map(line);
       if (pageInfo.hasNextPage) lines.push(`…more: call again with after: "${pageInfo.endCursor}"`);
       return result(lines.join("\n") || "No matching issues.", { issues, pageInfo });
@@ -548,7 +580,7 @@ function createServer(a: Actor, origin: string): McpServer {
     "create_issue",
     {
       description:
-        "Create an issue in a team; returns its identifier (e.g. BRD-13). Defaults: the team's default status (backlog unless the team changed it; list_teams marks it; pass todo when it's ready to be picked up, or triage to leave it for the team to accept, in teams with Triage), priority 0 (none). Set parent to make it a sub-issue, blockedBy for issues that must be finished first. Mark an issue a duplicate with duplicateOf: it's set to its team's Duplicate status and the relation is recorded; use relatedTo for issues that are connected but not duplicates or blockers. A sub-issue joins its parent's project unless you pass one.",
+        "Create an issue in a team; returns its identifier (e.g. BRD-13). Defaults: the team's default status (backlog unless the team changed it; list_teams marks it; pass todo when it's ready to be picked up, or triage to leave it for the team to accept, in teams with Triage), priority 0 (none). Set parent to make it a sub-issue, blockedBy for issues that must be finished first. Mark an issue a duplicate with duplicateOf: it's set to its team's Duplicate status and the relation is recorded; use relatedTo for issues that are connected but not duplicates or blockers. A sub-issue joins its parent's project unless you pass one. A sub-issue joins its parent's cycle when it starts out unstarted or started.",
       inputSchema: {
         team: teamKey,
         title,
@@ -566,6 +598,7 @@ function createServer(a: Actor, origin: string): McpServer {
         dueOn: dueOn.optional(),
         project: projectSlug.optional().describe("Project slug (see list_projects); its team joins the project"),
         milestone: milestone.optional(),
+        cycle: cycle.nullable().optional(),
       },
     },
     writes((input) => {
@@ -604,6 +637,7 @@ function createServer(a: Actor, origin: string): McpServer {
           .optional()
           .describe("Project slug (see list_projects); null to take it out. A new project clears the milestone unless you pass one of its own"),
         milestone: milestone.nullable().optional().describe("A milestone's name in the issue's project; null to clear"),
+        cycle: cycle.nullable().optional(),
         baseUpdatedAt: z
           .string()
           .optional()

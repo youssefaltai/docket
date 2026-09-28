@@ -7,6 +7,7 @@ import { SubscribeButton } from "./inbox";
 import {
   AssigneePicker,
   BlockedByPicker,
+  CyclePicker,
   DelegatePicker,
   DuplicatePicker,
   EstimatePicker,
@@ -29,6 +30,7 @@ import {
   ChevronRightIcon,
   CloseIcon,
   Comments,
+  CycleIcon,
   CopyIcon,
   DocIcon,
   EmptyState,
@@ -616,6 +618,14 @@ function Properties({ issue, patch }: { issue: Issue; patch: (p: IssueChange) =>
           <MilestonePicker project={issue.project} value={issue.milestone} onChange={(milestone) => patch({ milestone })} className="prop-btn">
             {issue.milestone ? <span dir="auto">{issue.milestone}</span> : <span className="muted">No milestone</span>}
           </MilestonePicker>
+        </Prop>
+      )}
+      {team?.cycleWeeks && (
+        <Prop label="Cycle" cmd="cycle">
+          <CyclePicker team={issue.team} value={issue.cycle} onChange={(cycle) => patch({ cycle })} className="prop-btn">
+            <CycleIcon />
+            {issue.cycle ? `Cycle ${issue.cycle}${issue.cycle === team.currentCycle ? " (current)" : ""}` : <span className="muted">No cycle</span>}
+          </CyclePicker>
         </Prop>
       )}
       <Prop label="Team" cmd="team">

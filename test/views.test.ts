@@ -110,7 +110,7 @@ test("filter and display take only known fields and values, checked as issue lis
     const res = await ana.api(method, path, body);
     expect([res.status, res.body.error]).toEqual([400, error]);
   };
-  const fields = "team, status, category, label, assignee, delegate, creator, parent, project, q, subscribed, due, archived";
+  const fields = "team, status, category, label, assignee, delegate, creator, parent, project, cycle, q, subscribed, due, archived";
   await bad({ name: "x", filter: { workspace: "side" } }, `Unknown filter field "workspace": use ${fields}`);
   await bad({ name: "x", filter: { sort: "due" } }, `Unknown filter field "sort": use ${fields}`);
   await bad({ name: "x", filter: { priority: 1 } }, `Unknown filter field "priority": use ${fields}`);

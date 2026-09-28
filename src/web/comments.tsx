@@ -404,6 +404,9 @@ function describe(
       );
     case "milestone":
       return to ? <>set milestone to {name(to as string)}</> : "removed the milestone";
+    case "cycle":
+      if (!to) return `removed from Cycle ${from}`;
+      return from ? `moved from Cycle ${from} to Cycle ${to}` : `added to Cycle ${to}`;
   }
 }
 

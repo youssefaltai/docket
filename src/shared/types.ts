@@ -201,6 +201,9 @@ export interface Team {
   autoCloseChildren: boolean; // closing a parent here closes its open sub-issues to the same status
   autoArchiveDays: number | null; // null (default): never; else archive completed/canceled issues this many days after completedAt
   estimateScale: EstimateScale | null; // estimates on, in this scale; null: off (issues keep theirs, hidden)
+  cycleWeeks: number | null; // cycles on, each this many weeks (1–8); null: off
+  upcomingCycles: number; // upcoming cycles kept ready while cycles are on (1–15)
+  currentCycle: number | null; // the current cycle's number, if one is running
   counts: Record<string, number>; // live issues per status key; 0 for each of the team's statuses without any
   docCount: number;
   createdAt: string; // ISO 8601
@@ -218,7 +221,28 @@ export interface TeamInput {
   estimateScale?: EstimateScale | null; // default null (off)
 }
 
-export type TeamPatch = Partial<Omit<TeamInput, "key" | "workspace">> & { defaultStatus?: string }; // the key and workspace never change
+// The key and workspace never change.
+export type TeamPatch = Partial<Omit<TeamInput, "key" | "workspace">> & {
+  defaultStatus?: string;
+  cycleWeeks?: number | null; // 1–8 turns cycles on (or changes the length of those not started yet); null turns them off
+  upcomingCycles?: number; // 1–15
+  cycleStartsOn?: string; // "YYYY-MM-DD", today or later: where the first cycle starts, only when turning cycles on (default today, UTC)
+};
+
+/**
+ * A team's cycle (Linear's): one of its repeating planning periods, numbered per team, on UTC dates. When one ends, its
+ * unfinished issues roll over to the next.
+ */
+export interface Cycle {
+  team: string;
+  number: number; // per team: 1, 2, 3…
+  startsAt: string; // ISO, 00:00 UTC
+  endsAt: string; // exclusive: the next cycle's startsAt (or when cycles were turned off)
+  state: "completed" | "current" | "upcoming";
+  issueCount: number; // live issues in it
+  completedCount: number; // of those, completed
+  progress: number; // 0–1, as a project's: completed issues count 1, started ½; canceled are left out
+}
 
 export interface IssueSummary {
   id: string; // identifier, e.g. "BRD-12"
@@ -245,6 +269,7 @@ export interface IssueSummary {
   archivedAt: string | null; // hidden from default lists since then (manually, or by the team's auto-archive period); still searchable and openable
   project: string | null; // its project's slug: an issue is in at most one
   milestone: string | null; // the name of one of its project's milestones
+  cycle: number | null; // its team's cycle, by number
 }
 
 /** One page of a list, Linear-style: pass `endCursor` as `after` for the next. */
@@ -337,12 +362,13 @@ export const ACTIVITY_KINDS = [
   "unarchived",
   "project",
   "milestone",
+  "cycle",
 ] as const;
 export type ActivityKind = (typeof ACTIVITY_KINDS)[number];
 
 /**
  * One change to an issue. from/to by kind: team (its identifier before and after a move), title, parent and duplicateOf (identifiers), status and claimed (status keys), dueOn
- * ("YYYY-MM-DD"), project (a slug) and milestone (its name then) are strings; priority and estimate (a position) numbers; assignee, delegate a UserRef; labels, blockedBy,
+ * ("YYYY-MM-DD"), project (a slug) and milestone (its name then) are strings; priority, estimate (a position) and cycle (its number) numbers; assignee, delegate a UserRef; labels, blockedBy,
  * relatedTo string arrays; null when unset, and both
  * null for created, description, trashed, restored, archived, unarchived.
  */
@@ -445,6 +471,7 @@ export interface IssueInput {
   dueOn?: string | null; // "YYYY-MM-DD"; null clears
   project?: string | null; // a project's slug (its team joins the project); a sub-issue defaults to its parent's, and its milestone
   milestone?: string | null; // a milestone's name in its project; changing the project clears it unless one is named too
+  cycle?: number | "current" | "next" | null; // a cycle of the team (not a completed one); a sub-issue defaults to its parent's when it starts unstarted or started
 }
 
 export type IssuePatch = Partial<Omit<IssueInput, "team">> & {
@@ -485,6 +512,7 @@ export interface IssueFilter {
   creator?: string; // username or "me" -- who filed it
   parent?: string;
   project?: string; // slug
+  cycle?: string; // "current" (each team's current cycle) or a number (with team)
   q?: string; // matches identifier, title, description
   subscribed?: boolean; // true: only issues you're subscribed to
   due?: DueFilter;
@@ -506,7 +534,7 @@ export type IssueSort = (typeof ISSUE_SORTS)[number];
 // --- Views: saved filters with display options (Linear's custom views), shared by a workspace's members ---
 
 /** The IssueFilter fields a view saves: all but `sort`, since a view orders by its display's `orderBy`. */
-export const VIEW_FILTER_FIELDS = ["team", "status", "category", "label", "assignee", "delegate", "creator", "parent", "project", "q", "subscribed", "due", "archived"] as const;
+export const VIEW_FILTER_FIELDS = ["team", "status", "category", "label", "assignee", "delegate", "creator", "parent", "project", "cycle", "q", "subscribed", "due", "archived"] as const;
 export type ViewFilter = Pick<IssueFilter, (typeof VIEW_FILTER_FIELDS)[number]>;
 
 export const GROUP_BYS = ["status", "assignee", "priority", "label"] as const;

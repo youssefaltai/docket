@@ -15,6 +15,7 @@ import {
   type Session,
   type StatusCategory,
   type Team,
+  type TeamPatch,
   type Webhook,
   type WebhookDelivery,
   type WebhookResource,
@@ -1073,6 +1074,7 @@ export function TeamSettingsPage({ teamKey }: { teamKey: string }) {
               <Workflow team={team} />
               <Automations team={team} />
               <Estimates team={team} />
+              <Cycles team={team} />
               <Labels team={team.key} />
             </div>
           )
@@ -1235,6 +1237,79 @@ function Estimates({ team }: { team: Team }) {
             ))}
           </select>
         </Field>
+      )}
+    </Section>
+  );
+}
+
+const WEEKS = [1, 2, 3, 4, 5, 6, 7, 8];
+const AHEAD = Array.from({ length: 15 }, (_, i) => i + 1);
+
+/**
+ * Linear's cycles, off by default. Switching them on asks where the first one starts and how long each lasts; while on,
+ * the length and how many upcoming cycles to keep are saved as they're picked. Switching off asks first.
+ */
+function Cycles({ team }: { team: Team }) {
+  const { reloadTeams } = useApp();
+  const today = new Date().toISOString().slice(0, 10); // cycles run on UTC dates, as the server checks
+  const [draft, setDraft] = useState<{ startsOn: string; weeks: number } | null>(null); // turning them on
+  const save = (patch: TeamPatch) =>
+    api.updateTeam(team.key, patch).then(() => {
+      setDraft(null);
+      reloadTeams();
+    }, errorToast);
+  const toggle = async (on: boolean) => {
+    if (on) setDraft({ startsOn: today, weeks: 2 });
+    else if (draft) setDraft(null);
+    else if (await ask("Turn off cycles? The current cycle ends now and upcoming cycles are removed; their issues leave them.", "Turn off")) {
+      save({ cycleWeeks: null });
+    }
+  };
+  const weeks = (value: number, onChange: (weeks: number) => void) => (
+    <select className="input" value={value} onChange={(e) => onChange(Number(e.target.value))}>
+      {WEEKS.map((n) => (
+        <option key={n} value={n}>
+          {n === 1 ? "1 week" : `${n} weeks`}
+        </option>
+      ))}
+    </select>
+  );
+  return (
+    <Section title="Cycles">
+      <label className="workflow-switch">
+        <input type="checkbox" checked={!!team.cycleWeeks || !!draft} onChange={(e) => toggle(e.target.checked)} />
+        <span>
+          <b>Use cycles</b> <span className="muted">Plan work in repeating periods. When one ends, its unfinished issues move to the next.</span>
+        </span>
+      </label>
+      {draft && (
+        <>
+          <Field label="Starts on" hint="Cycles start at 00:00 UTC, on this date's weekday.">
+            <input className="input" type="date" min={today} value={draft.startsOn} onChange={(e) => setDraft({ ...draft, startsOn: e.target.value })} />
+          </Field>
+          <Field label="Length">{weeks(draft.weeks, (n) => setDraft({ ...draft, weeks: n }))}</Field>
+          <div>
+            <button className="btn btn-primary" disabled={!draft.startsOn} onClick={() => save({ cycleWeeks: draft.weeks, cycleStartsOn: draft.startsOn })}>
+              Turn on cycles
+            </button>
+          </div>
+        </>
+      )}
+      {team.cycleWeeks && (
+        <>
+          <Field label="Length" hint="Applies to cycles that haven't started; the current one keeps its dates.">
+            {weeks(team.cycleWeeks, (cycleWeeks) => save({ cycleWeeks }))}
+          </Field>
+          <Field label="Plan ahead" hint="Upcoming cycles kept ready to plan into.">
+            <select className="input" value={team.upcomingCycles} onChange={(e) => save({ upcomingCycles: Number(e.target.value) })}>
+              {AHEAD.map((n) => (
+                <option key={n} value={n}>
+                  {n === 1 ? "1 cycle" : `${n} cycles`}
+                </option>
+              ))}
+            </select>
+          </Field>
+        </>
       )}
     </Section>
   );

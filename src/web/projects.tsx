@@ -34,25 +34,13 @@ import {
   errorToast,
   fullDate,
   nav,
+  percent,
+  Progress,
   toPatch,
   type IssueChange,
   useApp,
   useFetch,
 } from "./ui";
-
-const percent = (progress: number) => `${Math.round(progress * 100)}%`;
-
-/** A thin bar and "42%": completed issues count 1, started ones ½, canceled ones not at all. */
-function Progress({ value, title }: { value: number; title?: string }) {
-  return (
-    <span className="progress" title={title}>
-      <span className="progress-bar" aria-hidden="true">
-        <i style={{ width: percent(value) }} />
-      </span>
-      {percent(value)}
-    </span>
-  );
-}
 
 const issues = (n: number) => `${n} ${n === 1 ? "issue" : "issues"}`;
 

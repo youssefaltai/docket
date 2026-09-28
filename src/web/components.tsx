@@ -200,6 +200,20 @@ export function DateButton({
   );
 }
 
+export const percent = (progress: number) => `${Math.round(progress * 100)}%`;
+
+/** A thin bar and "42%": completed issues count 1, started ones ½, canceled ones not at all. */
+export function Progress({ value, title }: { value: number; title?: string }) {
+  return (
+    <span className="progress" title={title}>
+      <span className="progress-bar" aria-hidden="true">
+        <i style={{ width: percent(value) }} />
+      </span>
+      {percent(value)}
+    </span>
+  );
+}
+
 /** Links as tabs: [to, label, whether it's the current one]. */
 export function Tabs({ label, tabs }: { label: string; tabs: [to: string, label: string, on: boolean][] }) {
   return (
@@ -353,7 +367,7 @@ export function ListHeader({
   team: Team | undefined;
   title: ReactNode;
   count: number;
-  view: "issues" | "triage" | "docs" | "projects" | "trash" | "settings";
+  view: "issues" | "triage" | "cycles" | "docs" | "projects" | "trash" | "settings";
   /** New item, search and controls: lists have them, the trash doesn't. */
   onNew?: () => void;
   search?: string;
@@ -377,6 +391,7 @@ export function ListHeader({
             ...(team.statuses.some((s) => s.category === "triage")
               ? [[`/t/${team.key}/triage`, `Triage${triageCount(team) ? ` ${triageCount(team)}` : ""}`, view === "triage"] as [string, string, boolean]]
               : []),
+            ...(team.cycleWeeks ? [[`/t/${team.key}/cycles`, "Cycles", view === "cycles"] as [string, string, boolean]] : []),
             [`/t/${team.key}/projects`, "Projects", view === "projects"],
             [`/t/${team.key}/docs`, "Docs", view === "docs"],
             [`/t/${team.key}/trash`, "Trash", view === "trash"],

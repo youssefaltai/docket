@@ -9,7 +9,7 @@ import { CommandMenu, openCommandMenu } from "./commandmenu";
 import { DocPage, DocsView } from "./docs";
 import { InboxView } from "./inbox";
 import { IssuePage } from "./issue";
-import { IssuesView } from "./issues";
+import { CyclesView, IssuesView } from "./issues";
 import { Login, Setup } from "./login";
 import { MyIssuesView } from "./myissues";
 import { NewDocModal, NewIssueModal, NewProjectModal, NewTeamModal, NewViewModal, NewWorkspaceModal } from "./modals";
@@ -277,7 +277,9 @@ function App() {
       loadDirectory();
       // From the Triage tab, a new issue waits in Triage.
       const triage = route.view === "triage" ? workspaceTeams?.find((t) => t.key === team)?.statuses.find((s) => s.category === "triage") : undefined;
-      setModal({ kind: "issue", defaults: { status: triage?.key, ...defaults, team } });
+      // From a cycle's page, it goes in that cycle.
+      const cycle = route.view === "cycle" && route.team === team ? route.number : undefined;
+      setModal({ kind: "issue", defaults: { status: triage?.key, cycle, ...defaults, team } });
     },
     newDoc: (key, project) => {
       const team = pickTeam(key);
@@ -335,7 +337,7 @@ function App() {
       else if (route.view === "doc") navigate(nav.lastDocs);
       else if (route.view === "project") navigate(nav.lastProjects);
       else (document.activeElement as HTMLElement | null)?.blur?.();
-    } else if (["issues", "triage", "docs", "projects", "project", "inbox", "my", "views", "customview"].includes(route.view) && (key === "j" || key === "k" || key === "ArrowDown" || key === "ArrowUp")) {
+    } else if (["issues", "triage", "cycles", "cycle", "docs", "projects", "project", "inbox", "my", "views", "customview"].includes(route.view) && (key === "j" || key === "k" || key === "ArrowDown" || key === "ArrowUp")) {
       if (moveFocus(key === "j" || key === "ArrowDown" ? 1 : -1)) e.preventDefault();
     }
   });
@@ -377,6 +379,10 @@ function App() {
     <TrashView key={route.team} teamKey={route.team} />
   ) : route.view === "triage" ? (
     <TriageView key={route.team} teamKey={route.team} />
+  ) : route.view === "cycles" ? (
+    <CyclesView key={route.team} teamKey={route.team} />
+  ) : route.view === "cycle" ? (
+    <IssuesView key={`${route.team}/${route.number}`} teamKey={route.team} cycle={route.number} />
   ) : route.view === "team-settings" ? (
     <TeamSettingsPage key={route.team} teamKey={route.team} />
   ) : route.view === "project" ? (

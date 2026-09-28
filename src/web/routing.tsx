@@ -14,6 +14,8 @@ type Page =
   | { view: "projects"; team: string | null }
   | { view: "project"; slug: string }
   | { view: "trash"; team: string }
+  | { view: "cycles"; team: string }
+  | { view: "cycle"; team: string; number: number }
   | { view: "triage"; team: string }
   | { view: "team-settings"; team: string }
   | { view: "issue"; id: string }
@@ -52,12 +54,14 @@ function parsePage(path: string): Page {
   const project = /^\/project\/([^/]+)/.exec(path);
   if (project) return { view: "project", slug: decodeURIComponent(project[1]!) };
   if (/^\/projects\/?$/.test(path)) return { view: "projects", team: null };
-  const team = /^\/t\/([^/]+)(\/docs|\/projects|\/trash|\/triage|\/settings)?/.exec(path);
+  const team = /^\/t\/([^/]+)(\/docs|\/projects|\/trash|\/triage|\/settings|\/cycles(?:\/(\d+))?)?/.exec(path);
   const key = team ? decodeURIComponent(team[1]!).toUpperCase() : null;
   if (key && team?.[2] === "/trash") return { view: "trash", team: key };
   if (key && team?.[2] === "/triage") return { view: "triage", team: key };
   if (key && team?.[2] === "/settings") return { view: "team-settings", team: key };
   if (key && team?.[2] === "/projects") return { view: "projects", team: key };
+  if (key && team?.[3]) return { view: "cycle", team: key, number: Number(team[3]) };
+  if (key && team?.[2] === "/cycles") return { view: "cycles", team: key };
   return { view: team?.[2] || /^\/docs\/?$/.test(path) ? "docs" : "issues", team: key };
 }
 

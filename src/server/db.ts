@@ -638,6 +638,23 @@ const MIGRATIONS: (string | (() => void))[] = [
   );
   CREATE INDEX view_favorites_view ON view_favorites(view_id);
   `,
+  // Cycles (Linear's, opt-in per team): repeating planning periods on UTC dates, numbered per team. Every team starts
+  // with cycles off and every issue in none.
+  `
+  ALTER TABLE teams ADD COLUMN cycle_weeks INTEGER CHECK (cycle_weeks BETWEEN 1 AND 8); -- NULL: cycles off
+  ALTER TABLE teams ADD COLUMN upcoming_cycles INTEGER NOT NULL DEFAULT 2 CHECK (upcoming_cycles BETWEEN 1 AND 15);
+  CREATE TABLE cycles (
+    id INTEGER PRIMARY KEY,
+    team_id INTEGER NOT NULL REFERENCES teams(id),
+    number INTEGER NOT NULL,  -- 1, 2, 3… per team
+    starts_at TEXT NOT NULL,  -- ISO, 00:00 UTC
+    ends_at TEXT NOT NULL,    -- exclusive: the next cycle's starts_at (or when cycles were turned off)
+    completed_at TEXT,        -- set when it ended and its unfinished issues rolled over
+    UNIQUE (team_id, number)
+  );
+  ALTER TABLE issues ADD COLUMN cycle_id INTEGER REFERENCES cycles(id) ON DELETE SET NULL;
+  CREATE INDEX issues_cycle ON issues(cycle_id) WHERE cycle_id IS NOT NULL;
+  `,
 ];
 
 db.run("PRAGMA foreign_keys = OFF"); // a migration may rebuild a table (SQLite's 12-step ALTER); checked before each commit

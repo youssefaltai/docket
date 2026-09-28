@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   PRIORITY_LABELS,
   STATUS_CATEGORIES,
+  type Cycle,
   type DueFilter,
   type GroupBy,
   type IssueInput,
@@ -22,6 +23,7 @@ import {
   BoardIcon,
   CalendarIcon,
   ChevronDownIcon,
+  CycleIcon,
   DueChip,
   EmptyState,
   EstimateChip,
@@ -37,7 +39,9 @@ import {
   ListIcon,
   PlusIcon,
   PriorityIcon,
+  Progress,
   ProjectIcon,
+  Section,
   TeamMark,
   TeamNotFound,
   SearchIcon,
@@ -47,6 +51,7 @@ import {
   TagIcon,
   ViewsIcon,
   cls,
+  dayLabel,
   errorToast,
   estimateOf,
   fullDate,
@@ -103,7 +108,8 @@ export function useListShortcuts(
   }, { claim, delete: del });
 }
 
-export function IssuesView({ teamKey }: { teamKey: string | null }) {
+/** A team's issues, or all of them; with `cycle`, one of the team's cycles (its page, /t/:key/cycles/:n). */
+export function IssuesView({ teamKey, cycle }: { teamKey: string | null; cycle?: number }) {
   const app = useApp();
   const team = teamKey ? app.teams?.find((t) => t.key === teamKey) : undefined;
   const [view, setView] = useState<Layout>(() => (store.get("view") === "board" ? "board" : "list"));
@@ -117,8 +123,8 @@ export function IssuesView({ teamKey }: { teamKey: string | null }) {
 
   useEffect(() => {
     nav.lastList = location.pathname;
-    document.title = `${team?.name ?? (teamKey || "All issues")} · Docket`;
-  }, [teamKey, team?.name]);
+    document.title = `${cycle ? `Cycle ${cycle} · ` : ""}${team?.name ?? (teamKey || "All issues")} · Docket`;
+  }, [teamKey, team?.name, cycle]);
 
   const {
     data: issues,
@@ -127,9 +133,11 @@ export function IssuesView({ teamKey }: { teamKey: string | null }) {
     reload,
     invalidate,
   } = useFetch(
-    () => api.issues({ team: teamKey ?? undefined, category: LISTED, q, label, assignee, delegate, due: due || undefined }),
-    [teamKey, q, label, assignee, delegate, due],
+    () => api.issues({ team: teamKey ?? undefined, cycle: cycle?.toString(), category: LISTED, q, label, assignee, delegate, due: due || undefined }),
+    [teamKey, cycle, q, label, assignee, delegate, due],
   );
+  const cycles = useFetch(cycle && teamKey ? () => api.cycles(teamKey) : null, [teamKey, cycle]).data;
+  const shown = cycles?.find((c) => c.number === cycle);
 
   useListShortcuts(setIssues, invalidate, reload);
   const { selection, bar } = useBulk(issues, { setIssues, invalidate, reload }, [teamKey, q, label, assignee, delegate, due]);
@@ -173,6 +181,12 @@ export function IssuesView({ teamKey }: { teamKey: string | null }) {
     );
   } else if (teamKey && app.teams && !team) {
     body = <TeamNotFound teamKey={teamKey} back="/" backLabel="All issues" />;
+  } else if (cycles && !shown) {
+    body = (
+      <EmptyState title="Cycle not found" action={<Link className="btn" to={`/t/${teamKey}/cycles`}>All cycles</Link>}>
+        There’s no cycle {cycle} in {teamKey}.
+      </EmptyState>
+    );
   } else if (!issues) {
     body = failed ? <LoadFailed message={failed} retry={reload} /> : null;
   } else if (issues.length === 0) {
@@ -198,7 +212,7 @@ export function IssuesView({ teamKey }: { teamKey: string | null }) {
           </button>
         }
       >
-        Issues you create{team ? ` in ${team.name}` : ""} will show up here.
+        Issues you create{cycle ? ` in Cycle ${cycle}` : team ? ` in ${team.name}` : ""} will show up here.
       </EmptyState>
     );
   } else if (view === "board") {
@@ -213,7 +227,7 @@ export function IssuesView({ teamKey }: { teamKey: string | null }) {
         team={team}
         title={teamKey ?? "All issues"}
         count={issues?.length ?? 0}
-        view="issues"
+        view={cycle ? "cycles" : "issues"}
         onNew={() => app.newIssue()}
         search={search}
         onSearch={setSearch}
@@ -236,15 +250,108 @@ export function IssuesView({ teamKey }: { teamKey: string | null }) {
         <LayoutToggle layout={view} onChange={changeView} />
         <button
           className="icon-btn"
-          onClick={() => app.newView({ filter: { team: teamKey ?? undefined, q, label, assignee, delegate, due: due || undefined }, display: { layout: view } })}
+          onClick={() =>
+            app.newView({ filter: { team: teamKey ?? undefined, cycle: cycle?.toString(), q, label, assignee, delegate, due: due || undefined }, display: { layout: view } })
+          }
           aria-label="Save as view"
           title="Save as view"
         >
           <ViewsIcon />
         </button>
       </ListHeader>
+      {shown && <CycleCard cycle={shown} className="cycle-bar" />}
       <div className={cls("content", view === "board" && !!issues?.length && "content-board")}>{body}</div>
       {bar}
+    </>
+  );
+}
+
+const cycleDates = (c: Cycle) => `${dayLabel(c.startsAt.slice(0, 10))} – ${dayLabel(c.endsAt.slice(0, 10))}`;
+const done = (c: Cycle) => `${c.completedCount} of ${c.issueCount} done`;
+
+/** A cycle at a glance: "Cycle 12 · Mar 3 – Mar 17 · 5 days left", its progress and "5 of 12 done". */
+function CycleCard({ cycle: c, link, className }: { cycle: Cycle; link?: boolean; className?: string }) {
+  const days = Math.max(0, Math.ceil((Date.parse(c.endsAt) - Date.now()) / 86_400_000));
+  const title = `Cycle ${c.number}`;
+  return (
+    <div className={cls("cycle-card", className)}>
+      <CycleIcon />
+      {link ? (
+        <Link to={`/t/${c.team}/cycles/${c.number}`} className="cycle-title" data-nav>
+          {title}
+        </Link>
+      ) : (
+        <span className="cycle-title">{title}</span>
+      )}
+      <span className="muted">
+        {cycleDates(c)}
+        {c.state === "current" && ` · ${days === 1 ? "1 day" : `${days} days`} left`}
+        {c.state === "completed" && " · completed"}
+      </span>
+      <span className="grow" />
+      <Progress value={c.progress} />
+      <span className="muted cycle-done">{done(c)}</span>
+    </div>
+  );
+}
+
+/** A team's cycles: the current one as a card, then upcoming ones, then completed ones (newest first), each opening its page. */
+export function CyclesView({ teamKey }: { teamKey: string }) {
+  const app = useApp();
+  const team = app.teams?.find((t) => t.key === teamKey);
+  useEffect(() => {
+    nav.lastList = location.pathname;
+    document.title = `${team?.name ?? teamKey} cycles · Docket`;
+  }, [teamKey, team?.name]);
+  const { data: cycles, failed, reload } = useFetch(() => api.cycles(teamKey), [teamKey]);
+  const current = cycles?.find((c) => c.state === "current");
+  const upcoming = cycles?.filter((c) => c.state === "upcoming") ?? [];
+  const completed = cycles?.filter((c) => c.state === "completed").reverse() ?? [];
+  const rows = (list: Cycle[]) => (
+    <div className="subs">
+      {list.map((c) => (
+        <div className="row sub cycle-row" key={c.number}>
+          <CycleIcon />
+          <Link to={`/t/${teamKey}/cycles/${c.number}`} className="row-title" data-nav>
+            Cycle {c.number}
+          </Link>
+          <span className="row-meta cycle-dates">{cycleDates(c)}</span>
+          <span className="grow" />
+          <span className="count" title={done(c)}>
+            {c.completedCount}/{c.issueCount}
+          </span>
+          <Progress value={c.progress} />
+        </div>
+      ))}
+    </div>
+  );
+
+  let body;
+  if (app.teams && !team) body = <TeamNotFound teamKey={teamKey} back="/" backLabel="All issues" />;
+  else if (!cycles) body = failed ? <LoadFailed message={failed} retry={reload} /> : null;
+  else if (!team?.cycleWeeks && !cycles.length) {
+    body = (
+      <EmptyState icon={<CycleIcon />} title="Cycles are off" action={<Link className="btn" to={`/t/${teamKey}/settings`}>Team settings</Link>}>
+        Turn them on in team settings to plan work in repeating periods.
+      </EmptyState>
+    );
+  } else {
+    body = (
+      <div className="cycles">
+        {current ? (
+          <CycleCard cycle={current} link />
+        ) : (
+          upcoming[0] && <p className="section-empty">Cycle {upcoming[0].number} starts {dayLabel(upcoming[0].startsAt.slice(0, 10))}.</p>
+        )}
+        {upcoming.length > 0 && <Section title="Upcoming">{rows(upcoming)}</Section>}
+        {completed.length > 0 && <Section title="Completed">{rows(completed)}</Section>}
+      </div>
+    );
+  }
+  return (
+    <>
+      <ListHeader team={team} title={teamKey} count={0} view="cycles" />
+      <div className="content">{body}</div>
     </>
   );
 }
