@@ -1298,8 +1298,10 @@ const CATEGORY_NAMES: Record<StatusCategory, string> = {
 
 /** A team's settings (`/t/:key/settings`): its description, and its workflow. */
 export function TeamSettingsPage({ teamKey }: { teamKey: string }) {
-  const { teams } = useApp();
+  const { teams, workspace } = useApp();
   const team = teams?.find((t) => t.key === teamKey);
+  // Guests set nothing up: they see who's in the team, and manage its own labels.
+  const guest = workspace?.role === "guest";
   useEffect(() => {
     document.title = `Settings · ${team?.name ?? teamKey} · Docket`;
   }, [team?.name, teamKey]);
@@ -1312,13 +1314,17 @@ export function TeamSettingsPage({ teamKey }: { teamKey: string }) {
         ) : (
           team && (
             <div className="settings">
-              <TeamGeneral key={team.key} team={team} />
+              {!guest && <TeamGeneral key={team.key} team={team} />}
               <TeamMembers team={team} />
-              <Workflow team={team} />
-              <Automations team={team} />
-              <Estimates team={team} />
-              <Cycles team={team} />
-              <Templates key={team.key} team={team} />
+              {!guest && (
+                <>
+                  <Workflow team={team} />
+                  <Automations team={team} />
+                  <Estimates team={team} />
+                  <Cycles team={team} />
+                  <Templates key={team.key} team={team} />
+                </>
+              )}
               <Labels team={team.key} />
             </div>
           )

@@ -113,8 +113,12 @@ export function TeamMembers({ team }: { team: Team }) {
     reloadTeams();
     loadDirectory();
   };
-  const manage = team.member || admin;
-  const addable = members.filter((m) => !m.suspendedAt && !inTeam?.some((u) => u.username === m.user.username)).map((m) => m.user);
+  const guest = workspace?.role === "guest";
+  const manage = (team.member || admin) && !guest; // guests don't change who's in a team
+  // Only admins add guests: who a guest sees is theirs to decide.
+  const addable = members
+    .filter((m) => !m.suspendedAt && (admin || m.role !== "guest") && !inTeam?.some((u) => u.username === m.user.username))
+    .map((m) => m.user);
   const add = (username: string) => api.addTeamMember(team.key, username).then(changed, errorToast);
   const remove = async (username: string) => {
     if (username === getYou().username && team.private && !(await ask(`Leave ${team.name}? You won't see it anymore.`, "Leave"))) return;
@@ -141,7 +145,7 @@ export function TeamMembers({ team }: { team: Team }) {
             Add member
           </Picker>
         ) : (
-          workspace?.role !== "guest" && (
+          !guest && (
             <button className="btn btn-sm" onClick={() => add("me")}>
               Join
             </button>

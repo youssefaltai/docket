@@ -517,9 +517,17 @@ export function listTeams(a: Actor): Team[] {
 
 const NO_AGENT_TEAMS = "Agents can't create or change teams; ask a person";
 
+/**
+ * Guests work in their teams like members but set nothing up (Linear's guests): no teams, team settings, workflows,
+ * templates, workspace labels or membership changes (403). Called after the thing is found, so what they don't see is 404.
+ */
+function notGuest(a: Actor, what: string) {
+  if (isGuest(a)) throw new AppError(`Guests can't ${what}`, 403);
+}
+
 export function createTeam(a: Actor, input: TeamInput): Team {
   requirePerson(a, NO_AGENT_TEAMS);
-  if (isGuest(a)) throw new AppError("Guests can't create teams", 403);
+  notGuest(a, "create teams");
   const key = typeof input.key === "string" ? input.key.trim().toUpperCase() : "";
   if (!/^[A-Z]{2,5}$/.test(key)) throw new AppError("Team key must be 2–5 letters, e.g. BRD");
   const workspace = requestWorkspace(a);
@@ -577,6 +585,7 @@ function checkAutoArchiveDays(value: unknown): number | null {
 export function updateTeam(a: Actor, key: string, patch: TeamPatch & { workspace?: unknown }): Team {
   requirePerson(a, NO_AGENT_TEAMS);
   const row = teamRow(a, key);
+  notGuest(a, "change a team's settings");
   syncCycles(row.id); // settings act on the cycles as they are now
   if (patch.workspace !== undefined && patch.workspace !== row.workspace) throw new AppError("Teams can't move between workspaces");
   const name = patch.name === undefined ? row.name : requireText(patch.name, "name");
@@ -674,17 +683,22 @@ function workspaceMember(a: Actor, workspace: string, username: unknown): { id: 
 
 /**
  * Adds someone to a team ("me" to join): you join a public team yourself (not a guest: guests join by invitation); a
- * workspace admin joins a private one; anyone in the team, and admins, add others (people, agents, guests). Adding an
- * agent to a private team is how it gets access: agents never add themselves. Their sockets reconnect to hear it.
+ * workspace admin joins a private one; the team's members (not guests) and admins add people and agents, and only
+ * admins add guests. Adding an agent to a private team is how it gets access: agents never add themselves. Their
+ * sockets reconnect to hear it.
  */
 export function addTeamMember(a: Actor, key: string, username: unknown): Team {
   const team = membershipTeam(a, key);
   const who = workspaceMember(a, team.workspace, username);
   const admin = a.workspaces.get(team.workspace) === "admin";
-  if (who.id === a.id) {
-    if (isGuest(a)) throw new AppError("Guests join teams when they're invited or added", 403);
-  } else if (!team.visible || (!team.member && !admin)) {
-    throw new AppError(team.visible ? "Only the team's members and workspace admins can add people to it" : "Join the team first", 403);
+  if (who.id === a.id) notGuest(a, "join teams: an admin adds them");
+  else {
+    notGuest(a, "add people to teams");
+    if (!team.visible || (!team.member && !admin)) {
+      throw new AppError(team.visible ? "Only the team's members and workspace admins can add people to it" : "Join the team first", 403);
+    }
+    // A guest sees only the teams they're added to: that's the admins' call, as inviting them is.
+    if (who.role === "guest" && !admin) throw new AppError("Only workspace admins can add a guest to a team", 403);
   }
   db.query("INSERT OR IGNORE INTO team_members (team_id, user_id, created_at) VALUES (?, ?, ?)").run(team.id, who.id, now());
   revokeAccess([who.id]);
@@ -694,15 +708,18 @@ export function addTeamMember(a: Actor, key: string, username: unknown): Team {
 }
 
 /**
- * Takes someone off a team: yourself (anyone), or anyone by the team's members and admins. The last member of a
+ * Takes someone off a team: yourself (anyone), or others by the team's members (not guests) and admins. The last member of a
  * private team stays (409), so it never ends up seen by no one.
  */
 export function removeTeamMember(a: Actor, key: string, username: unknown): Team {
   const team = membershipTeam(a, key);
   if (!team.visible) throw new AppError(`Team ${key} not found`, 404);
   const who = workspaceMember(a, team.workspace, username);
-  if (who.id !== a.id && !team.member && a.workspaces.get(team.workspace) !== "admin") {
-    throw new AppError("Only the team's members and workspace admins can remove people from it", 403);
+  if (who.id !== a.id) {
+    notGuest(a, "remove people from teams");
+    if (!team.member && a.workspaces.get(team.workspace) !== "admin") {
+      throw new AppError("Only the team's members and workspace admins can remove people from it", 403);
+    }
   }
   const members = teamMemberIds(team.id);
   if (!db.query("SELECT 1 FROM team_members WHERE team_id = ? AND user_id = ?").get(team.id, who.id)) {
@@ -755,7 +772,9 @@ const CATEGORY_NAMES: Record<StatusCategory, string> = {
 /** A workflow change: people only (like the rest of team settings), in the request's workspace (else 404). */
 function workflowTeam(a: Actor, key: unknown): TeamRow {
   requirePerson(a, "Only people can change a workflow");
-  return teamRow(a, key);
+  const team = teamRow(a, key);
+  notGuest(a, "change a workflow");
+  return team;
 }
 
 function workflowStatus(team: TeamRow, key: unknown): StatusRow {
@@ -917,7 +936,9 @@ function templateRow(a: Actor, id: unknown): TemplateRow {
 /** A template of the request's workspace, by id, for a person to manage (create/update/delete): anything else is 404. */
 function managedTemplate(a: Actor, id: unknown): TemplateRow {
   requirePerson(a, NO_AGENT_TEMPLATES);
-  return templateRow(a, id);
+  const row = templateRow(a, id);
+  notGuest(a, "manage issue templates");
+  return row;
 }
 
 /** Replaces a template's labels (see resolveLabels), in the caller's transaction. Returns the labels it created. */
@@ -953,6 +974,7 @@ export function listTemplates(a: Actor, filter: { team?: string } = {}): IssueTe
 export function createTemplate(a: Actor, input: IssueTemplateInput): IssueTemplate {
   requirePerson(a, NO_AGENT_TEMPLATES);
   const team = teamRow(a, input.team);
+  notGuest(a, "manage issue templates");
   const name = requireText(input.name, "name");
   const title = optionalText(input.title, "title");
   const description = optionalText(input.description, "description");
@@ -1376,6 +1398,17 @@ function projectColumns(a: Actor, patch: Pick<IssuePatch, "project" | "milestone
   return { project_id, milestone_id };
 }
 
+const ATTACHMENT_LINK = /\/api\/attachments\/([A-Za-z0-9_-]{22})\//g;
+
+/**
+ * An issue or doc moved from team `from` to `to`: the files its texts link that were uploaded in `from` move with it,
+ * so whoever reads it there can open them (files of other teams, and the workspace's, stay as they are).
+ */
+function moveAttachments(texts: string[], from: number, to: number) {
+  const ids = [...new Set(texts.flatMap((text) => [...text.matchAll(ATTACHMENT_LINK)].map((m) => m[1]!)))];
+  if (ids.length) db.query(`UPDATE attachments SET team_id = ? WHERE team_id = ? AND id IN (${inList(ids)})`).run(to, from, ...ids);
+}
+
 /** An issue's team takes part in its project (Linear shares a project across the teams working on it). */
 function joinProject(projectId: number | null, teamId: number) {
   if (projectId !== null) db.query("INSERT OR IGNORE INTO project_teams (project_id, team_id) VALUES (?, ?)").run(projectId, teamId);
@@ -1684,9 +1717,18 @@ function changes(before: IssueRow, after: IssueRow): Change[] {
  * blocker, related or canonical issue, or where the issue moved from) are left out, and a change left with nothing to
  * show goes, so the history never names what they can't open.
  */
-function seenActivity(activity: Activity[], seen: string): Activity[] {
+function seenActivity(activity: Activity[], seen: string, workspace: string): Activity[] {
   const keys = new Set(db.query<{ key: string }, []>(`SELECT key FROM teams WHERE id IN ${seen}`).all().map((t) => t.key));
   const shown = (v: unknown) => typeof v !== "string" || keys.has(v.slice(0, v.lastIndexOf("-")));
+  // Labels of teams they don't see (an issue that moved out of a private team came with its labels' names).
+  const hidden = new Set(
+    db
+      .query<{ path: string }, [string]>(
+        `SELECT ${LABEL_PATH} AS path FROM labels l LEFT JOIN labels g ON g.id = l.parent_id WHERE l.workspace = ? AND l.team_id IS NOT NULL AND l.team_id NOT IN ${seen}`,
+      )
+      .all(workspace)
+      .map((l) => fold(l.path)),
+  );
   const same = (x: unknown, y: unknown) => JSON.stringify(x) === JSON.stringify(y);
   return activity.flatMap((x) => {
     if (x.kind === "team") return shown(x.from) && shown(x.to) ? [x] : [];
@@ -1694,8 +1736,9 @@ function seenActivity(activity: Activity[], seen: string): Activity[] {
       const [from, to] = [shown(x.from) ? x.from : null, shown(x.to) ? x.to : null];
       return same(from, to) ? [] : [{ ...x, from, to }];
     }
-    if (x.kind === "blockedBy" || x.kind === "relatedTo") {
-      const [from, to] = [(x.from as string[] | null)?.filter(shown) ?? null, (x.to as string[] | null)?.filter(shown) ?? null];
+    if (x.kind === "blockedBy" || x.kind === "relatedTo" || x.kind === "labels") {
+      const keep = x.kind === "labels" ? (path: string) => !hidden.has(fold(path)) : shown;
+      const [from, to] = [(x.from as string[] | null)?.filter(keep) ?? null, (x.to as string[] | null)?.filter(keep) ?? null];
       return same(from, to) ? [] : [{ ...x, from, to }];
     }
     return [x];
@@ -1769,7 +1812,7 @@ export function getIssue(a: Actor, identifier: string): Issue {
     blocks,
     duplicates,
     comments: listComments("issue", id, row.workspace),
-    activity: seenActivity(listActivity(id, row.workspace), seen),
+    activity: seenActivity(listActivity(id, row.workspace), seen, row.workspace),
     docs,
     subscribed: inbox.isSubscribed(a.id, { issueId: id }),
     reactions: listReactions(row.workspace, [`issue:${id}`]).get(`issue:${id}`) ?? [],
@@ -1931,6 +1974,8 @@ export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Is
       cols.status ??= carriedStatus(team as TeamRow, before.status, before.status_category);
       if (patch.cycle === undefined) cols.cycle_id = null; // cycles are per team
       if (!labels) db.query("DELETE FROM issue_labels WHERE issue_id = ? AND label_id IN (SELECT id FROM labels WHERE team_id = ?)").run(id, from.id);
+      const comments = db.query<{ body: string }, [number]>("SELECT body FROM comments WHERE issue_id = ?").all(id);
+      moveAttachments([(cols.description as string | undefined) ?? before.description, ...comments.map((c) => c.body)], from.id, team.id);
     }
     const closing = cols.status === undefined ? undefined : isClosed(statusOf(team, cols.status).category);
     // completedAt follows the category, not the key: it changes only when entering or leaving completed/canceled.
@@ -2537,13 +2582,9 @@ function managedLabel(a: Actor, id: unknown): LabelRow {
     .query<LabelRow, [number, string]>(`${LABEL_SELECT} WHERE l.id = ? AND l.workspace = ? AND ${labelSeen(seenBy(a))}`)
     .get(Number(id), requestWorkspace(a));
   if (!row) throw new AppError(`Label ${id} not found`, 404);
-  if (row.team_id === null) notGuest(a);
+  if (row.team_id === null) notGuest(a, "manage workspace labels");
   return row;
 }
-
-const notGuest = (a: Actor) => {
-  if (isGuest(a)) throw new AppError("Guests manage only their teams' own labels", 403);
-};
 
 /** A new name: no "/" (Group/Label is a group's; names from before labels were entities keep theirs). */
 function labelName(value: unknown): string {
@@ -2586,7 +2627,7 @@ export function createLabel(a: Actor, input: LabelInput): Label {
   const group = input.group == null ? null : labelGroup(workspace, input.group);
   if (group && input.isGroup) throw new AppError("A group can't be in a group");
   const teamId = input.team === undefined ? (group?.team_id ?? null) : labelScope(a, input.team);
-  if (teamId === null) notGuest(a);
+  if (teamId === null) notGuest(a, "manage workspace labels");
   if (group) sameScope(teamId, group);
   const color = input.color === undefined ? undefined : checkColor(input.color);
   freePath(workspace, group ? `${group.name}/${name}` : name);
@@ -2617,7 +2658,7 @@ export function updateLabel(a: Actor, id: unknown, patch: LabelPatch): Label {
     group = patch.group === null ? null : labelGroup(label.workspace, patch.group);
   }
   const teamId = patch.team === undefined ? label.team_id : labelScope(a, patch.team);
-  if (teamId === null) notGuest(a);
+  if (teamId === null) notGuest(a, "manage workspace labels");
   if (group) sameScope(teamId, group);
   const color = patch.color === undefined ? label.color : checkColor(patch.color);
   const regrouped = (group?.id ?? null) !== label.parent_id;
@@ -2712,8 +2753,21 @@ const toView = (r: ViewRow): CustomView => ({
 function viewRow(a: Actor, id: unknown): ViewRow {
   // Views are workspace-wide, which guests don't see (Linear's guests: only their teams).
   const row = isGuest(a) ? null : db.query<ViewRow, SQLQueryBindings[]>(`${VIEW_SELECT} WHERE v.id = ? AND v.workspace = ?`).get(a.id, Number(id), requestWorkspace(a));
-  if (!row) throw new AppError(`View ${id} not found`, 404);
+  if (!row || !viewSeen(row, seenBy(a))) throw new AppError(`View ${id} not found`, 404);
   return row;
+}
+
+/**
+ * Whether a view's filter names only what the reader sees: a view on a team, project or parent issue they don't see is
+ * left out (its name and filter would say it exists), like the thing itself.
+ */
+function viewSeen(row: ViewRow, seen: string): boolean {
+  const { team, project, parent } = JSON.parse(row.filter) as ViewFilter;
+  const known = (sql: string, value: string) => db.query(sql).get(row.workspace, value) !== null;
+  if (team && !known(`SELECT 1 FROM teams t WHERE t.workspace = ? AND t.key = ? AND t.id IN ${seen}`, team.trim().toUpperCase())) return false;
+  if (project && !known(`SELECT 1 FROM projects p WHERE p.workspace = ? AND p.slug = ? AND ${projectSeen(seen)}`, project.trim().toLowerCase())) return false;
+  const issue = parent ? /^([a-z]{2,5})-(\d+)$/i.exec(parent.trim()) : null;
+  return !parent || (!!issue && findIssue(row.workspace, issue[1]!.toUpperCase(), Number(issue[2]), seen) !== null);
 }
 
 /** A view the caller may change: its creator's, or any for a workspace admin (403 otherwise). */
@@ -2769,9 +2823,11 @@ function checkDisplay(value: unknown, current: ViewDisplay): ViewDisplay {
 /** The request's workspace's views, by name, each with whether the caller starred it. */
 export function listViews(a: Actor): CustomView[] {
   if (isGuest(a)) return []; // workspace-wide: not for guests
+  const seen = seenBy(a);
   return db
     .query<ViewRow, SQLQueryBindings[]>(`${VIEW_SELECT} WHERE v.workspace = ? ORDER BY v.name COLLATE NOCASE, v.id`)
     .all(a.id, requestWorkspace(a))
+    .filter((row) => viewSeen(row, seen))
     .map(toView);
 }
 
@@ -3060,6 +3116,10 @@ export function updateDocument(a: Actor, slug: string, patch: DocumentPatch): Do
     const next: Record<string, SQLQueryBindings> = { ...cols, updated_at: time, updated_by_id: a.id };
     db.query(`UPDATE documents SET ${Object.keys(next).map((n) => `${n} = ?`).join(", ")} WHERE id = ?`).run(...Object.values(next), row.id);
     if (cols.title !== undefined || cols.content !== undefined) saveVersion(row.id, title, content, a.id, time, patch.checkpoint === true);
+    if (cols.team_id !== undefined) {
+      const comments = db.query<{ body: string }, [number]>("SELECT body FROM document_comments WHERE document_id = ?").all(row.id);
+      moveAttachments([content, ...comments.map((c) => c.body)], row.team_id, cols.team_id as number);
+    }
     if (cols.content !== undefined) {
       saveRefs(row.id, content, row.workspace);
       saveMentions(a, row.workspace, `document:${row.id}`, { documentId: row.id }, content, time, { typing: true });

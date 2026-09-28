@@ -400,3 +400,80 @@ describe("joining, leaving and making a team private", () => {
     expect(await ok(cal.api("GET", "/api/teams/CAL/members"))).toEqual([{ username: "cal", name: "cal", kind: "person" }]);
   });
 });
+
+describe("guests work in their teams but set nothing up", () => {
+  test("no membership changes, team settings, cycles, workflows or templates; only admins add a guest to a team", async () => {
+    const gil = await s.user("gil", { role: "guest", teams: ["WEB"] });
+    expect((await gus.api("POST", "/api/teams/WEB/members", { username: "gil" })).status).toBe(403);
+    expect((await gus.api("POST", "/api/teams/WEB/members", { username: "bot" })).status).toBe(403);
+    expect((await gus.api("DELETE", "/api/teams/WEB/members/admin")).status).toBe(403);
+    expect((await gus.api("PATCH", "/api/teams/WEB", { name: "Mine now" })).status).toBe(403);
+    expect((await gus.api("PATCH", "/api/teams/WEB", { cycleWeeks: 1 })).status).toBe(403);
+    expect((await gus.api("POST", "/api/teams/WEB/statuses", { name: "Guest stage", category: "started" })).status).toBe(403);
+    expect((await gus.api("POST", "/api/templates", { team: "WEB", name: "Guest template" })).status).toBe(403);
+    const tpl = await ok(s.api("POST", "/api/templates", { team: "WEB", name: "Bug" }), 201);
+    expect((await gus.api("PATCH", `/api/templates/${tpl.id}`, { name: "x" })).status).toBe(403);
+    // What they don't see stays 404, not 403.
+    expect((await gus.api("POST", "/api/teams/OPS/statuses", { name: "x", category: "started" })).status).toBe(404);
+    // Their own team's labels are still theirs to manage.
+    expect((await gus.api("POST", "/api/labels", { name: "contractor", team: "WEB" })).status).toBe(201);
+    // A member adds people and agents, never a guest: an admin does.
+    await ok(bob.api("POST", "/api/teams/WEB/members", { username: "me" }));
+    expect((await bob.api("POST", "/api/teams/WEB/members", { username: "gia" })).body.error).toBe("Only workspace admins can add a guest to a team");
+    expect((await s.api("POST", "/api/teams/WEB/members", { username: "gia" })).status).toBe(200);
+    expect(keys(await ok(gil.api("GET", "/api/teams")))).toEqual(["WEB"]);
+    // A guest can still leave.
+    expect((await gil.api("DELETE", "/api/teams/WEB/members/gil")).status).toBe(200);
+    expect(await ok(gil.api("GET", "/api/teams"))).toEqual([]);
+  });
+});
+
+describe("what moves with an issue or doc out of a private team", () => {
+  const up = async (team: string) =>
+    (await ana.raw("POST", `/api/attachments?name=shot.png&team=${team}`, { body: PNG, headers: { "Content-Type": "application/octet-stream" } })).body.url as string;
+
+  test("the files it links move with it, so its new team's readers open them; other teams' stay theirs", async () => {
+    const [inText, inComment, fromOps] = [await up("SEC"), await up("SEC"), await up("OPS")];
+    const issue = await create(ana, { team: "SEC", title: "Screenshots", description: `![a](${inText}) ![c](${fromOps})` });
+    await ok(ana.api("POST", `/api/issues/${issue.id}/comments`, { body: `[log](${inComment})` }), 201);
+    expect((await bob.raw("GET", inText)).status).toBe(404);
+    await ok(ana.api("PATCH", `/api/issues/${issue.id}`, { team: "WEB" }));
+    expect((await bob.raw("GET", inText)).status).toBe(200);
+    expect((await bob.raw("GET", inComment)).status).toBe(200);
+    expect((await gus.raw("GET", fromOps)).status).toBe(404); // still OPS's, which gus doesn't see
+
+    const inDoc = await up("SEC");
+    const doc = await ok(ana.api("POST", "/api/documents", { team: "SEC", title: "Findings", content: `![shot](${inDoc})` }), 201);
+    expect((await bob.raw("GET", inDoc)).status).toBe(404);
+    await ok(ana.api("PATCH", `/api/documents/${doc.slug}`, { team: "WEB" }));
+    expect((await bob.raw("GET", inDoc)).status).toBe(200);
+  });
+
+  test("its history leaves out the private team's labels for those who don't see it", async () => {
+    await ok(ana.api("POST", "/api/labels", { name: "zeroday-acme", team: "SEC" }), 201);
+    const issue = await create(ana, { team: "SEC", title: "Labelled", labels: ["zeroday-acme"] });
+    const moved = await ok(ana.api("PATCH", `/api/issues/${issue.id}`, { team: "WEB" }));
+    const labels = async (who: Caller) => JSON.stringify((await ok(who.api("GET", `/api/issues/${moved.id}`))).activity.filter((x: any) => x.kind === "labels"));
+    expect(await labels(ana)).toContain("zeroday-acme");
+    expect(await labels(bob)).not.toContain("zeroday-acme");
+  });
+});
+
+describe("views naming what you don't see", () => {
+  test("are left out of the list and 404, for a team, a project or a parent issue you don't see", async () => {
+    const secret = await create(ana, { team: "SEC", title: "Parent" });
+    const pentest = (await ok(ana.api("GET", "/api/projects"))).find((p: any) => p.teams.length === 1 && p.teams[0] === "SEC");
+    const views = [
+      await ok(ana.api("POST", "/api/views", { name: "On SEC", filter: { team: "SEC" } }), 201),
+      await ok(ana.api("POST", "/api/views", { name: "On the pentest", filter: { project: pentest.slug } }), 201),
+      await ok(ana.api("POST", "/api/views", { name: "Under a secret", filter: { parent: secret.id } }), 201),
+    ];
+    const names = async (who: Caller) => (await ok(who.api("GET", "/api/views"))).map((v: any) => v.name);
+    for (const v of views) {
+      expect(await names(ana)).toContain(v.name);
+      expect(await names(bob)).not.toContain(v.name);
+      expect((await bob.api("GET", `/api/views/${v.id}`)).status).toBe(404);
+    }
+    expect(await names(bob)).toContain("Everything");
+  });
+});
