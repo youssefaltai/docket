@@ -17,6 +17,7 @@ import {
   TeamPicker,
 } from "./pickers";
 import {
+  ArchivedBanner,
   Avatar,
   ago,
   CalendarIcon,
@@ -193,7 +194,7 @@ export function IssuePage({ id }: { id: string }) {
     !!assignee && !isMe(assignee) && app.members.some((m) => m.user.username === assignee.username && !m.suspendedAt);
   const { category } = issueStatus(app.teams, issue);
   const alreadyMine = isMe(assignee) && category === "started";
-  const claimable = !issue.deletedAt && !isClosedCategory(category) && !heldByOther && !alreadyMine;
+  const claimable = !issue.deletedAt && !issue.archivedAt && !isClosedCategory(category) && !heldByOther && !alreadyMine;
   const claim = () => withFresh(() => api.claimIssue(issue.id)).catch(errorToast);
 
   // The description is the one field sent with baseUpdatedAt, since a stale save would overwrite someone's
@@ -237,7 +238,7 @@ export function IssuePage({ id }: { id: string }) {
               Claim
             </button>
           )}
-          {!issue.deletedAt && <SubscribeButton subscribed={issue.subscribed} onToggle={() => withFresh(() => api.subscribeIssue(issue.id, !issue.subscribed)).catch(errorToast)} />}
+          {!issue.deletedAt && !issue.archivedAt && <SubscribeButton subscribed={issue.subscribed} onToggle={() => withFresh(() => api.subscribeIssue(issue.id, !issue.subscribed)).catch(errorToast)} />}
           <button className="icon-btn" onClick={copyId} aria-label="Copy ID" title="Copy ID">
             <CopyIcon />
           </button>
@@ -251,11 +252,15 @@ export function IssuePage({ id }: { id: string }) {
       <div className="issue">
         <div className="issue-main">
           <div className="issue-inner">
-            {issue.deletedAt && (
+            {issue.deletedAt ? (
               <TrashBanner deletedAt={issue.deletedAt} onRestore={() => withFresh(() => api.restoreIssue(issue.id))} />
+            ) : (
+              issue.archivedAt && (
+                <ArchivedBanner archivedAt={issue.archivedAt} onUnarchive={() => withFresh(() => api.unarchiveIssue(issue.id))} />
+              )
             )}
-            {/* A trashed issue is read-only until restored: the fieldset disables every control in it. */}
-            <fieldset className="plain" disabled={!!issue.deletedAt}>
+            {/* A trashed or archived issue is read-only until restored/unarchived: the fieldset disables every control in it. */}
+            <fieldset className="plain" disabled={!!issue.deletedAt || !!issue.archivedAt}>
               {issue.parent && (
                 <Link className="issue-parent" to={`/issue/${issue.parent}`}>
                   <ParentIcon /> Sub-issue of <span className="mono">{issue.parent}</span>
@@ -281,7 +286,7 @@ export function IssuePage({ id }: { id: string }) {
           </div>
         </div>
         <aside className="issue-props">
-          <fieldset className="plain" disabled={!!issue.deletedAt}>
+          <fieldset className="plain" disabled={!!issue.deletedAt || !!issue.archivedAt}>
             <Properties issue={issue} patch={patch} />
           </fieldset>
         </aside>

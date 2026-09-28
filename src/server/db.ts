@@ -562,6 +562,14 @@ const MIGRATIONS: (string | (() => void))[] = [
   );
   CREATE INDEX issue_aliases_issue ON issue_aliases(issue_id);
   `,
+  // Auto-archive (Linear's per-team setting, on top of the 30-day trash): a team may set a period after which its
+  // completed/canceled issues are hidden from default views (still searchable and openable), independent of trash.
+  // Both new columns default to "off"/unset, so no existing issue is affected until a team turns it on.
+  `
+  ALTER TABLE issues ADD COLUMN archived_at TEXT;
+  CREATE INDEX issues_archived ON issues(archived_at) WHERE archived_at IS NOT NULL;
+  ALTER TABLE teams ADD COLUMN auto_archive_days INTEGER; -- NULL = never (default); else days after completed_at
+  `,
 ];
 
 db.run("PRAGMA foreign_keys = OFF"); // a migration may rebuild a table (SQLite's 12-step ALTER); checked before each commit

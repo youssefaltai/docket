@@ -185,6 +185,7 @@ export interface Team {
   defaultStatus: string; // where new issues start: a backlog or unstarted key
   autoCloseParent: boolean; // a parent here closes (first completed status) once all its sub-issues are completed or canceled
   autoCloseChildren: boolean; // closing a parent here closes its open sub-issues to the same status
+  autoArchiveDays: number | null; // null (default): never; else archive completed/canceled issues this many days after completedAt
   counts: Record<string, number>; // live issues per status key; 0 for each of the team's statuses without any
   docCount: number;
   createdAt: string; // ISO 8601
@@ -198,6 +199,7 @@ export interface TeamInput {
   description?: string;
   autoCloseParent?: boolean; // default false
   autoCloseChildren?: boolean; // default false
+  autoArchiveDays?: number | null; // default null (never)
 }
 
 export type TeamPatch = Partial<Omit<TeamInput, "key" | "workspace">> & { defaultStatus?: string }; // the key and workspace never change
@@ -223,6 +225,7 @@ export interface IssueSummary {
   completedAt: string | null; // set when its status enters the completed or canceled category, cleared when it leaves
   deletedAt: string | null; // in the trash since then; purged 30 days later
   previousIdentifiers: string[]; // identifiers it had before it moved team, oldest first; each still resolves to it
+  archivedAt: string | null; // hidden from default lists since then (manually, or by the team's auto-archive period); still searchable and openable
 }
 
 /** One page of a list, Linear-style: pass `endCursor` as `after` for the next. */
@@ -310,13 +313,15 @@ export const ACTIVITY_KINDS = [
   "claimed",
   "trashed",
   "restored",
+  "archived",
+  "unarchived",
 ] as const;
 export type ActivityKind = (typeof ACTIVITY_KINDS)[number];
 
 /**
  * One change to an issue. from/to by kind: team (its identifier before and after a move), title, parent and duplicateOf (identifiers), status and claimed (status keys), dueOn
  * ("YYYY-MM-DD") are strings; priority a number; assignee, delegate a UserRef; labels, blockedBy, relatedTo string arrays; null when unset, and both
- * null for created, description, trashed, restored.
+ * null for created, description, trashed, restored, archived, unarchived.
  */
 export type ActivityValue = string | number | string[] | UserRef | null;
 
@@ -453,6 +458,7 @@ export interface IssueFilter {
   subscribed?: boolean; // true: only issues you're subscribed to
   due?: DueFilter;
   sort?: IssueSort;
+  archived?: boolean; // true: include archived issues (default: excluded, unless q is set)
 }
 
 /**

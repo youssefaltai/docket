@@ -365,6 +365,7 @@ interface TeamRow {
   default_status: string;
   auto_close_parent: number; // 0 or 1
   auto_close_children: number;
+  auto_archive_days: number | null; // null: never; else days after completed_at
   statuses: string; // JSON array of WorkflowStatus, in workflow order
   counts: string; // JSON object: status → issue count, statuses without issues left out
   doc_count: number;
@@ -399,6 +400,7 @@ function toTeam(row: TeamRow): Team {
     defaultStatus: row.default_status,
     autoCloseParent: row.auto_close_parent === 1,
     autoCloseChildren: row.auto_close_children === 1,
+    autoArchiveDays: row.auto_archive_days,
     counts: { ...Object.fromEntries(statuses.map((s) => [s.key, 0])), ...JSON.parse(row.counts) },
     docCount: row.doc_count,
     createdAt: row.created_at,
@@ -436,6 +438,7 @@ export function createTeam(a: Actor, input: TeamInput): Team {
   const description = optionalText(input.description, "description");
   const autoCloseParent = checkFlag(input.autoCloseParent ?? false, "autoCloseParent");
   const autoCloseChildren = checkFlag(input.autoCloseChildren ?? false, "autoCloseChildren");
+  const autoArchiveDays = input.autoArchiveDays === undefined ? null : checkAutoArchiveDays(input.autoArchiveDays);
   if (db.query("SELECT 1 FROM teams WHERE workspace = ? AND key = ?").get(workspace, key)) {
     throw new AppError(`Team key ${key} is taken in this workspace`, 409);
   }
@@ -443,9 +446,9 @@ export function createTeam(a: Actor, input: TeamInput): Team {
   db.transaction(() => {
     const { id } = db
       .query<{ id: number }, SQLQueryBindings[]>(
-        "INSERT INTO teams (key, workspace, name, description, auto_close_parent, auto_close_children, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+        "INSERT INTO teams (key, workspace, name, description, auto_close_parent, auto_close_children, auto_archive_days, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
       )
-      .get(key, workspace, name, description, autoCloseParent, autoCloseChildren, time, time)!;
+      .get(key, workspace, name, description, autoCloseParent, autoCloseChildren, autoArchiveDays, time, time)!;
     const insert = db.query("INSERT INTO workflow_statuses (team_id, key, name, category, color, position) VALUES (?, ?, ?, ?, ?, ?)");
     for (const s of DEFAULT_WORKFLOW) insert.run(id, s.key, s.name, s.category, s.color, s.position);
   })();
@@ -457,6 +460,15 @@ export function createTeam(a: Actor, input: TeamInput): Team {
 function checkFlag(value: unknown, field: string): number {
   if (typeof value !== "boolean") throw new AppError(`${field} must be true or false`);
   return value ? 1 : 0;
+}
+
+/** How long after completedAt a team auto-archives an issue: null (never), else a positive whole number of days. */
+function checkAutoArchiveDays(value: unknown): number | null {
+  if (value === null) return null;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    throw new AppError("autoArchiveDays must be a positive whole number of days, or null for never");
+  }
+  return value;
 }
 
 /**
@@ -477,9 +489,10 @@ export function updateTeam(a: Actor, key: string, patch: TeamPatch & { workspace
   }
   const autoCloseParent = patch.autoCloseParent === undefined ? row.auto_close_parent : checkFlag(patch.autoCloseParent, "autoCloseParent");
   const autoCloseChildren = patch.autoCloseChildren === undefined ? row.auto_close_children : checkFlag(patch.autoCloseChildren, "autoCloseChildren");
+  const autoArchiveDays = patch.autoArchiveDays === undefined ? row.auto_archive_days : checkAutoArchiveDays(patch.autoArchiveDays);
   db.query(
-    "UPDATE teams SET name = ?, description = ?, default_status = ?, auto_close_parent = ?, auto_close_children = ?, updated_at = ? WHERE id = ?",
-  ).run(name, description, defaultStatus, autoCloseParent, autoCloseChildren, now(), row.id);
+    "UPDATE teams SET name = ?, description = ?, default_status = ?, auto_close_parent = ?, auto_close_children = ?, auto_archive_days = ?, updated_at = ? WHERE id = ?",
+  ).run(name, description, defaultStatus, autoCloseParent, autoCloseChildren, autoArchiveDays, now(), row.id);
   changed("team", row.workspace, row.key);
   return toTeam(teamRow(a, row.key));
 }
@@ -660,6 +673,7 @@ type IssueRow = Record<string, unknown> & {
   updated_at: string;
   completed_at: string | null;
   deleted_at: string | null;
+  archived_at: string | null;
 };
 
 /** An issue's identifier in SQL, from its team's alias and its own: BRD-12. */
@@ -728,6 +742,7 @@ const toSummary = (row: IssueRow): IssueSummary => ({
   completedAt: row.completed_at,
   deletedAt: row.deleted_at,
   previousIdentifiers: JSON.parse(row.previous_identifiers),
+  archivedAt: row.archived_at,
 });
 
 /**
@@ -747,10 +762,13 @@ function findIssue(workspace: string, key: string, number: number): number | nul
 
 /**
  * Resolves an identifier like "brd-12" in the request's workspace to the issue's row id; 404 if it isn't there. An
- * identifier it had before it moved team resolves too; `ref` is always its current one. Trashed issues resolve too
- * (to read or restore them); `liveIssue` is for everything that changes one.
+ * identifier it had before it moved team resolves too; `ref` is always its current one. Trashed and archived issues
+ * resolve too (to read, restore or unarchive them); `liveIssue` is for everything that changes one.
  */
-function issueRef(a: Actor, identifier: unknown): { id: number; workspace: string; deleted_at: string | null; ref: string; team: TeamRef } {
+function issueRef(
+  a: Actor,
+  identifier: unknown,
+): { id: number; workspace: string; deleted_at: string | null; archived_at: string | null; ref: string; team: TeamRef } {
   const match = typeof identifier === "string" ? /^([a-z]{2,5})-(\d+)$/i.exec(identifier.trim()) : null;
   if (!match) throw new AppError(`Invalid issue identifier "${identifier}" (expected e.g. BRD-12)`);
   const key = match[1]!.toUpperCase();
@@ -758,17 +776,25 @@ function issueRef(a: Actor, identifier: unknown): { id: number; workspace: strin
   const id = findIssue(requestWorkspace(a), key, number);
   if (id === null) throw new AppError(`Issue ${key}-${number} not found`, 404);
   const row = db
-    .query<{ workspace: string; deleted_at: string | null; team_id: number; key: string; number: number }, [number]>(
-      "SELECT t.workspace, i.deleted_at, i.team_id, t.key, i.number FROM issues i JOIN teams t ON t.id = i.team_id WHERE i.id = ?",
+    .query<{ workspace: string; deleted_at: string | null; archived_at: string | null; team_id: number; key: string; number: number }, [number]>(
+      "SELECT t.workspace, i.deleted_at, i.archived_at, i.team_id, t.key, i.number FROM issues i JOIN teams t ON t.id = i.team_id WHERE i.id = ?",
     )
     .get(id)!;
-  return { id, workspace: row.workspace, deleted_at: row.deleted_at, ref: `${row.key}-${row.number}`, team: { id: row.team_id, key: row.key } };
+  return {
+    id,
+    workspace: row.workspace,
+    deleted_at: row.deleted_at,
+    archived_at: row.archived_at,
+    ref: `${row.key}-${row.number}`,
+    team: { id: row.team_id, key: row.key },
+  };
 }
 
-/** An issue that isn't in the trash: a trashed one can be read and restored, nothing else. */
+/** An issue that isn't in the trash or archived: either one is read-only, nothing else. */
 function liveIssue(a: Actor, identifier: unknown) {
   const issue = issueRef(a, identifier);
   if (issue.deleted_at) throw new AppError(`${issue.ref} is in the trash; restore it first`, 409);
+  if (issue.archived_at) throw new AppError(`${issue.ref} is archived; unarchive it first`, 409);
   return issue;
 }
 
@@ -883,11 +909,13 @@ function issueColumns(a: Actor, workspace: string, team: TeamRef, patch: IssuePa
 
 /**
  * WHERE conditions shared by the issue and doc lists (both join their team as `t`): the request's workspace,
- * a team, and a substring search over `searched` (the query's own %, _ and \ match literally).
+ * a team, and a substring search over `searched` (the query's own %, _ and \ match literally). Issues (alias
+ * "i") also leave out archived ones by default, unless `archived` is passed or `q` is set (still searchable).
  */
-function listScope(a: Actor, alias: string, filter: { team?: string; q?: string }, searched: string[]) {
+function listScope(a: Actor, alias: string, filter: { team?: string; q?: string; archived?: boolean }, searched: string[]) {
   const workspace = requestWorkspace(a);
   const where = ["t.workspace = ?", `${alias}.deleted_at IS NULL`];
+  if (alias === "i" && !filter.q && !filter.archived) where.push("i.archived_at IS NULL");
   const params: SQLQueryBindings[] = [workspace];
   let teamId: number | null = null;
   if (filter.team) {
@@ -1050,8 +1078,8 @@ function queryIssues(a: Actor, filter: IssueFilter, after?: Cursor, limit?: numb
 
 type Change = { kind: ActivityKind; from?: unknown; to?: unknown };
 
-// Kinds whose values aren't stored: `created` and the trash have none, and descriptions aren't diffed.
-const NO_VALUES: ActivityKind[] = ["created", "description", "trashed", "restored"];
+// Kinds whose values aren't stored: `created`, the trash and archiving have none, and descriptions aren't diffed.
+const NO_VALUES: ActivityKind[] = ["created", "description", "trashed", "restored", "archived", "unarchived"];
 
 /**
  * Whether moving an issue into this status tells its subscribers: work finished or dropped (the completed and
@@ -1123,7 +1151,7 @@ function issueEvent(a: { id: number }, issueId: number, workspace: string, chang
       else if (kind === "team") {
         const at = (from as string).lastIndexOf("-"); // a move: the identifier, team and number it had
         Object.assign(updatedFrom, { id: from, team: (from as string).slice(0, at), number: Number((from as string).slice(at + 1)) });
-      }
+      } else if (kind === "archived" || kind === "unarchived") updatedFrom.archivedAt = from ?? null;
       else if (kind === "assignee" || kind === "delegate") updatedFrom[kind] = from == null ? null : userRef(from as number, workspace);
       else updatedFrom[kind] = from;
     }
@@ -1384,6 +1412,8 @@ export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Is
     const closed = closing === true && !isClosed(before.status_category) ? autoClose(a.id, id, workspace, time) : [];
     return { refs: [...refs, ...closed.map((c) => ownerRef("issue", c))], created };
   }).immediate();
+  // The team may now have old closed issues past their auto-archive window (see Auto-archive).
+  if (cols.completed_at) autoArchive();
   const issue = getIssue(a, identifier);
   for (const label of created) changed("label", workspace, String(label));
   if (moving) changed("issue", workspace, ref); // lists showing it under its old identifier
@@ -1477,6 +1507,54 @@ function trashIssue(a: Actor, identifier: string, trash: boolean): Issue {
 
 export const deleteIssue = (a: Actor, identifier: string) => trashIssue(a, identifier, true);
 export const restoreIssue = (a: Actor, identifier: string) => trashIssue(a, identifier, false);
+
+/**
+ * Archives an issue or brings it back (Linear's auto-archive, done by hand or by `autoArchive`): a single flag,
+ * `archived_at`, that only changes default-view visibility (see `listScope`) — unlike the trash, it touches no
+ * label, count, relation, comment or doc ref, and never expires anything. Works on a live issue only (trashed:
+ * 409, restore it first); an archived one is otherwise read-only, like a trashed one (`liveIssue`).
+ */
+function setArchived(a: Actor, identifier: string, archive: boolean): Issue {
+  const issue = issueRef(a, identifier);
+  if (issue.deleted_at) throw new AppError(`${issue.ref} is in the trash; restore it first`, 409);
+  if (!!issue.archived_at === archive) throw new AppError(archive ? `${issue.ref} is already archived` : `${issue.ref} isn't archived`, 409);
+  const time = now();
+  db.transaction(() => {
+    db.query(`UPDATE issues SET archived_at = ?, ${BUMPED_AT} WHERE id = ?`).run(archive ? time : null, time, time, issue.id);
+    logActivity(a, issue.id, issue.workspace, [archive ? { kind: "archived" } : { kind: "unarchived", from: issue.archived_at }], time);
+  })();
+  changed("issue", issue.workspace, issue.ref);
+  return getIssue(a, identifier);
+}
+
+export const archiveIssue = (a: Actor, identifier: string) => setArchived(a, identifier, true);
+export const unarchiveIssue = (a: Actor, identifier: string) => setArchived(a, identifier, false);
+
+/**
+ * Sweeps every team with `autoArchiveDays` set: archives its live, unarchived issues whose `completedAt` is
+ * older than that many days, attributed to @docket with no `onBehalfOf` (a time-based sweep, not set off by
+ * anyone's own change). Run at startup and after any `updateIssue` call that closes an issue, so a team's
+ * backlog of already-old closed issues is swept the next time something in it changes.
+ */
+function autoArchive() {
+  const time = now();
+  const due = db
+    .query<{ id: number; workspace: string; ref: string }, []>(
+      `SELECT i.id, t.workspace, ${ident("t", "i")} AS ref FROM issues i JOIN teams t ON t.id = i.team_id
+       WHERE t.auto_archive_days IS NOT NULL AND i.deleted_at IS NULL AND i.archived_at IS NULL
+         AND i.completed_at IS NOT NULL AND i.completed_at < datetime('now', '-' || t.auto_archive_days || ' days')`,
+    )
+    .all();
+  if (!due.length) return;
+  const by = systemUserId();
+  db.transaction(() => {
+    for (const issue of due) {
+      db.query(`UPDATE issues SET archived_at = ?, ${BUMPED_AT} WHERE id = ?`).run(time, time, time, issue.id);
+      logActivity({ id: by }, issue.id, issue.workspace, [{ kind: "archived" }], time);
+    }
+  })();
+  for (const issue of due) changed("issue", issue.workspace, issue.ref);
+}
 
 const MAX_BULK = 100;
 const BULK_FIELDS = ["status", "priority", "assignee", "delegate", "labels", "addLabels", "removeLabels"];
@@ -2270,3 +2348,5 @@ export function locate(a: Actor, query: { issue?: string; doc?: string; team?: s
 
 // Anything that expired while the server was down goes now; later deletes and trash views purge as they go.
 purgeTrash();
+// Likewise, a team's already-old closed issues archive now, even if nothing in it changes for a while.
+autoArchive();

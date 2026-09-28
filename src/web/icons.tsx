@@ -36,6 +36,7 @@ export const TagIcon = icon("M2.5 3.5a1 1 0 0 1 1-1h4l6 6-5 5-6-6zM5.5 5.5h.01")
 export const ParentIcon = icon("M4 2.5v6a2 2 0 0 0 2 2h6.5M10 8l2.5 2.5L10 13");
 export const BlockedIcon = icon("M8 14A6 6 0 1 0 8 2a6 6 0 0 0 0 12zM3.8 3.8l8.4 8.4");
 export const TrashIcon = icon("M2.5 4.5h11M6 4.5V3h4v1.5M4 4.5l.7 8.6a1 1 0 0 0 1 .9h4.6a1 1 0 0 0 1-.9l.7-8.6");
+export const ArchiveIcon = icon("M2.5 3.5h11a1 1 0 0 1 1 1v2h-13v-2a1 1 0 0 1 1-1zM3.5 6.5v6a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1v-6M6.5 9h3");
 export const PencilIcon = icon("M10.5 2.5l3 3L6 13H3v-3z");
 export const ReplyIcon = icon("M6 3.5L2.5 7 6 10.5M2.5 7h6.5a4 4 0 0 1 4 4v1.5");
 export const CalendarIcon = icon("M3.5 3.5h9a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-8a1 1 0 0 1 1-1zM2.5 6.5h11M5.5 2v3M10.5 2v3");
