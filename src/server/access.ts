@@ -326,7 +326,8 @@ export function activeMemberId(a: Actor, workspace: string, value: string, kind:
   const username = row?.username ?? given;
   if (!row) throw new AppError(`${field}: ${username} isn't an active member of this workspace`);
   if (row.kind !== kind) {
-    throw new AppError(kind === "person" ? `${field}: ${username} is an agent; set it as the delegate` : `${field}: ${username} isn't an agent`);
+    const hint = field === "assignee" ? "; set it as the delegate" : ", not a person";
+    throw new AppError(kind === "person" ? `${field}: ${username} is an agent${hint}` : `${field}: ${username} isn't an agent`);
   }
   return row.id;
 }

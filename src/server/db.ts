@@ -576,6 +576,46 @@ const MIGRATIONS: (string | (() => void))[] = [
   ALTER TABLE teams ADD COLUMN estimate_scale TEXT CHECK (estimate_scale IN ('exponential', 'fibonacci', 'linear', 'tshirt'));
   ALTER TABLE issues ADD COLUMN estimate INTEGER CHECK (estimate BETWEEN 1 AND 5);
   `,
+  // Projects (Linear's): a body of work in one workspace, spanning the teams in project_teams, with milestones (its
+  // stages). An issue is in at most one project and one of its milestones; a doc can be attached to one. Existing
+  // issues and docs are in none.
+  `
+  CREATE TABLE projects (
+    id INTEGER PRIMARY KEY,
+    workspace TEXT NOT NULL REFERENCES workspaces(key),
+    slug TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'backlog' CHECK (status IN ('backlog', 'planned', 'in_progress', 'paused', 'completed', 'canceled')),
+    lead_id INTEGER REFERENCES users(id),
+    target_date TEXT, -- YYYY-MM-DD
+    creator_id INTEGER NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (workspace, slug)
+  );
+  CREATE TABLE project_teams (
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    team_id INTEGER NOT NULL REFERENCES teams(id),
+    PRIMARY KEY (project_id, team_id)
+  );
+  CREATE INDEX project_teams_team ON project_teams(team_id);
+  CREATE TABLE milestones (
+    id INTEGER PRIMARY KEY,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    target_date TEXT,
+    position REAL NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE UNIQUE INDEX milestones_name ON milestones(project_id, lower(name));
+  ALTER TABLE issues ADD COLUMN project_id INTEGER REFERENCES projects(id);
+  ALTER TABLE issues ADD COLUMN milestone_id INTEGER REFERENCES milestones(id) ON DELETE SET NULL;
+  CREATE INDEX issues_project ON issues(project_id) WHERE project_id IS NOT NULL;
+  ALTER TABLE documents ADD COLUMN project_id INTEGER REFERENCES projects(id);
+  CREATE INDEX documents_project ON documents(project_id) WHERE project_id IS NOT NULL;
+  `,
 ];
 
 db.run("PRAGMA foreign_keys = OFF"); // a migration may rebuild a table (SQLite's 12-step ALTER); checked before each commit

@@ -56,16 +56,16 @@ test("agents can't create or change teams", async () => {
 test("tools/list shows each caller only what it can use", async () => {
   const ana = await s.user("ana");
   const ro = s.with({ token: (await ana.api("POST", "/api/api-keys", { name: "ro", scope: "read" })).body.token });
-  const reads = ["get_attachment", "get_document", "get_issue", "list_documents", "list_issues", "list_labels", "list_members", "list_notifications", "list_teams"];
-  const writes = ["attach_file", "claim_issue", "comment_document", "comment_issue", "create_document", "create_issue"];
-  writes.push("delete_comment", "delete_document", "mark_notifications_read", "react", "resolve_thread", "subscribe", "update_comment", "update_document", "update_issue");
+  const reads = ["get_attachment", "get_document", "get_issue", "get_project", "list_documents", "list_issues", "list_labels", "list_members", "list_notifications", "list_projects", "list_teams"];
+  const writes = ["attach_file", "claim_issue", "comment_document", "comment_issue", "create_document", "create_issue", "create_milestone", "create_project"];
+  writes.push("delete_comment", "delete_document", "mark_notifications_read", "react", "resolve_thread", "subscribe", "update_comment", "update_document", "update_issue", "update_milestone", "update_project");
   const agent = [...reads, ...writes].sort();
   const member = [...agent, "create_team", "update_team"].sort();
   expect(await ro.tools()).toEqual(reads);
   expect(await claude.tools()).toEqual(agent);
   expect(await ana.tools()).toEqual(member);
   expect(await s.admin.tools()).toEqual([...member, "update_workspace"].sort());
-  expect([reads.length, agent.length, member.length]).toEqual([9, 24, 26]);
+  expect([reads.length, agent.length, member.length]).toEqual([11, 30, 32]);
 
   // A hidden tool can't be called either, and nothing changes.
   await expect(claude.tool("create_team", { key: "HID", name: "Hidden" })).rejects.toThrow(/not found/);

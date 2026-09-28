@@ -1,4 +1,4 @@
-// Teams, issues, comments, labels and documents. Every function acts for an Actor in the request's one
+// Teams, issues, comments, labels, documents and projects. Every function acts for an Actor in the request's one
 // workspace (requestWorkspace): team keys, identifiers and slugs resolve there, and anything elsewhere is
 // 404, as if it didn't exist.
 import type { SQLQueryBindings } from "bun:sqlite";
@@ -11,6 +11,7 @@ import {
   ESTIMATE_SCALES,
   ISSUE_SORTS,
   PRIORITIES,
+  PROJECT_STATUSES,
   STATUS_CATEGORIES,
   type Activity,
   type ActivityKind,
@@ -34,7 +35,15 @@ import {
   type Label,
   type LabelInput,
   type LabelPatch,
+  type Milestone,
+  type MilestoneInput,
+  type MilestonePatch,
   type Priority,
+  type Project,
+  type ProjectInput,
+  type ProjectPatch,
+  type ProjectStatus,
+  type ProjectSummary,
   type Reaction,
   type StatusCategory,
   type Team,
@@ -83,10 +92,10 @@ function checkEstimate(teamId: number, value: unknown): number | null {
 }
 
 /** A calendar date, "YYYY-MM-DD", that exists (no 2026-02-30). */
-function checkDueOn(value: unknown): string {
+function checkDate(value: unknown, field: string): string {
   const date = typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : "";
   const time = Date.parse(`${date}T00:00:00Z`);
-  if (Number.isNaN(time) || !new Date(time).toISOString().startsWith(date)) throw new AppError("dueOn must be a date like 2026-09-30");
+  if (Number.isNaN(time) || !new Date(time).toISOString().startsWith(date)) throw new AppError(`${field} must be a date like 2026-09-30`);
   return date;
 }
 
@@ -696,6 +705,10 @@ type IssueRow = Record<string, unknown> & {
   completed_at: string | null;
   deleted_at: string | null;
   archived_at: string | null;
+  project_id: number | null;
+  milestone_id: number | null;
+  project: string | null; // its slug
+  milestone: string | null; // its name
 };
 
 /** An issue's identifier in SQL, from its team's alias and its own: BRD-12. */
@@ -703,6 +716,7 @@ const ident = (team: string, issue: string) => `${team}.key || '-' || ${issue}.n
 
 const ISSUE_SELECT = `
   SELECT i.*, t.key AS team_key, t.workspace, t.estimate_scale, ws.category AS status_category, ws.position AS status_position, ${ident("pt", "p")} AS parent,
+    pr.slug AS project, ms.name AS milestone,
     ${userCols("ua", "assignee")}, ${userCols("ud", "delegate")}, ${userCols("uc", "creator")},
     (SELECT json_group_array(path) FROM (
       SELECT ${LABEL_PATH} AS path FROM issue_labels x JOIN labels l ON l.id = x.label_id LEFT JOIN labels g ON g.id = l.parent_id
@@ -729,7 +743,9 @@ const ISSUE_SELECT = `
   ${userJoin("ua", "i.assignee_id", "t.workspace")}
   ${userJoin("ud", "i.delegate_id", "t.workspace")}
   LEFT JOIN issues p ON p.id = i.parent_id
-  LEFT JOIN teams pt ON pt.id = p.team_id`;
+  LEFT JOIN teams pt ON pt.id = p.team_id
+  LEFT JOIN projects pr ON pr.id = i.project_id
+  LEFT JOIN milestones ms ON ms.id = i.milestone_id`;
 
 // Status category order, then the team's order within it, then priority 1→4 with 0 (none) last, then most
 // recently updated. The first three keys are also what a page cursor records (with updated_at and id), so pages
@@ -766,6 +782,8 @@ const toSummary = (row: IssueRow): IssueSummary => ({
   deletedAt: row.deleted_at,
   previousIdentifiers: JSON.parse(row.previous_identifiers),
   archivedAt: row.archived_at,
+  project: row.project,
+  milestone: row.milestone,
 });
 
 /**
@@ -927,8 +945,49 @@ function issueColumns(a: Actor, workspace: string, team: TeamRef, patch: IssuePa
     cols[`${field}_id`] = value?.trim() ? activeMemberId(a, workspace, value, kind, field) : null;
   }
   if (patch.parent !== undefined) cols.parent_id = patch.parent === null ? null : relatedId(a, patch.parent, "parent");
-  if (patch.dueOn !== undefined) cols.due_on = patch.dueOn === null ? null : checkDueOn(patch.dueOn);
+  if (patch.dueOn !== undefined) cols.due_on = patch.dueOn === null ? null : checkDate(patch.dueOn, "dueOn");
   return cols;
+}
+
+/** A project of `workspace`, by slug, for a `project` field or filter (400 otherwise). */
+function projectIn(workspace: string, slug: unknown): { id: number; slug: string } {
+  const row =
+    typeof slug === "string"
+      ? db.query<{ id: number; slug: string }, [string, string]>("SELECT id, slug FROM projects WHERE workspace = ? AND slug = ?").get(workspace, slug.trim().toLowerCase())
+      : null;
+  if (!row) throw new AppError(`Unknown project "${slug}"`);
+  return row;
+}
+
+type InProject = { project_id: number | null; milestone_id: number | null };
+
+/**
+ * An issue's project and milestone after `patch`, from `current` (its own; a new sub-issue's parent's). A new project
+ * clears the milestone unless the patch names one of the new project's; a milestone is named within the project.
+ */
+function projectColumns(workspace: string, patch: Pick<IssuePatch, "project" | "milestone">, current: InProject): InProject {
+  let { project_id, milestone_id } = current;
+  if (patch.project !== undefined) {
+    const next = patch.project === null ? null : projectIn(workspace, patch.project).id;
+    if (next !== project_id) [project_id, milestone_id] = [next, null];
+  }
+  if (patch.milestone === null) milestone_id = null;
+  else if (patch.milestone !== undefined) {
+    if (project_id === null) throw new AppError("Set a project first: a milestone is a stage of one");
+    const given = typeof patch.milestone === "string" ? patch.milestone.trim() : "";
+    const found = db.query<{ id: number }, [number, string]>("SELECT id FROM milestones WHERE project_id = ? AND lower(name) = lower(?)").get(project_id, given);
+    if (!found) {
+      const { slug } = db.query<{ slug: string }, [number]>("SELECT slug FROM projects WHERE id = ?").get(project_id)!;
+      throw new AppError(`Unknown milestone "${patch.milestone}" in ${slug}`);
+    }
+    milestone_id = found.id;
+  }
+  return { project_id, milestone_id };
+}
+
+/** An issue's team takes part in its project (Linear shares a project across the teams working on it). */
+function joinProject(projectId: number | null, teamId: number) {
+  if (projectId !== null) db.query("INSERT OR IGNORE INTO project_teams (project_id, team_id) VALUES (?, ?)").run(projectId, teamId);
 }
 
 /**
@@ -1074,6 +1133,10 @@ function queryIssues(a: Actor, filter: IssueFilter, after?: Cursor, limit?: numb
     where.push("i.parent_id = ?");
     params.push(parent);
   }
+  if (filter.project) {
+    where.push("i.project_id = ?");
+    params.push(projectIn(workspace, filter.project).id);
+  }
   if (filter.subscribed) {
     where.push("EXISTS (SELECT 1 FROM subscriptions s WHERE s.issue_id = i.id AND s.user_id = ?)");
     params.push(a.id);
@@ -1203,6 +1266,8 @@ const TRACKED: [ActivityKind, (row: IssueRow) => unknown][] = [
   ["relatedTo", (r) => JSON.parse(r.related_to)],
   ["duplicateOf", (r) => r.duplicate_of],
   ["dueOn", (r) => r.due_on],
+  ["project", (r) => r.project],
+  ["milestone", (r) => r.milestone],
 ];
 
 /** What really changed between two reads of an issue; lists (labels, blockers, related) compare as sets. */
@@ -1305,6 +1370,12 @@ export function createIssue(a: Actor, input: IssueInput): Issue {
   const related = input.relatedTo === undefined ? [] : relatedIds(a, input.relatedTo);
   const duplicate = input.duplicateOf === undefined ? null : duplicateId(a, input.duplicateOf);
   const labels = input.labels === undefined ? [] : checkLabels(input.labels);
+  // A sub-issue joins its parent's project and milestone, unless it names a project (as in Linear).
+  const inherited =
+    input.project === undefined && cols.parent_id !== null
+      ? db.query<InProject, [number]>("SELECT project_id, milestone_id FROM issues WHERE id = ?").get(cols.parent_id as number)!
+      : { project_id: null, milestone_id: null };
+  const inProject = projectColumns(team.workspace, input, inherited);
   if (duplicate !== null) cols.status = duplicateStatus(team.id); // a duplicate is closed, as in Linear
   const closed = isClosed(statusOf(team, cols.status).category);
   const time = now();
@@ -1314,6 +1385,7 @@ export function createIssue(a: Actor, input: IssueInput): Issue {
       .get(team.id)!;
     const row: Record<string, SQLQueryBindings> = {
       ...cols,
+      ...inProject,
       team_id: team.id,
       number,
       creator_id: a.id,
@@ -1325,6 +1397,7 @@ export function createIssue(a: Actor, input: IssueInput): Issue {
     const { id } = db
       .query<{ id: number }, SQLQueryBindings[]>(`INSERT INTO issues (${names.join(", ")}) VALUES (${names.map(() => "?").join(", ")}) RETURNING id`)
       .get(...Object.values(row))!;
+    joinProject(inProject.project_id, team.id);
     const created = setIssueLabels(id, team.workspace, team, labels, time);
     setBlockers(id, blockers);
     setRelated(id, related, time);
@@ -1350,7 +1423,9 @@ export function createIssue(a: Actor, input: IssueInput): Issue {
   changed("issue", team.workspace, identifier);
   for (const r of refs) changed("issue", team.workspace, r);
   for (const doc of docs) changed("document", team.workspace, doc.slug);
-  return getIssue(a, identifier);
+  const issue = getIssue(a, identifier);
+  if (issue.project) changed("project", team.workspace, issue.project);
+  return issue;
 }
 
 /** The team an issue moves to: one of its workspace's (a key resolves only there, so another workspace's team is unknown here). */
@@ -1394,11 +1469,12 @@ export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Is
   const time = now();
   const read = db.query<IssueRow, [number]>(`${ISSUE_SELECT} WHERE i.id = ?`);
   // IMMEDIATE holds the write lock from the read (the version check, the history's "before") to the write.
-  const { refs, created } = db.transaction(() => {
+  const { refs, created, projects } = db.transaction(() => {
     const before = read.get(id)!;
     if (patch.baseUpdatedAt !== undefined && patch.baseUpdatedAt !== before.updated_at) {
       throw new AppError("Issue changed since you read it", 409);
     }
+    if (patch.project !== undefined || patch.milestone !== undefined) Object.assign(cols, projectColumns(workspace, patch, before));
     if (moving) {
       db.query("INSERT INTO issue_aliases (team_id, number, issue_id, created_at) VALUES (?, ?, ?, ?)").run(from.id, before.number, id, time);
       cols.team_id = team.id;
@@ -1428,15 +1504,20 @@ export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Is
     }
     const assignments = [...Object.keys(cols).map((c) => `${c} = ?`), BUMPED_AT];
     db.query(`UPDATE issues SET ${assignments.join(", ")} WHERE id = ?`).run(...Object.values(cols), time, time, id);
+    // A moved issue keeps its project and milestone; its new team joins the project.
+    joinProject((cols.project_id ?? before.project_id) as number | null, team.id);
     const created = labels ? setIssueLabels(id, workspace, team, labels, time) : [];
     if (blockers) setBlockers(id, blockers);
     if (relatedTo) for (const r of setRelated(id, relatedTo, time)) related.add(r);
     if (duplicate !== undefined) for (const r of setDuplicate(id, duplicate, time)) related.add(r);
     const refs = bumpIssues(related, time);
     if (cols.description !== undefined) saveMentions(a, workspace, `issue:${id}`, { issueId: id }, cols.description as string, time);
-    logActivity(a, id, workspace, changes(before, read.get(id)!), time);
+    const after = read.get(id)!;
+    logActivity(a, id, workspace, changes(before, after), time);
     const closed = closing === true && !isClosed(before.status_category) ? autoClose(a.id, id, workspace, time) : [];
-    return { refs: [...refs, ...closed.map((c) => ownerRef("issue", c))], created };
+    // Projects the issue joined or left, or whose teams it may have added to.
+    const projects = moving || before.project !== after.project ? [before.project, after.project] : [];
+    return { refs: [...refs, ...closed.map((c) => ownerRef("issue", c))], created, projects };
   }).immediate();
   // The team may now have old closed issues past their auto-archive window (see Auto-archive).
   if (cols.completed_at) autoArchive();
@@ -1445,6 +1526,7 @@ export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Is
   if (moving) changed("issue", workspace, ref); // lists showing it under its old identifier
   changed("issue", workspace, issue.id);
   for (const r of new Set(refs)) changed("issue", workspace, r);
+  for (const p of new Set(projects)) if (p) changed("project", workspace, p);
   return issue;
 }
 
@@ -2047,10 +2129,13 @@ type DocumentRow = Record<string, unknown> & {
   updated_at: string;
   updated_by_id: number;
   deleted_at: string | null;
+  project_id: number | null;
+  project_slug: string | null;
 };
 
-const DOC_COLUMNS = `d.id, d.slug, d.team_id, t.key AS team_key, d.workspace, d.title, d.position, d.created_at, d.updated_at, d.updated_by_id, d.deleted_at, ${userCols("u", "by")}`;
-const DOC_FROM = `FROM documents d JOIN teams t ON t.id = d.team_id ${userJoin("u", "d.updated_by_id", "d.workspace")}`;
+const DOC_COLUMNS = `d.id, d.slug, d.team_id, t.key AS team_key, d.workspace, d.title, d.position, d.created_at, d.updated_at, d.updated_by_id, d.deleted_at,
+  d.project_id, dp.slug AS project_slug, ${userCols("u", "by")}`;
+const DOC_FROM = `FROM documents d JOIN teams t ON t.id = d.team_id LEFT JOIN projects dp ON dp.id = d.project_id ${userJoin("u", "d.updated_by_id", "d.workspace")}`;
 const DOC_SELECT = `SELECT ${DOC_COLUMNS} ${DOC_FROM}`; // lists leave out the content
 
 // Saves by the same author within this window of a version's first save update that version (autosave-friendly).
@@ -2065,6 +2150,7 @@ const toDocSummary = (row: DocumentRow): DocumentSummary => ({
   updatedAt: row.updated_at,
   updatedBy: ref(row, "by")!,
   deletedAt: row.deleted_at,
+  project: row.project_slug,
 });
 
 /** Queues a doc's webhook event (see webhooks.ts): its summary, never its content. */
@@ -2169,7 +2255,11 @@ function saveRefs(documentId: number, content: string, workspace: string) {
 }
 
 export function listDocuments(a: Actor, filter: DocumentFilter): DocumentSummary[] {
-  const { where, params } = listScope(a, "d", filter, ["d.title", "d.content"]);
+  const { where, params, workspace } = listScope(a, "d", filter, ["d.title", "d.content"]);
+  if (filter.project) {
+    where.push("d.project_id = ?");
+    params.push(projectIn(workspace, filter.project).id);
+  }
   return db
     .query<DocumentRow, SQLQueryBindings[]>(`${DOC_SELECT} ${whereClause(where)} ORDER BY t.key, d.position, d.id`)
     .all(...params)
@@ -2192,16 +2282,17 @@ export function createDocument(a: Actor, input: DocumentInput): Document {
   const title = requireText(input.title, "title");
   const content = input.content === undefined ? "" : checkContent(input.content);
   const position = input.position === undefined ? undefined : checkPosition(input.position);
+  const project = input.project == null ? null : projectIn(team.workspace, input.project);
   const time = now();
   const slug = db.transaction(() => {
     const taken = (s: string) => db.query("SELECT 1 FROM documents WHERE workspace = ? AND slug = ?").get(team.workspace, s) !== null;
     const slug = pickSlug(input.slug, title, taken, { label: "slug", fallback: "doc" });
     const { id } = db
       .query<{ id: number }, SQLQueryBindings[]>(
-        `INSERT INTO documents (workspace, team_id, slug, title, content, position, created_at, updated_at, updated_by_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+        `INSERT INTO documents (workspace, team_id, slug, title, content, position, project_id, created_at, updated_at, updated_by_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
       )
-      .get(team.workspace, team.id, slug, title, content, position ?? nextPosition(team.id), time, time, a.id)!;
+      .get(team.workspace, team.id, slug, title, content, position ?? nextPosition(team.id), project?.id ?? null, time, time, a.id)!;
     saveVersion(id, title, content, a.id, time);
     saveRefs(id, content, team.workspace);
     inbox.subscribe(a.id, { documentId: id }, time);
@@ -2210,6 +2301,7 @@ export function createDocument(a: Actor, input: DocumentInput): Document {
     return slug;
   })();
   changed("document", team.workspace, slug);
+  if (project) changed("project", team.workspace, project.slug);
   return getDocument(a, slug);
 }
 
@@ -2231,6 +2323,7 @@ export function updateDocument(a: Actor, slug: string, patch: DocumentPatch): Do
     if (team.id !== row.team_id && patch.position === undefined) cols.position = nextPosition(team.id);
   }
   if (patch.position !== undefined) cols.position = checkPosition(patch.position);
+  if (patch.project !== undefined) cols.project_id = patch.project === null ? null : projectIn(row.workspace, patch.project).id;
   for (const [name, value] of Object.entries(cols)) if (row[name] === value) delete cols[name];
   if (Object.keys(cols).length === 0) return getDocument(a, row.slug);
 
@@ -2250,11 +2343,15 @@ export function updateDocument(a: Actor, slug: string, patch: DocumentPatch): Do
     if (cols.title !== undefined) was.title = row.title;
     if (cols.team_id !== undefined) was.team = row.team_key;
     if (cols.position !== undefined) was.position = row.position;
+    if (cols.project_id !== undefined) was.project = row.project_slug;
     if (row.updated_by_id !== a.id) was.updatedBy = ref(row, "by");
     documentEvent(a, row, "update", time, was);
   })();
+  const document = getDocument(a, row.slug);
   changed("document", row.workspace, row.slug);
-  return getDocument(a, row.slug);
+  // The projects it left or joined list their docs.
+  if (cols.project_id !== undefined) for (const p of [row.project_slug, document.project]) if (p) changed("project", row.workspace, p);
+  return document;
 }
 
 /** Moves a doc to the trash or back; its versions, comments and refs stay until it's purged. */
@@ -2330,6 +2427,267 @@ export function getDocumentVersion(a: Actor, slug: string, id: unknown): Documen
     .get(documentRow(a, slug).id, Number(id));
   if (!r) throw new AppError(`Version ${id} of ${slug} not found`, 404);
   return { id: r.id as number, author: ref(r, "a")!, title: r.title as string, content: r.content as string, createdAt: r.created_at as string };
+}
+
+// --- Projects (Linear's): a body of work in one workspace, spanning the teams in project_teams, with milestones ---
+
+type ProjectRow = Record<string, unknown> & {
+  id: number;
+  workspace: string;
+  slug: string;
+  name: string;
+  description: string;
+  status: ProjectStatus;
+  target_date: string | null;
+  created_at: string;
+  updated_at: string;
+  team_keys: string; // JSON array, sorted
+  tally: string; // see `tally`
+};
+
+type MilestoneRow = { id: number; project_id: number; name: string; description: string; target_date: string | null; position: number };
+
+/** SQL: the live issues matching `where` (alias i), counted by status category, as JSON for `progressOf`. */
+const tally = (where: string) =>
+  `(SELECT json_object('n', COUNT(*), 'completed', TOTAL(ws.category = 'completed'), 'started', TOTAL(ws.category = 'started'), 'canceled', TOTAL(ws.category = 'canceled'))
+    FROM issues i LEFT JOIN workflow_statuses ws ON ws.team_id = i.team_id AND ws.key = i.status WHERE ${where} AND i.deleted_at IS NULL)`;
+
+/** Progress over live issues: a completed one counts 1, a started one ½, and canceled ones are left out. */
+function progressOf(json: string): { progress: number; issueCount: number } {
+  const t = JSON.parse(json) as { n: number; completed: number; started: number; canceled: number };
+  const counted = t.n - t.canceled;
+  return { progress: counted > 0 ? (t.completed + t.started / 2) / counted : 0, issueCount: t.n };
+}
+
+const PROJECT_SELECT = `
+  SELECT p.*, ${userCols("ul", "lead")}, ${userCols("uc", "creator")}, ${tally("i.project_id = p.id")} AS tally,
+    (SELECT json_group_array(key) FROM (
+      SELECT t.key FROM project_teams x JOIN teams t ON t.id = x.team_id WHERE x.project_id = p.id ORDER BY t.key
+    )) AS team_keys
+  FROM projects p ${userJoin("ul", "p.lead_id", "p.workspace")} ${userJoin("uc", "p.creator_id", "p.workspace")}`;
+
+// Lifecycle order (PROJECT_STATUSES), then the nearest target date (none last), then name.
+const PROJECT_ORDER = `ORDER BY CASE p.status ${PROJECT_STATUSES.map((s, n) => `WHEN '${s}' THEN ${n}`).join(" ")} END,
+  p.target_date IS NULL, p.target_date, p.name COLLATE NOCASE, p.id`;
+
+const toProjectSummary = (row: ProjectRow): ProjectSummary => ({
+  slug: row.slug,
+  workspace: row.workspace,
+  name: row.name,
+  status: row.status,
+  lead: ref(row, "lead"),
+  teams: JSON.parse(row.team_keys),
+  targetDate: row.target_date,
+  ...progressOf(row.tally),
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+});
+
+/** A project of the request's workspace, by slug; anything else is 404. */
+function projectRow(a: Actor, slug: unknown): ProjectRow {
+  const row =
+    typeof slug === "string"
+      ? db.query<ProjectRow, [string, string]>(`${PROJECT_SELECT} WHERE p.workspace = ? AND p.slug = ?`).get(requestWorkspace(a), slug.trim().toLowerCase())
+      : null;
+  if (!row) throw new AppError(`Project ${slug} not found`, 404);
+  return row;
+}
+
+/** A team of `workspace` by key, for a project's teams or filter: another workspace's is unknown here (400). */
+function knownTeam(workspace: string, key: unknown): TeamRef {
+  const row =
+    typeof key === "string"
+      ? db.query<TeamRef, [string, string]>("SELECT id, key FROM teams WHERE workspace = ? AND key = ?").get(workspace, key.trim().toUpperCase())
+      : null;
+  if (!row) throw new AppError(`Unknown team "${key}"`);
+  return row;
+}
+
+/** A project's teams: at least one, each of its workspace. */
+function projectTeams(workspace: string, value: unknown): number[] {
+  if (!Array.isArray(value) || !value.length) throw new AppError('teams must name at least one team, e.g. ["BRD"]');
+  return [...new Set(value.map((key) => knownTeam(workspace, key).id))];
+}
+
+/** A project's lead: a person who is an active member (or "me"), or null. */
+function leadId(a: Actor, workspace: string, value: unknown): number | null {
+  if (value === null) return null;
+  if (typeof value !== "string") throw new AppError("lead must be a username or null");
+  return value.trim() ? activeMemberId(a, workspace, value, "person", "lead") : null;
+}
+
+const checkTargetDate = (value: unknown) => (value === null ? null : checkDate(value, "targetDate"));
+
+export function listProjects(a: Actor, filter: { team?: string; status?: string[] } = {}): ProjectSummary[] {
+  const workspace = requestWorkspace(a);
+  const where = ["p.workspace = ?"];
+  const params: SQLQueryBindings[] = [workspace];
+  if (filter.team) {
+    where.push("EXISTS (SELECT 1 FROM project_teams x WHERE x.project_id = p.id AND x.team_id = ?)");
+    params.push(knownTeam(workspace, filter.team).id);
+  }
+  if (filter.status?.length) {
+    where.push(`p.status IN (${inList(filter.status)})`);
+    params.push(...filter.status.map((s) => checkOneOf(s, PROJECT_STATUSES, "status")));
+  }
+  return db
+    .query<ProjectRow, SQLQueryBindings[]>(`${PROJECT_SELECT} ${whereClause(where)} ${PROJECT_ORDER}`)
+    .all(...params)
+    .map(toProjectSummary);
+}
+
+export function getProject(a: Actor, slug: string): Project {
+  const row = projectRow(a, slug);
+  const milestones = db
+    .query<MilestoneRow & { tally: string }, [number]>(`SELECT m.*, ${tally("i.milestone_id = m.id")} AS tally FROM milestones m WHERE m.project_id = ? ORDER BY m.position, m.id`)
+    .all(row.id)
+    .map(
+      (m): Milestone => ({ id: m.id, name: m.name, description: m.description, targetDate: m.target_date, position: m.position, ...progressOf(m.tally) }),
+    );
+  const docs = db
+    .query<DocumentRow, [number]>(`${DOC_SELECT} WHERE d.project_id = ? AND d.deleted_at IS NULL ORDER BY t.key, d.position, d.id`)
+    .all(row.id)
+    .map(toDocSummary);
+  return { ...toProjectSummary(row), description: row.description, creator: ref(row, "creator")!, milestones, docs };
+}
+
+const setProjectTeams = (projectId: number, teamIds: number[]) => {
+  db.query("DELETE FROM project_teams WHERE project_id = ?").run(projectId);
+  for (const id of teamIds) db.query("INSERT INTO project_teams (project_id, team_id) VALUES (?, ?)").run(projectId, id);
+};
+
+/** Creates a project (any member, people and agents alike) over teams of the request's workspace, its workspace. */
+export function createProject(a: Actor, input: ProjectInput): Project {
+  const workspace = requestWorkspace(a);
+  const teams = projectTeams(workspace, input.teams);
+  const name = requireText(input.name, "name");
+  const description = optionalText(input.description, "description");
+  const status = input.status === undefined ? "backlog" : checkOneOf(input.status, PROJECT_STATUSES, "status");
+  const lead = input.lead === undefined ? null : leadId(a, workspace, input.lead);
+  const targetDate = input.targetDate === undefined ? null : checkTargetDate(input.targetDate);
+  const time = now();
+  const slug = db.transaction(() => {
+    const taken = (s: string) => db.query("SELECT 1 FROM projects WHERE workspace = ? AND slug = ?").get(workspace, s) !== null;
+    const slug = pickSlug(input.slug, name, taken, { label: "slug", fallback: "project" });
+    const { id } = db
+      .query<{ id: number }, SQLQueryBindings[]>(
+        `INSERT INTO projects (workspace, slug, name, description, status, lead_id, target_date, creator_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+      )
+      .get(workspace, slug, name, description, status, lead, targetDate, a.id, time, time)!;
+    setProjectTeams(id, teams);
+    return slug;
+  })();
+  changed("project", workspace, slug);
+  return getProject(a, slug);
+}
+
+/**
+ * Changes a project; `teams` replaces the list, but a team with issues in the project (trashed ones too) stays (409).
+ * `baseUpdatedAt` works as for issues. There's no delete: a project is canceled instead.
+ */
+export function updateProject(a: Actor, slug: string, patch: ProjectPatch): Project {
+  const row = projectRow(a, slug);
+  const cols: Record<string, SQLQueryBindings> = {};
+  if (patch.name !== undefined) cols.name = requireText(patch.name, "name");
+  if (patch.description !== undefined) cols.description = optionalText(patch.description, "description");
+  if (patch.status !== undefined) cols.status = checkOneOf(patch.status, PROJECT_STATUSES, "status");
+  if (patch.lead !== undefined) cols.lead_id = leadId(a, row.workspace, patch.lead);
+  if (patch.targetDate !== undefined) cols.target_date = checkTargetDate(patch.targetDate);
+  const teams = patch.teams === undefined ? undefined : projectTeams(row.workspace, patch.teams);
+  db.transaction(() => {
+    const { updated_at } = db.query<{ updated_at: string }, [number]>("SELECT updated_at FROM projects WHERE id = ?").get(row.id)!;
+    if (patch.baseUpdatedAt !== undefined && patch.baseUpdatedAt !== updated_at) throw new AppError("Project changed since you read it", 409);
+    if (teams) {
+      const stays = db
+        .query<{ key: string; n: number }, SQLQueryBindings[]>(
+          `SELECT t.key, COUNT(*) AS n FROM issues i JOIN teams t ON t.id = i.team_id
+           WHERE i.project_id = ? AND i.team_id NOT IN (${inList(teams)}) GROUP BY t.key ORDER BY t.key LIMIT 1`,
+        )
+        .get(row.id, ...teams);
+      if (stays) throw new AppError(`${stays.n} ${stays.key} ${stays.n === 1 ? "issue is" : "issues are"} in this project`, 409);
+      setProjectTeams(row.id, teams);
+    }
+    const next = { ...cols, updated_at: bumpedAt(updated_at) };
+    db.query(`UPDATE projects SET ${Object.keys(next).map((c) => `${c} = ?`).join(", ")} WHERE id = ?`).run(...Object.values(next), row.id);
+  }).immediate();
+  changed("project", row.workspace, row.slug);
+  return getProject(a, row.slug);
+}
+
+/** A milestone name, unique in its project case-insensitively (409). */
+function milestoneName(projectId: number, value: unknown, self?: number): string {
+  const name = requireText(value, "name");
+  const clash = db
+    .query<{ name: string }, [number, string, number | null]>("SELECT name FROM milestones WHERE project_id = ? AND lower(name) = lower(?) AND id IS NOT ?")
+    .get(projectId, name, self ?? null);
+  if (clash) throw new AppError(`This project already has a milestone named ${clash.name}`, 409);
+  return name;
+}
+
+function milestoneRow(project: ProjectRow, id: unknown): MilestoneRow {
+  const row = db.query<MilestoneRow, [number, number]>("SELECT * FROM milestones WHERE id = ? AND project_id = ?").get(Number(id), project.id);
+  if (!row) throw new AppError(`Milestone ${id} not found in ${project.slug}`, 404);
+  return row;
+}
+
+/** Adds a milestone (a stage) to a project, last unless `position` says otherwise. */
+export function createMilestone(a: Actor, slug: string, input: MilestoneInput): Project {
+  const project = projectRow(a, slug);
+  const name = milestoneName(project.id, input.name);
+  const description = optionalText(input.description, "description");
+  const targetDate = input.targetDate === undefined ? null : checkTargetDate(input.targetDate);
+  const last = db.query<{ n: number }, [number]>("SELECT COALESCE(MAX(position), 0) AS n FROM milestones WHERE project_id = ?").get(project.id)!.n;
+  const position = input.position === undefined ? last + 1 : checkPosition(input.position);
+  db.query("INSERT INTO milestones (project_id, name, description, target_date, position, created_at) VALUES (?, ?, ?, ?, ?, ?)").run(
+    project.id,
+    name,
+    description,
+    targetDate,
+    position,
+    now(),
+  );
+  changed("project", project.workspace, project.slug);
+  return getProject(a, project.slug);
+}
+
+/** Renames, redescribes, redates or moves a milestone. A new name shows on its issues: they're bumped, as for a label's. */
+export function updateMilestone(a: Actor, slug: string, id: unknown, patch: MilestonePatch): Project {
+  const project = projectRow(a, slug);
+  const m = milestoneRow(project, id);
+  const name = patch.name === undefined ? m.name : milestoneName(project.id, patch.name, m.id);
+  const description = patch.description === undefined ? m.description : optionalText(patch.description, "description");
+  const targetDate = patch.targetDate === undefined ? m.target_date : checkTargetDate(patch.targetDate);
+  const position = patch.position === undefined ? m.position : checkPosition(patch.position);
+  const refs = db.transaction(() => {
+    db.query("UPDATE milestones SET name = ?, description = ?, target_date = ?, position = ? WHERE id = ?").run(name, description, targetDate, position, m.id);
+    if (name === m.name) return [];
+    const issues = db.query<{ id: number }, [number]>("SELECT id FROM issues WHERE milestone_id = ?").all(m.id);
+    return bumpIssues(issues.map((i) => i.id), now());
+  }).immediate();
+  changed("project", project.workspace, project.slug);
+  for (const ref of refs) changed("issue", project.workspace, ref);
+  return getProject(a, project.slug);
+}
+
+/** Deletes a milestone: it comes off its issues (trashed ones too), each logged as its own milestone change. */
+export function deleteMilestone(a: Actor, slug: string, id: unknown): Project {
+  const project = projectRow(a, slug);
+  const m = milestoneRow(project, id);
+  const time = now();
+  const read = db.query<IssueRow, [number]>(`${ISSUE_SELECT} WHERE i.id = ?`);
+  const refs = db.transaction(() => {
+    const issues = db.query<{ id: number }, [number]>("SELECT id FROM issues WHERE milestone_id = ? ORDER BY id").all(m.id).map((i) => i.id);
+    const before = issues.map((issue) => read.get(issue)!);
+    db.query("UPDATE issues SET milestone_id = NULL WHERE milestone_id = ?").run(m.id);
+    db.query("DELETE FROM milestones WHERE id = ?").run(m.id);
+    const refs = bumpIssues(issues, time);
+    issues.forEach((issue, n) => logActivity(a, issue, project.workspace, changes(before[n]!, read.get(issue)!), time));
+    return refs;
+  }).immediate();
+  changed("project", project.workspace, project.slug);
+  for (const ref of refs) changed("issue", project.workspace, ref);
+  return getProject(a, project.slug);
 }
 
 // --- Links made before URLs carried the workspace ---

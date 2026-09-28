@@ -24,7 +24,7 @@ import {
 } from "../shared/types";
 import { api } from "./api";
 import { auth, getMe, getYou } from "./auth";
-import { Picker, statusOptions } from "./pickers";
+import { Picker, RowMenu, statusOptions } from "./pickers";
 import {
   ask,
   Avatar,
@@ -35,7 +35,6 @@ import {
   LabelDot,
   ListHeader,
   MenuButton,
-  MoreIcon,
   PlusIcon,
   Section,
   StatusIcon,
@@ -179,22 +178,6 @@ function Choice<T extends string>({ label, value, options, onChange }: { label: 
         </button>
       ))}
     </div>
-  );
-}
-
-/** A row's "…" menu. */
-function RowMenu({ label, actions }: { label: string; actions: [label: string, run: () => void][] }) {
-  return (
-    <Picker
-      label={label}
-      options={actions.map(([label]) => ({ value: label, label }))}
-      selected={[]}
-      onPick={(picked) => actions.find(([label]) => label === picked)?.[1]()}
-      className="icon-btn sm"
-      align="end"
-    >
-      <MoreIcon />
-    </Picker>
   );
 }
 

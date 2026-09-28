@@ -20,6 +20,13 @@ import type {
   Label,
   LabelInput,
   LabelPatch,
+  MilestoneInput,
+  MilestonePatch,
+  Project,
+  ProjectInput,
+  ProjectPatch,
+  ProjectStatus,
+  ProjectSummary,
   Team,
   TeamInput,
   TeamPatch,
@@ -117,7 +124,7 @@ async function send<T>(method: string, path: string, body?: BodyInit, type?: str
   return data as T;
 }
 
-function query(filter: IssueFilter | DocumentFilter): string {
+function query(filter: IssueFilter | DocumentFilter | { team?: string; status?: ProjectStatus[] }): string {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(filter)) {
     if (value == null || value === "" || (Array.isArray(value) && value.length === 0)) continue;
@@ -207,6 +214,15 @@ export const api = {
   deleteDocument: (slug: string) => request<Document>("DELETE", `/api/documents/${enc(slug)}`),
   restoreDocument: (slug: string) => request<Document>("POST", `/api/documents/${enc(slug)}/restore`),
   trash: (team: string) => request<Trash>("GET", `/api/teams/${enc(team)}/trash`),
+
+  projects: (filter: { team?: string; status?: ProjectStatus[] } = {}) => request<ProjectSummary[]>("GET", `/api/projects${query(filter)}`),
+  project: (slug: string) => request<Project>("GET", `/api/projects/${enc(slug)}`),
+  createProject: (input: ProjectInput) => request<Project>("POST", "/api/projects", input),
+  updateProject: (slug: string, patch: ProjectPatch) => request<Project>("PATCH", `/api/projects/${enc(slug)}`, patch),
+  createMilestone: (slug: string, input: MilestoneInput) => request<Project>("POST", `/api/projects/${enc(slug)}/milestones`, input),
+  updateMilestone: (slug: string, id: number, patch: MilestonePatch) =>
+    request<Project>("PATCH", `/api/projects/${enc(slug)}/milestones/${id}`, patch),
+  deleteMilestone: (slug: string, id: number) => request<Project>("DELETE", `/api/projects/${enc(slug)}/milestones/${id}`),
   commentDocument: (slug: string, body: string, parent?: number) =>
     request<Document>("POST", `/api/documents/${enc(slug)}/comments`, { body, parent }),
   editDocumentComment: (slug: string, cid: number, body: string) =>

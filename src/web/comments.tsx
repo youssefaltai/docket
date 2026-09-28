@@ -319,6 +319,11 @@ function describe(
       {id}
     </Link>
   );
+  const project = (slug: string) => (
+    <Link className="event-name" to={`/project/${slug}`}>
+      {slug}
+    </Link>
+  );
   const joined = (items: string[], show: (item: string) => ReactNode) =>
     items.map((item, i) => (
       <Fragment key={item}>
@@ -388,6 +393,17 @@ function describe(
       return "moved to trash";
     case "restored":
       return "restored";
+    case "project":
+      if (!to) return <>removed from project {project(from as string)}</>;
+      return from ? (
+        <>
+          moved from project {project(from as string)} to {project(to as string)}
+        </>
+      ) : (
+        <>added to project {project(to as string)}</>
+      );
+    case "milestone":
+      return to ? <>set milestone to {name(to as string)}</> : "removed the milestone";
   }
 }
 

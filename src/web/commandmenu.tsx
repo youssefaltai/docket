@@ -13,6 +13,7 @@ import {
   ListIcon,
   MY_TABS,
   PlusIcon,
+  ProjectIcon,
   SettingsIcon,
   IssueStatusIcon,
   TeamMark,
@@ -46,6 +47,8 @@ const PROPS: [string, string][] = [
   ["assignee", "Set assignee"],
   ["delegate", "Set delegate"],
   ["team", "Move to team"],
+  ["project", "Set project"],
+  ["milestone", "Set milestone"],
 ];
 
 /** Filters `items` on `q` against `fields`, exact matches first, capped at `cap`. Same substring+exact-boost
@@ -132,6 +135,7 @@ export function CommandMenu() {
     const actions: Item[] = [
       { key: "new-issue", label: "New issue", icon: <ComposeIcon />, group: "Actions", run: act(() => app.newIssue()) },
       { key: "new-doc", label: "New doc", icon: <DocIcon />, group: "Actions", run: act(() => app.newDoc()) },
+      { key: "new-project", label: "New project", icon: <ProjectIcon />, group: "Actions", run: act(() => app.newProject()) },
       { key: "new-team", label: "New team", icon: <PlusIcon />, group: "Actions", run: act(app.newTeam) },
       { key: "new-workspace", label: "New workspace", icon: <PlusIcon />, group: "Actions", run: act(app.newWorkspace) },
       { key: "go-inbox", label: "Go to Inbox", icon: <InboxIcon />, group: "Actions", run: go("/inbox") },
@@ -145,6 +149,7 @@ export function CommandMenu() {
       })),
       { key: "go-issues", label: "Go to All issues", icon: <IssuesIcon />, group: "Actions", run: go("/") },
       { key: "go-docs", label: "Go to All docs", icon: <DocIcon />, group: "Actions", run: go("/docs") },
+      { key: "go-projects", label: "Go to Projects", icon: <ProjectIcon />, group: "Actions", run: go("/projects") },
       { key: "go-settings", label: "Go to Settings", icon: <SettingsIcon />, group: "Actions", run: go("/settings/account") },
     ];
     if (app.workspace?.role === "admin")

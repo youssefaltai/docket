@@ -12,8 +12,9 @@ import { IssuePage } from "./issue";
 import { IssuesView } from "./issues";
 import { Login, Setup } from "./login";
 import { MyIssuesView } from "./myissues";
-import { NewDocModal, NewIssueModal, NewTeamModal, NewWorkspaceModal } from "./modals";
+import { NewDocModal, NewIssueModal, NewProjectModal, NewTeamModal, NewWorkspaceModal } from "./modals";
 import { Picker } from "./pickers";
+import { ProjectPage, ProjectsView } from "./projects";
 import { SettingsPage, TeamSettingsPage } from "./settings";
 import { ShortcutsHelp } from "./shortcuts";
 import { TrashView } from "./trash";
@@ -33,6 +34,7 @@ import {
   Logo,
   MOD,
   PlusIcon,
+  ProjectIcon,
   SearchIcon,
   TeamMark,
   Toaster,
@@ -58,7 +60,8 @@ import {
 
 type ModalState =
   | { kind: "issue"; defaults: Partial<IssueInput> }
-  | { kind: "doc"; team: string }
+  | { kind: "doc"; team: string; project?: string }
+  | { kind: "project"; team?: string }
   | { kind: "team" }
   | { kind: "workspace" }
   | null;
@@ -201,6 +204,8 @@ function App() {
       ? `/settings/${route.section}`
       : route.view === "docs" || route.view === "doc"
         ? "/docs"
+        : route.view === "projects" || route.view === "project"
+          ? "/projects"
         : route.view === "inbox"
           ? "/inbox"
           : route.view === "my"
@@ -252,9 +257,13 @@ function App() {
       const triage = route.view === "triage" ? workspaceTeams?.find((t) => t.key === team)?.statuses.find((s) => s.category === "triage") : undefined;
       setModal({ kind: "issue", defaults: { status: triage?.key, ...defaults, team } });
     },
-    newDoc: (key) => {
+    newDoc: (key, project) => {
       const team = pickTeam(key);
-      setModal(team ? { kind: "doc", team } : { kind: "team" });
+      setModal(team ? { kind: "doc", team, project } : { kind: "team" });
+    },
+    newProject: (key) => {
+      const team = pickTeam(key);
+      setModal(team ? { kind: "project", team } : { kind: "team" });
     },
     newTeam: () => setModal({ kind: "team" }),
     newWorkspace: () => setModal({ kind: "workspace" }),
@@ -302,8 +311,9 @@ function App() {
       if (navOpen) setNavOpen(false);
       else if (route.view === "issue") navigate(nav.lastList);
       else if (route.view === "doc") navigate(nav.lastDocs);
+      else if (route.view === "project") navigate(nav.lastProjects);
       else (document.activeElement as HTMLElement | null)?.blur?.();
-    } else if (["issues", "triage", "docs", "inbox", "my"].includes(route.view) && (key === "j" || key === "k" || key === "ArrowDown" || key === "ArrowUp")) {
+    } else if (["issues", "triage", "docs", "projects", "project", "inbox", "my"].includes(route.view) && (key === "j" || key === "k" || key === "ArrowDown" || key === "ArrowUp")) {
       if (moveFocus(key === "j" || key === "ArrowDown" ? 1 : -1)) e.preventDefault();
     }
   });
@@ -343,6 +353,10 @@ function App() {
     <TriageView key={route.team} teamKey={route.team} />
   ) : route.view === "team-settings" ? (
     <TeamSettingsPage key={route.team} teamKey={route.team} />
+  ) : route.view === "project" ? (
+    <ProjectPage key={route.slug} slug={route.slug} />
+  ) : route.view === "projects" ? (
+    <ProjectsView key={route.team ?? ""} teamKey={route.team} />
   ) : route.view === "docs" ? (
     <DocsView key={route.team ?? ""} teamKey={route.team} />
   ) : (
@@ -366,7 +380,8 @@ function App() {
           {getMe().chat && <ChatDock />}
         </div>
         {modal?.kind === "issue" && <NewIssueModal defaults={modal.defaults} onClose={() => setModal(null)} />}
-        {modal?.kind === "doc" && <NewDocModal team={modal.team} onClose={() => setModal(null)} />}
+        {modal?.kind === "doc" && <NewDocModal team={modal.team} project={modal.project} onClose={() => setModal(null)} />}
+        {modal?.kind === "project" && <NewProjectModal team={modal.team} onClose={() => setModal(null)} />}
         {modal?.kind === "team" && <NewTeamModal onClose={() => setModal(null)} />}
         {modal?.kind === "workspace" && (
           <NewWorkspaceModal
@@ -449,6 +464,10 @@ function Sidebar({ route, active, onSwitch }: { route: Route; active: string | n
           <DocIcon />
           <span className="nav-label">All docs</span>
           {docs > 0 && <span className="nav-count">{docs}</span>}
+        </Link>
+        <Link to="/projects" className={cls("nav-item", on("projects") && "active")}>
+          <ProjectIcon />
+          <span className="nav-label">Projects</span>
         </Link>
         {getMe().chat && <ChatNavItem />}
         <div className="nav-section">

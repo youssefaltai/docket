@@ -22,7 +22,10 @@ export interface AppState {
   /** Refetch teams and workspaces now, without waiting for the live update. */
   reloadTeams: () => void;
   newIssue: (defaults?: Partial<IssueInput>) => void;
-  newDoc: (team?: string) => void;
+  /** `project`: attach the new doc to it (its slug). */
+  newDoc: (team?: string, project?: string) => void;
+  /** New project, taking part: `team` (default: the current one). */
+  newProject: (team?: string) => void;
   newTeam: () => void;
   newWorkspace: () => void;
   /** Switches to another of your workspaces, keeping the same kind of page (settings, docs, inbox, my issues, or issues). */

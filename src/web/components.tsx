@@ -156,6 +156,50 @@ export function TeamTitle({ team }: { team: Team }) {
   );
 }
 
+/**
+ * A date as text over the browser's own date input (a click opens its picker): a project's or milestone's target date.
+ * It saves on blur, so typing a date digit by digit saves once.
+ */
+export function DateButton({
+  value,
+  onChange,
+  label,
+  placeholder,
+  className,
+}: {
+  value: string | null;
+  onChange: (date: string | null) => void;
+  label: string;
+  placeholder: string;
+  className?: string;
+}) {
+  const [draft, setDraft] = useState<string | null>(null); // while editing
+  const shown = draft ?? value ?? "";
+  const save = () => {
+    // A year typed past 4 digits (12026) is a valid date to the browser, not to Docket: keep the saved one.
+    if (draft !== null && /^(\d{4}-\d{2}-\d{2})?$/.test(draft) && (draft || null) !== value) onChange(draft || null);
+    setDraft(null);
+  };
+  return (
+    <label className={cls(className, "date-btn")} title={label}>
+      <CalendarIcon />
+      {shown ? <span>{dayLabel(shown)}</span> : <span className="muted">{placeholder}</span>}
+      <input
+        type="date"
+        aria-label={label}
+        value={shown}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={save}
+        onClick={(e) => {
+          try {
+            e.currentTarget.showPicker();
+          } catch {}
+        }}
+      />
+    </label>
+  );
+}
+
 /** Links as tabs: [to, label, whether it's the current one]. */
 export function Tabs({ label, tabs }: { label: string; tabs: [to: string, label: string, on: boolean][] }) {
   return (
@@ -309,7 +353,7 @@ export function ListHeader({
   team: Team | undefined;
   title: string;
   count: number;
-  view: "issues" | "triage" | "docs" | "trash" | "settings";
+  view: "issues" | "triage" | "docs" | "projects" | "trash" | "settings";
   /** New item, search and controls: lists have them, the trash doesn't. */
   onNew?: () => void;
   search?: string;
@@ -333,13 +377,14 @@ export function ListHeader({
             ...(team.statuses.some((s) => s.category === "triage")
               ? [[`/t/${team.key}/triage`, `Triage${triageCount(team) ? ` ${triageCount(team)}` : ""}`, view === "triage"] as [string, string, boolean]]
               : []),
+            [`/t/${team.key}/projects`, "Projects", view === "projects"],
             [`/t/${team.key}/docs`, "Docs", view === "docs"],
             [`/t/${team.key}/trash`, "Trash", view === "trash"],
           ]}
         />
       )}
       {onNew && (
-        <button className="icon-btn mobile-only" onClick={onNew} aria-label={view === "docs" ? "New doc" : "New issue"}>
+        <button className="icon-btn mobile-only" onClick={onNew} aria-label={view === "docs" ? "New doc" : view === "projects" ? "New project" : "New issue"}>
           <PlusIcon />
         </button>
       )}
