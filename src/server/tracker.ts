@@ -1533,16 +1533,15 @@ export const unarchiveIssue = (a: Actor, identifier: string) => setArchived(a, i
 /**
  * Sweeps every team with `autoArchiveDays` set: archives its live, unarchived issues whose `completedAt` is
  * older than that many days, attributed to @docket with no `onBehalfOf` (a time-based sweep, not set off by
- * anyone's own change). Run at startup and after any `updateIssue` call that closes an issue, so a team's
- * backlog of already-old closed issues is swept the next time something in it changes.
+ * anyone's own change). Run at startup, hourly (index.ts) and after any `updateIssue` call that closes an issue.
  */
-function autoArchive() {
+export function autoArchive() {
   const time = now();
   const due = db
     .query<{ id: number; workspace: string; ref: string }, []>(
       `SELECT i.id, t.workspace, ${ident("t", "i")} AS ref FROM issues i JOIN teams t ON t.id = i.team_id
        WHERE t.auto_archive_days IS NOT NULL AND i.deleted_at IS NULL AND i.archived_at IS NULL
-         AND i.completed_at IS NOT NULL AND i.completed_at < datetime('now', '-' || t.auto_archive_days || ' days')`,
+         AND i.completed_at IS NOT NULL AND i.completed_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-' || t.auto_archive_days || ' days')`,
     )
     .all();
   if (!due.length) return;
