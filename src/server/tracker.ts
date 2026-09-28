@@ -24,6 +24,7 @@ import {
   type CustomView,
   type CustomViewInput,
   type CustomViewPatch,
+  type Cycle,
   type Document,
   type DocumentFilter,
   type DocumentInput,
@@ -403,6 +404,9 @@ interface TeamRow {
   auto_close_children: number;
   auto_archive_days: number | null; // null: never; else days after completed_at
   estimate_scale: EstimateScale | null;
+  cycle_weeks: number | null; // null: cycles off
+  upcoming_cycles: number;
+  current_cycle: number | null;
   statuses: string; // JSON array of WorkflowStatus, in workflow order
   counts: string; // JSON object: status → issue count, statuses without issues left out
   doc_count: number;
@@ -415,6 +419,10 @@ const categoryRank = (column: string) =>
   `CASE ${column} ${STATUS_CATEGORIES.map((c, n) => `WHEN '${c}' THEN ${n}`).join(" ")} ELSE ${STATUS_CATEGORIES.length} END`;
 const WORKFLOW_ORDER = `ORDER BY ${categoryRank("category")}, position, id`;
 
+// SQL: a cycle (its columns unqualified) running now. Cycles are back to back, so this is right even before syncCycles.
+const NOW = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
+const RUNNING = `completed_at IS NULL AND starts_at <= ${NOW} AND ends_at > ${NOW}`;
+
 const TEAM_SELECT = `
   SELECT t.*,
     (SELECT json_group_array(json_object('key', key, 'name', name, 'category', category, 'color', color, 'position', position)) FROM (
@@ -423,7 +431,8 @@ const TEAM_SELECT = `
     (SELECT json_group_object(status, n) FROM (
       SELECT status, COUNT(*) AS n FROM issues WHERE team_id = t.id AND deleted_at IS NULL GROUP BY status
     )) AS counts,
-    (SELECT COUNT(*) FROM documents WHERE team_id = t.id AND deleted_at IS NULL) AS doc_count
+    (SELECT COUNT(*) FROM documents WHERE team_id = t.id AND deleted_at IS NULL) AS doc_count,
+    (SELECT number FROM cycles WHERE team_id = t.id AND ${RUNNING}) AS current_cycle
   FROM teams t`;
 
 function toTeam(row: TeamRow): Team {
@@ -439,6 +448,9 @@ function toTeam(row: TeamRow): Team {
     autoCloseChildren: row.auto_close_children === 1,
     autoArchiveDays: row.auto_archive_days,
     estimateScale: row.estimate_scale,
+    cycleWeeks: row.cycle_weeks,
+    upcomingCycles: row.upcoming_cycles,
+    currentCycle: row.current_cycle,
     counts: { ...Object.fromEntries(statuses.map((s) => [s.key, 0])), ...JSON.parse(row.counts) },
     docCount: row.doc_count,
     createdAt: row.created_at,
@@ -512,12 +524,13 @@ function checkAutoArchiveDays(value: unknown): number | null {
 
 /**
  * Renames or redescribes a team, sets where its new issues start (a backlog or unstarted status), switches
- * auto-close, or sets its estimate scale (null turns estimates off: issues keep theirs, hidden until it's back on).
- * Teams never change workspace: their issues, people and links belong to it.
+ * auto-close, sets its estimate scale (null turns estimates off: issues keep theirs, hidden until it's back on), or
+ * its cycles (see scheduleCycles). Teams never change workspace: their issues, people and links belong to it.
  */
 export function updateTeam(a: Actor, key: string, patch: TeamPatch & { workspace?: unknown }): Team {
   requirePerson(a, NO_AGENT_TEAMS);
   const row = teamRow(a, key);
+  syncCycles(row.id); // settings act on the cycles as they are now
   if (patch.workspace !== undefined && patch.workspace !== row.workspace) throw new AppError("Teams can't move between workspaces");
   const name = patch.name === undefined ? row.name : requireText(patch.name, "name");
   const description = patch.description === undefined ? row.description : optionalText(patch.description, "description");
@@ -531,10 +544,18 @@ export function updateTeam(a: Actor, key: string, patch: TeamPatch & { workspace
   const autoCloseChildren = patch.autoCloseChildren === undefined ? row.auto_close_children : checkFlag(patch.autoCloseChildren, "autoCloseChildren");
   const autoArchiveDays = patch.autoArchiveDays === undefined ? row.auto_archive_days : checkAutoArchiveDays(patch.autoArchiveDays);
   const estimateScale = patch.estimateScale === undefined ? row.estimate_scale : checkScale(patch.estimateScale);
-  db.query(
-    "UPDATE teams SET name = ?, description = ?, default_status = ?, auto_close_parent = ?, auto_close_children = ?, auto_archive_days = ?, estimate_scale = ?, updated_at = ? WHERE id = ?",
-  ).run(name, description, defaultStatus, autoCloseParent, autoCloseChildren, autoArchiveDays, estimateScale, now(), row.id);
+  const cycles = cycleSettings(row, patch);
+  const time = now();
+  const refs = db.transaction(() => {
+    db.query(
+      `UPDATE teams SET name = ?, description = ?, default_status = ?, auto_close_parent = ?, auto_close_children = ?, auto_archive_days = ?,
+         estimate_scale = ?, cycle_weeks = ?, upcoming_cycles = ?, updated_at = ? WHERE id = ?`,
+    ).run(name, description, defaultStatus, autoCloseParent, autoCloseChildren, autoArchiveDays, estimateScale, cycles.weeks, cycles.upcoming, time, row.id);
+    return scheduleCycles(a, row, cycles, time);
+  }).immediate();
+  syncCycles(row.id); // tops up the upcoming cycles
   changed("team", row.workspace, row.key);
+  for (const ref of refs) changed("issue", row.workspace, ref);
   return toTeam(teamRow(a, row.key));
 }
 
@@ -721,6 +742,8 @@ type IssueRow = Record<string, unknown> & {
   milestone_id: number | null;
   project: string | null; // its slug
   milestone: string | null; // its name
+  cycle_id: number | null;
+  cycle: number | null; // its number
 };
 
 /** An issue's identifier in SQL, from its team's alias and its own: BRD-12. */
@@ -728,7 +751,7 @@ const ident = (team: string, issue: string) => `${team}.key || '-' || ${issue}.n
 
 const ISSUE_SELECT = `
   SELECT i.*, t.key AS team_key, t.workspace, t.estimate_scale, ws.category AS status_category, ws.position AS status_position, ${ident("pt", "p")} AS parent,
-    pr.slug AS project, ms.name AS milestone,
+    pr.slug AS project, ms.name AS milestone, cy.number AS cycle,
     ${userCols("ua", "assignee")}, ${userCols("ud", "delegate")}, ${userCols("uc", "creator")},
     (SELECT json_group_array(path) FROM (
       SELECT ${LABEL_PATH} AS path FROM issue_labels x JOIN labels l ON l.id = x.label_id LEFT JOIN labels g ON g.id = l.parent_id
@@ -757,7 +780,8 @@ const ISSUE_SELECT = `
   LEFT JOIN issues p ON p.id = i.parent_id
   LEFT JOIN teams pt ON pt.id = p.team_id
   LEFT JOIN projects pr ON pr.id = i.project_id
-  LEFT JOIN milestones ms ON ms.id = i.milestone_id`;
+  LEFT JOIN milestones ms ON ms.id = i.milestone_id
+  LEFT JOIN cycles cy ON cy.id = i.cycle_id`;
 
 // Status category order, then the team's order within it, then priority 1→4 with 0 (none) last, then most
 // recently updated. The first three keys are also what a page cursor records (with updated_at and id), so pages
@@ -796,6 +820,7 @@ const toSummary = (row: IssueRow): IssueSummary => ({
   archivedAt: row.archived_at,
   project: row.project,
   milestone: row.milestone,
+  cycle: row.cycle,
 });
 
 /**
@@ -958,6 +983,7 @@ function issueColumns(a: Actor, workspace: string, team: TeamRef, patch: IssuePa
   }
   if (patch.parent !== undefined) cols.parent_id = patch.parent === null ? null : relatedId(a, patch.parent, "parent");
   if (patch.dueOn !== undefined) cols.due_on = patch.dueOn === null ? null : checkDate(patch.dueOn, "dueOn");
+  if (patch.cycle !== undefined) cols.cycle_id = cycleId(team, patch.cycle);
   return cols;
 }
 
@@ -1149,6 +1175,14 @@ function queryIssues(a: Actor, filter: IssueFilter, after?: Cursor, limit?: numb
     where.push("i.project_id = ?");
     params.push(projectIn(workspace, filter.project).id);
   }
+  if (filter.cycle) {
+    const id = cycleFilter(teamId, filter.team, filter.cycle); // null: each team's current cycle
+    if (id === null) where.push(`i.cycle_id IN (SELECT id FROM cycles WHERE ${RUNNING})`);
+    else {
+      where.push("i.cycle_id = ?");
+      params.push(id);
+    }
+  }
   if (filter.subscribed) {
     where.push("EXISTS (SELECT 1 FROM subscriptions s WHERE s.issue_id = i.id AND s.user_id = ?)");
     params.push(a.id);
@@ -1280,6 +1314,7 @@ const TRACKED: [ActivityKind, (row: IssueRow) => unknown][] = [
   ["dueOn", (r) => r.due_on],
   ["project", (r) => r.project],
   ["milestone", (r) => r.milestone],
+  ["cycle", (r) => r.cycle],
 ];
 
 /** What really changed between two reads of an issue; lists (labels, blockers, related) compare as sets. */
@@ -1375,6 +1410,7 @@ export function createIssue(a: Actor, input: IssueInput): Issue {
     parent_id: null,
     due_on: null,
     estimate: null,
+    cycle_id: null as number | null,
     ...issueColumns(a, team.workspace, team, input),
     title: requireText(input.title, "title"),
   };
@@ -1389,7 +1425,12 @@ export function createIssue(a: Actor, input: IssueInput): Issue {
       : { project_id: null, milestone_id: null };
   const inProject = projectColumns(team.workspace, input, inherited);
   if (duplicate !== null) cols.status = duplicateStatus(team.id); // a duplicate is closed, as in Linear
-  const closed = isClosed(statusOf(team, cols.status).category);
+  const { category } = statusOf(team, cols.status);
+  const closed = isClosed(category);
+  // A sub-issue joins its parent's cycle when it starts unstarted or started, unless it names one (as in Linear).
+  if (input.cycle === undefined && cols.parent_id !== null && (category === "unstarted" || category === "started")) {
+    cols.cycle_id = parentCycle(team.id, cols.parent_id as number);
+  }
   const time = now();
   const { identifier, docs, refs, created } = db.transaction(() => {
     const { number } = db
@@ -1494,6 +1535,7 @@ export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Is
         .query<{ number: number }, [number]>("UPDATE teams SET next_number = next_number + 1 WHERE id = ? RETURNING next_number - 1 AS number")
         .get(team.id)!.number;
       cols.status ??= carriedStatus(team as TeamRow, before.status, before.status_category);
+      if (patch.cycle === undefined) cols.cycle_id = null; // cycles are per team
       if (!labels) db.query("DELETE FROM issue_labels WHERE issue_id = ? AND label_id IN (SELECT id FROM labels WHERE team_id = ?)").run(id, from.id);
     }
     const closing = cols.status === undefined ? undefined : isClosed(statusOf(team, cols.status).category);
@@ -2858,6 +2900,183 @@ export function deleteMilestone(a: Actor, slug: string, id: unknown): Project {
   return getProject(a, project.slug);
 }
 
+// --- Cycles (Linear's, opt-in per team): repeating planning periods on UTC dates; unfinished issues roll over ---
+
+type CycleRow = { id: number; team_id: number; number: number; starts_at: string; ends_at: string; completed_at: string | null };
+type CycleSettings = { weeks: number | null; upcoming: number; startsOn: string };
+
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+const addWeeks = (iso: string, weeks: number) => new Date(Date.parse(iso) + weeks * WEEK_MS).toISOString();
+const cycleNumbered = db.query<CycleRow, [number, number]>("SELECT * FROM cycles WHERE team_id = ? AND number = ?");
+// Not over and started by `?2`: the current one (an ended one only until syncCycles completes it).
+const cycleStarted = db.query<CycleRow, [number, string]>("SELECT * FROM cycles WHERE team_id = ? AND completed_at IS NULL AND starts_at <= ? ORDER BY number DESC LIMIT 1");
+const cyclesUpcoming = db.query<CycleRow, [number, string]>("SELECT * FROM cycles WHERE team_id = ? AND completed_at IS NULL AND starts_at > ? ORDER BY number");
+
+/** A team's cycle settings after `patch`: cycleWeeks 1–8 or null (off), upcomingCycles 1–15, cycleStartsOn only when turning them on. */
+function cycleSettings(row: TeamRow, patch: TeamPatch): CycleSettings {
+  const { cycleWeeks, upcomingCycles, cycleStartsOn } = patch;
+  const whole = (value: unknown, min: number, max: number) => Number.isInteger(value) && (value as number) >= min && (value as number) <= max;
+  if (cycleWeeks !== undefined && cycleWeeks !== null && !whole(cycleWeeks, 1, 8)) {
+    throw new AppError("cycleWeeks must be a whole number of weeks from 1 to 8, or null to turn cycles off");
+  }
+  if (upcomingCycles !== undefined && !whole(upcomingCycles, 1, 15)) throw new AppError("upcomingCycles must be a whole number from 1 to 15");
+  const weeks = cycleWeeks === undefined ? row.cycle_weeks : cycleWeeks;
+  if (cycleStartsOn !== undefined && !(row.cycle_weeks === null && weeks !== null)) throw new AppError("cycleStartsOn only applies when turning cycles on");
+  const today = now().slice(0, 10);
+  const startsOn = cycleStartsOn === undefined ? today : checkDate(cycleStartsOn, "cycleStartsOn");
+  if (startsOn < today) throw new AppError("cycleStartsOn must be today or later");
+  return { weeks, upcoming: upcomingCycles ?? row.upcoming_cycles, startsOn };
+}
+
+/**
+ * Applies a team's new cycle settings, in updateTeam's transaction; syncCycles then tops up the upcoming ones. Turning
+ * cycles on makes the next number (1 for a new team) start on `startsOn`. A new length re-dates only cycles that haven't
+ * started, back to back from the current one's end (the current one keeps its dates). Turning them off ends the current
+ * cycle now, keeping its issues, and deletes the upcoming ones, whose issues leave them (by the actor). Returns the
+ * identifiers of issues it changed.
+ */
+function scheduleCycles(a: Actor, team: TeamRow, { weeks, startsOn }: CycleSettings, time: string): string[] {
+  if (team.cycle_weeks === weeks) return [];
+  if (team.cycle_weeks === null) {
+    const { n } = db.query<{ n: number }, [number]>("SELECT COALESCE(MAX(number), 0) + 1 AS n FROM cycles WHERE team_id = ?").get(team.id)!;
+    const start = `${startsOn}T00:00:00.000Z`;
+    db.query("INSERT INTO cycles (team_id, number, starts_at, ends_at) VALUES (?, ?, ?, ?)").run(team.id, n, start, addWeeks(start, weeks!));
+    return [];
+  }
+  const current = cycleStarted.get(team.id, time);
+  const upcoming = cyclesUpcoming.all(team.id, time);
+  if (weeks !== null) {
+    let start = current?.ends_at ?? upcoming[0]?.starts_at;
+    for (const c of upcoming) {
+      db.query("UPDATE cycles SET starts_at = ?, ends_at = ? WHERE id = ?").run(start!, addWeeks(start!, weeks), c.id);
+      start = addWeeks(start!, weeks);
+    }
+    return [];
+  }
+  if (current) db.query("UPDATE cycles SET ends_at = ?1, completed_at = ?1 WHERE id = ?2").run(time, current.id);
+  const refs: string[] = [];
+  for (const c of upcoming) {
+    const issues = db.query<{ id: number }, [number]>("SELECT id FROM issues WHERE cycle_id = ? ORDER BY id").all(c.id).map((i) => i.id);
+    db.query("UPDATE issues SET cycle_id = NULL WHERE cycle_id = ?").run(c.id);
+    db.query("DELETE FROM cycles WHERE id = ?").run(c.id);
+    refs.push(...bumpIssues(issues, time));
+    for (const id of issues) logActivity(a, id, team.workspace, [{ kind: "cycle", from: c.number, to: null }], time);
+  }
+  return refs;
+}
+
+/**
+ * Brings teams' cycles (one team's, or every team using them) up to now; idempotent. Each cycle that has ended is
+ * completed, in order, and its unfinished issues (not completed or canceled, trashed or archived) move to the next
+ * cycle, made if missing: bumped, as @docket's change. Then upcoming cycles are topped up to the team's `upcoming_cycles`.
+ * One transaction per team that needs it. Runs at startup, every minute (index.ts), before a team's cycles are listed
+ * or assigned, and after its cycle settings change.
+ */
+export function syncCycles(teamId?: number) {
+  const time = now();
+  const due = db
+    .query<TeamRow, SQLQueryBindings[]>(
+      `SELECT * FROM teams t WHERE cycle_weeks IS NOT NULL${teamId === undefined ? "" : " AND id = ?2"}
+         AND (EXISTS (SELECT 1 FROM cycles c WHERE c.team_id = t.id AND c.completed_at IS NULL AND c.ends_at <= ?1)
+           OR (SELECT COUNT(*) FROM cycles c WHERE c.team_id = t.id AND c.completed_at IS NULL AND c.starts_at > ?1) < t.upcoming_cycles)`,
+    )
+    .all(time, ...(teamId === undefined ? [] : [teamId]));
+  for (const team of due) {
+    const refs = db.transaction(() => rollCycles(team, time)).immediate();
+    changed("team", team.workspace, team.key);
+    for (const ref of new Set(refs)) changed("issue", team.workspace, ref);
+  }
+}
+
+function rollCycles(team: TeamRow, time: string): string[] {
+  const append = (after: CycleRow) =>
+    db
+      .query<CycleRow, [number, number, string, string]>("INSERT INTO cycles (team_id, number, starts_at, ends_at) VALUES (?, ?, ?, ?) RETURNING *")
+      .get(team.id, after.number + 1, after.ends_at, addWeeks(after.ends_at, team.cycle_weeks!))!;
+  const ended = db.query<CycleRow, [number, string]>("SELECT * FROM cycles WHERE team_id = ? AND completed_at IS NULL AND ends_at <= ? ORDER BY number LIMIT 1");
+  const unfinished = db.query<{ id: number }, [number]>(
+    `SELECT i.id FROM issues i LEFT JOIN workflow_statuses ws ON ws.team_id = i.team_id AND ws.key = i.status
+     WHERE i.cycle_id = ? AND i.deleted_at IS NULL AND i.archived_at IS NULL AND COALESCE(ws.category, '') NOT IN ${CLOSED_SQL} ORDER BY i.id`,
+  );
+  const refs: string[] = [];
+  for (let c = ended.get(team.id, time); c; c = ended.get(team.id, time)) {
+    const next = cycleNumbered.get(team.id, c.number + 1) ?? append(c);
+    const issues = unfinished.all(c.id).map((i) => i.id);
+    for (const id of issues) db.query("UPDATE issues SET cycle_id = ? WHERE id = ?").run(next.id, id);
+    refs.push(...bumpIssues(issues, time));
+    for (const id of issues) logActivity({ id: systemUserId() }, id, team.workspace, [{ kind: "cycle", from: c.number, to: next.number }], time);
+    db.query("UPDATE cycles SET completed_at = ends_at WHERE id = ?").run(c.id);
+  }
+  const last = () => db.query<CycleRow, [number]>("SELECT * FROM cycles WHERE team_id = ? ORDER BY number DESC LIMIT 1").get(team.id)!;
+  for (let n = cyclesUpcoming.all(team.id, time).length; n < team.upcoming_cycles; n++) append(last());
+  return refs;
+}
+
+/** An issue's cycle: a number of its team's (not a completed one), "current", "next" (the first upcoming), or null. */
+function cycleId(team: TeamRef, value: unknown): number | null {
+  if (value === null) return null;
+  const { cycle_weeks } = db.query<{ cycle_weeks: number | null }, [number]>("SELECT cycle_weeks FROM teams WHERE id = ?").get(team.id)!;
+  if (cycle_weeks === null) throw new AppError(`${team.key} doesn't use cycles`);
+  syncCycles(team.id);
+  const time = now();
+  if (value === "current") {
+    const current = cycleStarted.get(team.id, time);
+    if (!current) throw new AppError(`${team.key} has no current cycle`);
+    return current.id;
+  }
+  if (value === "next") return cyclesUpcoming.all(team.id, time)[0]!.id; // cycles on: there's always one
+  if (!Number.isInteger(value)) throw new AppError('cycle must be a cycle number, "current", "next" or null');
+  const row = cycleNumbered.get(team.id, value as number);
+  if (!row) throw new AppError(`Unknown cycle ${value} in ${team.key}`);
+  if (row.completed_at) throw new AppError(`Cycle ${value} is over`);
+  return row.id;
+}
+
+/** A new sub-issue's cycle: its parent's, if the parent is in the same team and that cycle isn't over. */
+function parentCycle(teamId: number, parentId: number): number | null {
+  syncCycles(teamId);
+  return (
+    db
+      .query<{ id: number }, [number, number]>("SELECT c.id FROM issues i JOIN cycles c ON c.id = i.cycle_id WHERE i.id = ? AND i.team_id = ? AND c.completed_at IS NULL")
+      .get(parentId, teamId)?.id ?? null
+  );
+}
+
+/** The cycle an issue list filters on: a number of `teamId`'s (the list's team), or null for "current" (each team's). */
+function cycleFilter(teamId: number | null, team: string | undefined, value: string): number | null {
+  const given = value.trim().toLowerCase();
+  if (given === "current") {
+    syncCycles();
+    return null;
+  }
+  if (!/^\d+$/.test(given)) throw new AppError(`Invalid cycle "${value}": use current or a cycle number`);
+  if (teamId === null) throw new AppError("Filter by cycle number needs a team");
+  const row = cycleNumbered.get(teamId, Number(given));
+  if (!row) throw new AppError(`Unknown cycle ${Number(given)} in ${team!.trim().toUpperCase()}`);
+  return row.id;
+}
+
+/** A team's cycles by number, each with its state and progress (as a project's, over its live issues). */
+export function listCycles(a: Actor, key: string): Cycle[] {
+  const team = teamRow(a, key);
+  syncCycles(team.id);
+  const time = now();
+  return db
+    .query<CycleRow & { tally: string }, [number]>(`SELECT c.*, ${tally("i.cycle_id = c.id")} AS tally FROM cycles c WHERE c.team_id = ? ORDER BY c.number`)
+    .all(team.id)
+    .map(
+      (c): Cycle => ({
+      team: team.key,
+      number: c.number,
+      startsAt: c.starts_at,
+      endsAt: c.ends_at,
+      state: c.completed_at ? "completed" : c.starts_at <= time ? "current" : "upcoming",
+      completedCount: (JSON.parse(c.tally) as { completed: number }).completed,
+      ...progressOf(c.tally),
+    }),
+    );
+}
+
 // --- Links made before URLs carried the workspace ---
 
 /**
@@ -2901,3 +3120,5 @@ export function locate(a: Actor, query: { issue?: string; doc?: string; team?: s
 purgeTrash();
 // Likewise, a team's already-old closed issues archive now, even if nothing in it changes for a while.
 autoArchive();
+// And cycles that ended while it was down complete now, rolling their unfinished issues over.
+syncCycles();

@@ -7,6 +7,7 @@ import {
   PRIORITY_LABELS,
   PROJECT_STATUSES,
   PROJECT_STATUS_LABELS,
+  type Cycle,
   type EstimateScale,
   type IssueSummary,
   type Milestone,
@@ -21,6 +22,7 @@ import {
   Avatar,
   CheckIcon,
   CloseIcon,
+  CycleIcon,
   EstimateIcon,
   LabelDot,
   MoreIcon,
@@ -481,6 +483,33 @@ export function MilestonePicker({
       options={[{ value: "", label: "No milestone", icon: <CloseIcon className="muted" /> }, ...milestones.map((m) => ({ value: m.name, label: m.name }))]}
       selected={[value ?? ""]}
       onPick={(v) => (v || null) !== value && onChange(v || null)}
+      onOpen={load}
+      {...rest}
+    >
+      {children}
+    </Picker>
+  );
+}
+
+/** A cycle of the team: none, the current one or an upcoming one; a completed one is listed only while it's the value. */
+export function CyclePicker({
+  team,
+  value,
+  onChange,
+  children,
+  ...rest
+}: Trigger & { team: string; value: number | null; onChange: (cycle: number | null) => void }) {
+  const [cycles, setCycles] = useState<Cycle[]>([]);
+  const load = () => void api.cycles(team).then(setCycles, errorToast);
+  const options = cycles
+    .filter((c) => c.state !== "completed" || c.number === value)
+    .map((c) => ({ value: String(c.number), label: `Cycle ${c.number}${c.state === "current" ? " (current)" : ""}`, icon: <CycleIcon /> }));
+  return (
+    <Picker
+      label="Set cycle"
+      options={[{ value: "", label: "No cycle", icon: <CloseIcon className="muted" /> }, ...options]}
+      selected={[String(value ?? "")]}
+      onPick={(v) => (Number(v) || null) !== value && onChange(Number(v) || null)}
       onOpen={load}
       {...rest}
     >

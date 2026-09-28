@@ -1704,6 +1704,8 @@ fieldset.plain {
 
 .tabs {
   margin-left: 4px;
+  max-width: 100%;
+  overflow-x: auto; /* Triage and Cycles make six tabs: they scroll rather than widen a phone's page */
 }
 .tab {
   display: inline-flex;
@@ -3351,6 +3353,66 @@ textarea.input {
     display: none;
   }
   .project-row .progress {
+    min-width: 0;
+  }
+}
+
+/* ---------- Cycles ---------- */
+
+.cycles {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 24px var(--pad) 80px;
+}
+.cycles > .section:first-child {
+  margin-top: 0;
+}
+.cycle-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+}
+.cycle-card > svg,
+.cycle-row > svg {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.cycle-title {
+  font-weight: 600;
+  color: var(--text);
+}
+.cycle-card .progress-bar {
+  width: 120px;
+}
+.cycle-bar {
+  flex-shrink: 0;
+  padding: 8px var(--pad);
+  border-width: 0 0 1px;
+  border-radius: 0;
+}
+.cycle-row .count {
+  min-width: 36px;
+  text-align: right;
+  font-size: 12px;
+}
+.cycle-row .progress {
+  min-width: 92px;
+  justify-content: flex-end;
+}
+
+@media (max-width: 767px) {
+  .cycle-card .grow {
+    flex-basis: 100%;
+  }
+  .cycle-row .count {
+    display: none;
+  }
+  .cycle-row .progress {
     min-width: 0;
   }
 }

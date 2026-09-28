@@ -229,7 +229,7 @@ export const openCount = (t: Team) =>
 export const triageCount = (t: Team) => t.statuses.filter((s) => s.category === "triage").reduce((n, s) => n + (t.counts[s.key] ?? 0), 0);
 
 /** An issue edit as the UI shows it (users as refs), so it can be applied optimistically. */
-export type IssueChange = Omit<IssuePatch, "assignee" | "delegate"> & { assignee?: UserRef | null; delegate?: UserRef | null };
+export type IssueChange = Omit<IssuePatch, "assignee" | "delegate" | "cycle"> & { assignee?: UserRef | null; delegate?: UserRef | null; cycle?: number | null };
 
 /** The same edit as the API takes it (users by username). */
 export function toPatch({ assignee, delegate, ...patch }: IssueChange): IssuePatch {

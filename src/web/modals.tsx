@@ -5,6 +5,7 @@ import { api } from "./api";
 import { RichEditor } from "./editor";
 import {
   AssigneePicker,
+  CyclePicker,
   LabelsPicker,
   LeadPicker,
   ParentPicker,
@@ -20,6 +21,7 @@ import {
   Avatar,
   ChevronRightIcon,
   CloseIcon,
+  CycleIcon,
   DateButton,
   Field,
   Kbd,
@@ -70,8 +72,9 @@ function TeamCrumb({ value, onChange }: { value: string; onChange: (key: string)
   );
 }
 
-type Draft = Required<Omit<IssueInput, "blockedBy" | "relatedTo" | "duplicateOf" | "dueOn" | "estimate" | "assignee" | "delegate" | "milestone">> & {
+type Draft = Required<Omit<IssueInput, "blockedBy" | "relatedTo" | "duplicateOf" | "dueOn" | "estimate" | "assignee" | "delegate" | "milestone" | "cycle">> & {
   assignee: UserRef | null;
+  cycle: number | null;
 };
 
 export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueInput>; onClose: () => void }) {
@@ -91,9 +94,10 @@ export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueIn
     assignee: null,
     parent: defaults.parent ?? null,
     project: defaults.project ?? null,
+    cycle: typeof defaults.cycle === "number" ? defaults.cycle : null,
   }));
   const set = <K extends keyof Draft>(key: K) => (value: Draft[K]) => setDraft((d) => ({ ...d, [key]: value }));
-  const { team, title, description, status, priority, labels, assignee, parent, project } = draft;
+  const { team, title, description, status, priority, labels, assignee, parent, project, cycle } = draft;
   const projects = useProjects();
   const inProject = projects.find((p) => p.slug === project);
   // The description's editor loads on first use (focused then), or at once for a given description.
@@ -106,6 +110,7 @@ export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueIn
       const issue = await api.createIssue({
         ...draft,
         project: project ?? undefined, // none named: a sub-issue joins its parent's
+        cycle: cycle ?? undefined, // likewise
         assignee: assignee?.username ?? null,
         title: title.trim(),
         description: description.trim() || undefined,
@@ -124,7 +129,7 @@ export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueIn
           onChange={(key) => {
             if (key === team) return;
             const usable = (path: string) => (findLabel(allLabels, path)?.team ?? key) === key;
-            setDraft((d) => ({ ...d, team: key, parent: null, status: startIn(key, d.status), labels: d.labels.filter(usable) }));
+            setDraft((d) => ({ ...d, team: key, parent: null, cycle: null, status: startIn(key, d.status), labels: d.labels.filter(usable) }));
           }}
         />
         <span className="modal-title">New issue</span>
@@ -201,6 +206,12 @@ export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueIn
           {inProject ? <ProjectStatusIcon status={inProject.status} /> : <ProjectIcon />}
           <span dir="auto">{project ? (inProject?.name ?? project) : "Project"}</span>
         </ProjectPicker>
+        {teams?.find((t) => t.key === team)?.cycleWeeks && (
+          <CyclePicker team={team} value={cycle} onChange={set("cycle")} className="chip">
+            <CycleIcon />
+            {cycle ? `Cycle ${cycle}` : "Cycle"}
+          </CyclePicker>
+        )}
       </div>
       <div className="modal-foot">
         <span className="grow" />

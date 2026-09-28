@@ -47,7 +47,8 @@ async function patch<T = Record<string, unknown>>(req: Request, what: string, fi
   return data as T;
 }
 
-const ISSUE_FIELDS = ["title", "description", "team", "status", "priority", "labels", "assignee", "delegate", "parent", "blockedBy", "relatedTo", "duplicateOf", "dueOn", "estimate", "project", "milestone", "baseUpdatedAt"];
+const ISSUE_FIELDS = ["title", "description", "team", "status", "priority", "labels", "assignee", "delegate", "parent", "blockedBy", "relatedTo", "duplicateOf", "dueOn", "estimate", "project", "milestone", "cycle", "baseUpdatedAt"];
+const TEAM_FIELDS = ["name", "description", "defaultStatus", "autoCloseParent", "autoCloseChildren", "autoArchiveDays", "estimateScale", "cycleWeeks", "upcomingCycles", "cycleStartsOn"];
 const DOCUMENT_FIELDS = ["title", "content", "edits", "team", "position", "checkpoint", "project", "baseUpdatedAt"];
 const PROJECT_FIELDS = ["name", "description", "status", "lead", "targetDate", "teams", "baseUpdatedAt"];
 const MILESTONE_FIELDS = ["name", "description", "targetDate", "position"];
@@ -64,6 +65,7 @@ const issueFilter = (req: Request): IssueFilter => ({
   creator: param(req, "creator"),
   parent: param(req, "parent"),
   project: param(req, "project"),
+  cycle: param(req, "cycle"),
   q: param(req, "q"),
   subscribed: param(req, "subscribed") === "true" || undefined,
   due: param(req, "due") as IssueFilter["due"],
@@ -177,7 +179,7 @@ export const apiRoutes = {
       tracker.updateTeam(
         actorOf(req),
         req.params.key,
-        await patch(req, "a team", ["name", "description", "defaultStatus", "autoCloseParent", "autoCloseChildren", "autoArchiveDays", "estimateScale"], {
+        await patch(req, "a team", TEAM_FIELDS, {
           workspace: "Teams can't move between workspaces",
           key: "A team's key never changes",
         }),
@@ -205,6 +207,9 @@ export const apiRoutes = {
     DELETE: handle<"/api/teams/:key/statuses/:status">((req) =>
       tracker.deleteStatus(actorOf(req), req.params.key, req.params.status, param(req, "moveTo")),
     ),
+  },
+  "/api/teams/:key/cycles": {
+    GET: handle<"/api/teams/:key/cycles">((req) => tracker.listCycles(actorOf(req), req.params.key)),
   },
   "/api/teams/:key/trash": {
     GET: handle<"/api/teams/:key/trash">((req) => tracker.listTrash(actorOf(req), req.params.key)),

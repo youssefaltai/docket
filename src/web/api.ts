@@ -31,6 +31,7 @@ import type {
   ProjectStatus,
   ProjectSummary,
   Team,
+  Cycle,
   TeamInput,
   TeamPatch,
   ServerEvent,
@@ -224,6 +225,7 @@ export const api = {
   deleteDocument: (slug: string) => request<Document>("DELETE", `/api/documents/${enc(slug)}`),
   restoreDocument: (slug: string) => request<Document>("POST", `/api/documents/${enc(slug)}/restore`),
   trash: (team: string) => request<Trash>("GET", `/api/teams/${enc(team)}/trash`),
+  cycles: (team: string) => request<Cycle[]>("GET", `/api/teams/${enc(team)}/cycles`),
 
   projects: (filter: { team?: string; status?: ProjectStatus[] } = {}) => request<ProjectSummary[]>("GET", `/api/projects${query(filter)}`),
   project: (slug: string) => request<Project>("GET", `/api/projects/${enc(slug)}`),

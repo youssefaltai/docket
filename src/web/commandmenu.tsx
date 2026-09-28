@@ -7,6 +7,7 @@ import { api } from "./api";
 import {
   BoardIcon,
   ComposeIcon,
+  CycleIcon,
   DocIcon,
   InboxIcon,
   IssuesIcon,
@@ -51,6 +52,7 @@ const PROPS: [string, string][] = [
   ["team", "Move to team"],
   ["project", "Set project"],
   ["milestone", "Set milestone"],
+  ["cycle", "Set cycle"],
 ];
 
 /** Filters `items` on `q` against `fields`, exact matches first, capped at `cap`. Same substring+exact-boost
@@ -156,6 +158,8 @@ export function CommandMenu() {
       { key: "go-views", label: "Go to Views", icon: <ViewsIcon />, group: "Actions", run: go("/views") },
       { key: "go-settings", label: "Go to Settings", icon: <SettingsIcon />, group: "Actions", run: go("/settings/account") },
     ];
+    for (const t of app.teams ?? [])
+      if (t.cycleWeeks) actions.push({ key: `go-cycles-${t.key}`, label: `Go to Cycles: ${t.name}`, icon: <CycleIcon />, group: "Actions", run: go(`/t/${t.key}/cycles`) });
     if (app.workspace?.role === "admin")
       actions.push({ key: "go-workspace-settings", label: "Go to Workspace settings", icon: <SettingsIcon />, group: "Actions", run: go("/settings/workspace") });
     for (const w of app.workspaces ?? [])

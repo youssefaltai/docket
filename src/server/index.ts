@@ -10,7 +10,7 @@ import { proxyChat } from "./chat.ts";
 import { onChange } from "./db.ts";
 import { HARD_MAX_BODY, http, publicFile, secure, webApp } from "./http.ts";
 import { handleMcp } from "./mcp.ts";
-import { autoArchive } from "./tracker.ts";
+import { autoArchive, syncCycles } from "./tracker.ts";
 import { startWebhooks } from "./webhooks.ts";
 
 /** Whose credentials each socket rides on, so signing out, revoking or suspending closes it. */
@@ -88,6 +88,7 @@ const server = Bun.serve({
 
 setInterval(purgeExpiredKeys, 60 * 60 * 1000);
 setInterval(autoArchive, 60 * 60 * 1000);
+setInterval(() => syncCycles(), 60 * 1000); // a cycle ends within a minute of midnight UTC
 
 onChange((event, userId) =>
   server.publish(userId === undefined ? topic(event.workspace) : userTopic(userId, event.workspace), JSON.stringify(event)),

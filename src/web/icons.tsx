@@ -55,6 +55,7 @@ export const PaperclipIcon = icon("M13 7.5l-5.2 5.2a3 3 0 0 1-4.3-4.2L9 3a2 2 0 
 export const StarIcon = icon("M8 2l1.8 3.7 4.1.6-3 2.9.7 4.1L8 11.4l-3.6 1.9.7-4.1-3-2.9 4.1-.6z");
 export const GroupIcon = icon("M2.5 3.5h11M5 6.5h8.5M5 9.5h8.5M2.5 12.5h11");
 export const SortIcon = icon("M5 13V3M2.5 5.5L5 3l2.5 2.5M11 3v10M8.5 10.5L11 13l2.5-2.5");
+export const CycleIcon = icon("M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2v2.6h-2.6M8 5v3l2 1.5");
 export const ViewsIcon =icon("M8 2.5l5.5 3L8 8.5l-5.5-3zM2.5 8L8 11l5.5-3M2.5 10.5L8 13.5l5.5-3");
 export const SmileIcon = icon("M8 14A6 6 0 1 0 8 2a6 6 0 0 0 0 12zM5.75 6.5h.01M10.25 6.5h.01M5.3 9.3a3.2 3.2 0 0 0 5.4 0");
 
