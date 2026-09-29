@@ -27,7 +27,7 @@ export function safeUrl(href: string): string | null {
   return !scheme || /^(https?|mailto)$/i.test(scheme) ? url : null;
 }
 
-export const MOD =/Mac|iPhone|iPad/.test(navigator.userAgent) ? "⌘" : "Ctrl";
+export const MOD = /Mac|iPhone|iPad/.test(navigator.userAgent) ? "⌘" : "Ctrl";
 
 export function timeAgo(iso: string): string {
   const date = new Date(iso);
