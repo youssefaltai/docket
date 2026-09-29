@@ -4,24 +4,15 @@ import { useMemo, useSyncExternalStore } from "react";
 import type { IssueSummary, UserRef } from "../shared/types";
 import { useApp } from "./context";
 import { isClosedCategory, issueStatus } from "./hooks";
+import { createStore } from "./util";
 
-let issueIndex: Map<string, IssueSummary> | null = null;
-const indexListeners = new Set<() => void>();
+const issueIndex = createStore<Map<string, IssueSummary> | null>(null);
 
 /** Every issue by its identifier, and by any it had before it moved team (so old mentions still chip and link). */
-export function setIssueIndex(list: IssueSummary[]) {
-  issueIndex = new Map(list.flatMap((i) => [i.id, ...i.previousIdentifiers].map((id) => [id, i] as const)));
-  indexListeners.forEach((l) => l());
-}
+export const setIssueIndex = (list: IssueSummary[]) =>
+  issueIndex.set(new Map(list.flatMap((i) => [i.id, ...i.previousIdentifiers].map((id) => [id, i] as const))));
 
-export const useIssueIndex = () =>
-  useSyncExternalStore(
-    (cb) => {
-      indexListeners.add(cb);
-      return () => void indexListeners.delete(cb);
-    },
-    () => issueIndex,
-  );
+export const useIssueIndex = () => useSyncExternalStore(issueIndex.subscribe, issueIndex.get);
 
 /** What text chips: the issue an identifier names (in a known team) and the active member an @username names. */
 export type ChipSource = { issue: (id: string) => IssueSummary | undefined; member: (username: string) => UserRef | undefined };
