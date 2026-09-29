@@ -11,7 +11,7 @@ import { onChange } from "./db.ts";
 import { HARD_MAX_BODY, http, publicFile, secure, webApp } from "./http.ts";
 import { handleMcp } from "./mcp.ts";
 import { startPush } from "./push.ts";
-import { autoArchive, eventTeams, syncCycles } from "./tracker.ts";
+import { autoArchive, eventTeams, memberAudience, syncCycles } from "./tracker.ts";
 import { startWebhooks } from "./webhooks.ts";
 
 /** Whose credentials each socket rides on, so signing out, revoking or suspending closes it; and what it hears. */
@@ -22,7 +22,7 @@ interface SocketData {
   topics: string[];
 }
 const sockets = new Map<number, Set<Bun.ServerWebSocket<SocketData>>>();
-// What isn't about a team (the workspace, members, views, workspace labels): everyone in the workspace.
+// What isn't about a team (the workspace, views, workspace labels): everyone in the workspace.
 const topic = (workspace: string) => `workspace:${workspace}`;
 // Public teams' events: everyone in the workspace but guests, who hear only their teams.
 const publicTopic = (workspace: string) => `public:${workspace}`;
@@ -42,6 +42,12 @@ const topicsOf = (a: Actor) =>
 
 /** Where a change goes: a team's to those who see it (see eventTeams), anything else to the whole workspace. */
 function topicsFor(event: ServerEvent): string[] {
+  // A member: everyone but guests, who hear only of those sharing a team with them (their member list shows no one else),
+  // and of themselves.
+  if (event.entity === "member") {
+    const { teams, alone } = memberAudience(event.workspace, event.id);
+    return [publicTopic(event.workspace), ...teams.map(teamTopic), ...(alone === null ? [] : [userTopic(alone, event.workspace)])];
+  }
   const teams = eventTeams(event);
   if (teams === null) return [topic(event.workspace)];
   return [...new Set(teams.flatMap((t) => (t.private ? [teamTopic(t.id)] : [publicTopic(event.workspace), teamTopic(t.id)])))];
@@ -75,19 +81,20 @@ const server = Bun.serve({
     ),
     "/icons/*": (req: Request) => secure(req, new Response("Not found", { status: 404 })), // not the app shell of a workspace "icons"
     ...(Object.fromEntries(Object.entries(authRoutes).map(([path, route]) => [path, http(route)])) as typeof authRoutes),
-    ...(Object.fromEntries(Object.entries(apiRoutes).map(([path, route]) => [path, http(guard(route))])) as typeof apiRoutes),
+    ...(Object.fromEntries(Object.entries(apiRoutes).map(([path, route]) => [path, http(guard(route), { guarded: true })])) as typeof apiRoutes),
     ...(Object.fromEntries(
-      Object.entries(attachmentRoutes).map(([path, route]) => [path, http(guard(route), { maxBody: MAX_UPLOAD_BYTES })]),
+      Object.entries(attachmentRoutes).map(([path, route]) => [path, http(guard(route), { guarded: true, maxBody: MAX_UPLOAD_BYTES })]),
     ) as typeof attachmentRoutes),
-    // GitHub's webhook: public, signed with the workspace's secret; rate-limited per IP, since it takes no credential.
-    "/api/github/:workspace": http({ POST: receiveGitHub }, { perIp: true }),
-    "/mcp": http(guard(handleMcp, { mcp: true })),
+    // GitHub's webhook: public, signed with the workspace's secret; rate-limited per IP, as every unguarded route.
+    "/api/github/:workspace": http({ POST: receiveGitHub }),
+    "/mcp": http(guard(handleMcp, { mcp: true }), { guarded: true }),
     "/ws": http(
       guard((req: Request, server: Bun.Server<SocketData>) => {
         const a = actorOf(req);
         const data = { userId: a.id, sessionId: a.sessionId, keyId: a.keyId, topics: topicsOf(a) };
         return server.upgrade(req, { data }) ? undefined : new Response("Expected a WebSocket", { status: 400 });
       }),
+      { guarded: true },
     ),
   },
   // Anything unmatched: a plain 404, with the headers too.

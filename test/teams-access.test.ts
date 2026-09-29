@@ -346,6 +346,22 @@ describe("mentions, the inbox and live events", () => {
     expect(bobSocket.events.some((e) => e.id === ops.id)).toBeTrue();
     for (const socket of [anaSocket, bobSocket, gusSocket]) socket.close();
   });
+
+  test("/ws: a guest hears about members who share a team with them, not the rest (DKT-42)", async () => {
+    const bobSocket = bob.ws();
+    const gusSocket = gus.ws();
+    expect([await bobSocket.opened, await gusSocket.opened]).toEqual([true, true]);
+    const member = (username: string) => (e: any) => e.entity === "member" && e.id === username;
+    await ok(bob.api("PATCH", "/api/workspaces/acme/profile", { name: "Bob B" })); // shares no team with gus
+    await ok(s.api("PATCH", "/api/workspaces/acme/profile", { name: "Admin A" })); // in WEB, with gus
+    await gusSocket.until(member("admin"));
+    await bobSocket.until(member("admin"));
+    expect(bobSocket.events.some(member("bob"))).toBeTrue();
+    expect(gusSocket.events.some(member("bob"))).toBeFalse();
+    for (const socket of [bobSocket, gusSocket]) socket.close();
+    await ok(bob.api("PATCH", "/api/workspaces/acme/profile", { name: "bob" }));
+    await ok(s.api("PATCH", "/api/workspaces/acme/profile", { name: "Admin" }));
+  });
 });
 
 describe("joining, leaving and making a team private", () => {
@@ -416,6 +432,33 @@ describe("guests work in their teams but set nothing up", () => {
     // A guest can still leave.
     expect((await gil.api("DELETE", "/api/teams/WEB/members/gil")).status).toBe(200);
     expect(await ok(gil.api("GET", "/api/teams"))).toEqual([]);
+  });
+
+  test("naming an unknown label on an issue doesn't make a workspace label for a guest (DKT-41)", async () => {
+    const labels = () => s.sql("SELECT COUNT(*) AS n FROM labels")[0].n;
+    const before = labels();
+    const made = await gus.api("POST", "/api/issues", { team: "WEB", title: "Guest labelled", labels: ["guest-made"] });
+    expect([made.status, made.body.error]).toEqual([403, "Guests can't create workspace labels"]);
+    expect(s.sql("SELECT COUNT(*) AS n FROM issues WHERE title = 'Guest labelled'")[0].n).toBe(0);
+    expect((await gus.api("POST", "/api/issues", { team: "WEB", title: "Guest grouped", labels: ["Guestgroup/x"] })).status).toBe(403);
+    const issue = await create(gus, { team: "WEB", title: "Guest issue" });
+    expect((await gus.api("PATCH", `/api/issues/${issue.id}`, { labels: ["guest-made"] })).status).toBe(403);
+    await expect(s.as("gus", "bearer").tool("update_issue", { id: issue.id, labels: ["guest-mcp"] })).rejects.toThrow("Guests can't create workspace labels");
+    expect(labels()).toBe(before);
+    // Labels that exist are theirs to use, and naming one in their team's own group makes it there.
+    await ok(s.api("POST", "/api/labels", { name: "known" }), 201);
+    await ok(s.api("POST", "/api/labels", { name: "Area", isGroup: true, team: "WEB" }), 201);
+    expect((await ok(gus.api("PATCH", `/api/issues/${issue.id}`, { labels: ["known", "Area/frontend"] }))).labels.sort()).toEqual(["Area/frontend", "known"]);
+  });
+
+  test("/ws: a guest in no team still hears about themselves (DKT-42)", async () => {
+    const gil = s.as("gil"); // left WEB above: in no team now
+    expect(await ok(gil.api("GET", "/api/teams"))).toEqual([]);
+    const socket = gil.ws();
+    expect(await socket.opened).toBeTrue();
+    await ok(gil.api("PATCH", "/api/workspaces/acme/profile", { name: "Gil G" }));
+    await socket.until((e) => e.entity === "member" && e.id === "gil");
+    socket.close();
   });
 });
 

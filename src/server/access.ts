@@ -22,7 +22,7 @@ import {
   type WorkspaceMember,
   type WorkspacePatch,
 } from "../shared/types.ts";
-import { AppError, SYSTEM_USER, changed, checkOneOf, db, exists, now, pickSlug, requireText } from "./db.ts";
+import { AppError, SYSTEM_USER, capLength, changed, checkOneOf, db, exists, now, pickSlug, requireText } from "./db.ts";
 
 /** Who a request acts as. Built fresh per request, so role and suspension changes apply at once. */
 export interface Actor {
@@ -256,6 +256,11 @@ export function sessionActor(token: string): Actor | null {
     actor.renewCookie = true;
   }
   return actor;
+}
+
+/** Deletes a user's sessions idle for 30 days, and so their push devices, even ones never presented again. */
+export function endIdleSessions(userId: number) {
+  db.query("DELETE FROM sessions WHERE user_id = ? AND last_seen_at < ?").run(userId, new Date(Date.now() - SESSION_IDLE_MS).toISOString());
 }
 
 /**
@@ -725,7 +730,7 @@ export function listWorkspaces(a: Actor): Workspace[] {
 
 /** A new workspace with its first admin, known there as `profile`. */
 function insertWorkspace(input: WorkspaceInput, adminId: number, profile: { username?: unknown; name?: unknown }): string {
-  const name = requireText(input.name, "workspace name");
+  const name = capLength(requireText(input.name, "workspace name"), "name"); // capped as on rename
   // Keys are the first segment of app URLs (/acme/issue/BRD-1), so the app's own paths can't be one.
   const given = typeof input.key === "string" ? input.key.trim().toLowerCase() : undefined;
   if (given && RESERVED_WORKSPACE_KEYS.includes(given)) throw new AppError(`Workspace key "${given}" is reserved`);

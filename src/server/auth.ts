@@ -5,7 +5,7 @@ import type { SetupInput } from "../shared/types.ts";
 import * as access from "./access.ts";
 import { SESSION_IDLE_MS, type Actor, type Client } from "./access.ts";
 import { AppError } from "./db.ts";
-import { https } from "./http.ts";
+import { https, rateLimit } from "./http.ts";
 
 const COOKIE = "docket_session";
 
@@ -86,10 +86,17 @@ export function actorOf(req: Request): Actor {
  */
 export function guard<T>(route: T, { mcp = false } = {}): T {
   const wrap = (fn: (req: Request, ...rest: unknown[]) => unknown) => (req: Request, ...rest: unknown[]) => {
-    if (!hostAllowed(req)) return forbiddenHost();
+    if (!hostAllowed(req)) return rateLimit(req) ?? forbiddenHost();
     const { actor, stale, crossSite } = identify(req, mcp);
-    if (crossSite) return json({ error: "Cross-origin request refused" }, 403);
-    if (!actor) return json({ error: "Unauthorized" }, 401, stale ? signedOut(req) : undefined);
+    // No credential that signs in: the client IP's bucket, so guesses are slowed down; one that signs in has its own.
+    if (!actor) {
+      return (
+        rateLimit(req) ??
+        (crossSite ? json({ error: "Cross-origin request refused" }, 403) : json({ error: "Unauthorized" }, 401, stale ? signedOut(req) : undefined))
+      );
+    }
+    const limited = rateLimit(req, actor.keyId !== null ? `key:${actor.keyId}` : `session:${actor.sessionId}`);
+    if (limited) return limited;
     if (!mcp && actor.scope === "read" && req.method !== "GET") return json({ error: "This API key is read-only" }, 403);
     // The web app says which account it thinks is signed in (its id). Tabs share one cookie, so after signing
     // in as someone else in another tab, a stale tab would silently act as the new account: refuse, and it reloads.

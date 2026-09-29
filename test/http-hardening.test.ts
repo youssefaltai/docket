@@ -98,3 +98,46 @@ test("each credential has its own rate limit: a burst, then 429 with Retry-After
   // Someone else isn't slowed down.
   expect((await quiet.api("GET", "/api/me")).status).toBe(200);
 });
+
+test("a workspace name is capped at creation, as on rename (DKT-43)", async () => {
+  const wes = await s.user("wes");
+  const long = await wes.api("POST", "/api/workspaces", { name: "w".repeat(201), key: "wes" });
+  expect([long.status, long.body.error]).toEqual([400, "name is too long: at most 200 characters"]);
+  expect((await wes.api("POST", "/api/workspaces", { name: "w".repeat(200), key: "wes" })).status).toBe(201);
+  const rename = await wes.api("PATCH", "/api/workspaces/wes", { name: "w".repeat(201) });
+  expect([rename.status, rename.body.error]).toEqual([400, "name is too long: at most 200 characters"]);
+});
+
+// On its own server: the limit is in memory, and draining the IP's bucket would slow the other tests.
+test("made-up credentials, however written, share the client IP's limit; one that signs in never waits on it (DKT-40)", async () => {
+  const t = await startServer();
+  try {
+    const known = await t.agent("known"); // never used yet: its first request comes while the IP's bucket is empty
+    const secret = () => Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("hex");
+    const forms: (() => Record<string, string>)[] = [
+      () => ({ Authorization: `Bearer dk_${secret()}` }),
+      () => ({ Authorization: `bearer dk_${secret()}` }),
+      () => ({ Authorization: `BEARER   dk_${secret()}  ` }),
+      () => ({ Authorization: `Basic ${secret()}` }),
+      () => ({ Cookie: `docket_session=${secret()}` }),
+      () => ({ Authorization: `Bearer dk_${secret()}`, Cookie: t.admin.cookie! }), // a stray key beside a real cookie
+    ];
+    let n = 0;
+    const guess = () => get(new URL("/api/me", t.url).href, forms[n++ % forms.length]!()).then((r) => r.status);
+    const statuses: number[] = [];
+    for (let round = 0; round < 60 && !statuses.includes(429); round++) statuses.push(...(await Promise.all(Array.from({ length: 20 }, guess))));
+    expect(statuses).toContain(429);
+    expect(statuses.every((x) => x === 401 || x === 429)).toBeTrue();
+    // While it's empty, guesses and the public code routes wait; credentials that sign in don't, even brand-new ones.
+    expect(await guess()).toBe(429);
+    expect((await t.anon.api("POST", "/api/auth/peek", { code: "AAAAA-AAAAA" })).status).toBe(429);
+    expect((await known.api("GET", "/api/me")).status).toBe(200);
+    expect(await known.tools()).toContain("get_issue");
+    expect((await t.api("GET", "/api/me")).status).toBe(200);
+    const fresh = await t.api("POST", "/api/api-keys", { name: "fresh", workspace: t.workspace });
+    expect(fresh.status).toBe(201);
+    expect((await t.with({ token: fresh.body.token }).api("GET", "/api/me")).status).toBe(200);
+  } finally {
+    await t.stop();
+  }
+});
