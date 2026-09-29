@@ -2400,8 +2400,7 @@ const toLabel = (r: LabelRow & { open: number }): Label => ({
 });
 
 const workspaceLabels = (workspace: string) => db.query<LabelRow, [string]>(`${LABEL_SELECT} WHERE l.workspace = ? ORDER BY l.id`).all(workspace);
-const readLabel = (a: Actor, id: number) =>
-  toLabel(db.query<LabelRow & { open: number }, [number]>(`${labelSelectOpen(seenBy(a))} WHERE l.id = ?`).get(id)!);
+const readLabel = (a: Actor, id: number) => toLabel(db.query<LabelRow & { open: number }, [number]>(`${labelSelectOpen(seenBy(a))} WHERE l.id = ?`).get(id)!);
 
 /** Adds a label; its color defaults to the next of LABEL_COLORS, by how many the workspace has. */
 function insertLabel(workspace: string, l: { teamId: number | null; parentId: number | null; name: string; color?: string; isGroup?: boolean }, time: string): number {
@@ -2910,8 +2909,7 @@ function saveVersion(documentId: number, title: string, content: string, authorI
        FROM document_versions v WHERE document_id = ? ORDER BY id DESC LIMIT 1`,
     )
     .get(documentId);
-  const merge =
-    last && !checkpoint && !last.first && last.author_id === authorId && Date.parse(time) - Date.parse(last.created_at) < VERSION_WINDOW_MS;
+  const merge = last && !checkpoint && !last.first && last.author_id === authorId && Date.parse(time) - Date.parse(last.created_at) < VERSION_WINDOW_MS;
   if (merge) {
     // created_at stays put, so the window is anchored to the version's start and can't slide forever.
     db.query("UPDATE document_versions SET title = ?, content = ? WHERE id = ?").run(title, content, last.id);

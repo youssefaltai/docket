@@ -8,10 +8,7 @@ import { MENTION_PATTERN, mentionOf, type ServerEvent } from "../shared/types.ts
 
 /** An error with an HTTP status; REST returns it as `{ error }`, MCP as a tool error. */
 export class AppError extends Error {
-  constructor(
-    message: string,
-    readonly status = 400,
-  ) {
+  constructor(message: string, readonly status = 400) {
     super(message);
   }
 }
@@ -795,13 +792,10 @@ export const now = () => new Date().toISOString();
  * within a millisecond. One rule, two forms that must agree: `bumpedAt(prev)` for a value computed in JS,
  * and `BUMPED_AT`, a SET clause for rows bumped in SQL (bind the current time to both `?`).
  */
-export const bumpedAt = (prev: string, time = now()) =>
-  time > prev ? time : new Date(Date.parse(prev) + 1).toISOString();
-export const BUMPED_AT =
-  "updated_at = CASE WHEN updated_at >= ? THEN strftime('%Y-%m-%dT%H:%M:%fZ', updated_at, '+0.001 seconds') ELSE ? END";
+export const bumpedAt = (prev: string, time = now()) => (time > prev ? time : new Date(Date.parse(prev) + 1).toISOString());
+export const BUMPED_AT = "updated_at = CASE WHEN updated_at >= ? THEN strftime('%Y-%m-%dT%H:%M:%fZ', updated_at, '+0.001 seconds') ELSE ? END";
 
-export const exists = (table: string, column: string, value: string) =>
-  db.query(`SELECT 1 FROM ${table} WHERE ${column} = ?`).get(value) !== null;
+export const exists = (table: string, column: string, value: string) => db.query(`SELECT 1 FROM ${table} WHERE ${column} = ?`).get(value) !== null;
 
 /** The longest text a field takes, in characters (a huge comment would freeze every viewer's page). */
 const MAX_LENGTH: Record<string, number> = { title: 500, name: 200, label: 200, body: 100_000, description: 100_000, content: 500_000 };
@@ -829,31 +823,17 @@ export function checkOneOf<T extends string | number>(value: unknown, allowed: r
 }
 
 /** "Q3 Roadmap: Café!" → "q3-roadmap-cafe"; "" when nothing Latin is left (e.g. an Arabic title). */
-export function slugify(title: string): string {
-  return title
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .slice(0, 60)
-    .replace(/^-+|-+$/g, "");
-}
+export const slugify = (title: string) =>
+  title.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 60).replace(/^-+|-+$/g, "");
 
 /**
  * An explicit slug must be valid and free; a derived one is deduped: base, base-2, base-3…
  * or `${fallback}-1`, `${fallback}-2`… when the name has nothing Latin in it.
  */
-export function pickSlug(
-  explicit: unknown,
-  name: string,
-  taken: (slug: string) => boolean,
-  { label, fallback }: { label: string; fallback: string },
-): string {
+export function pickSlug(explicit: unknown, name: string, taken: (slug: string) => boolean, { label, fallback }: { label: string; fallback: string }): string {
   if (explicit !== undefined) {
     const slug = typeof explicit === "string" ? explicit.trim().toLowerCase() : "";
-    if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(slug)) {
-      throw new AppError(`Invalid ${label} "${explicit}": use a-z, 0-9 and single dashes, e.g. "api-design"`);
-    }
+    if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(slug)) throw new AppError(`Invalid ${label} "${explicit}": use a-z, 0-9 and single dashes, e.g. "api-design"`);
     if (taken(slug)) throw new AppError(`${label[0]!.toUpperCase()}${label.slice(1)} "${slug}" is already taken`, 409);
     return slug;
   }

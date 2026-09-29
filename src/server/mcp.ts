@@ -228,9 +228,7 @@ function commentsSection(comments: Comment[]): string {
     .filter((c) => c.parent === null)
     .map((root) => {
       const replies = comments.filter((c) => c.parent === root.id);
-      if (root.resolvedAt) {
-        return `${headerBase(root)} · resolved by ${at(root.resolvedBy!)} · ${replies.length} ${replies.length === 1 ? "reply" : "replies"}`;
-      }
+      if (root.resolvedAt) return `${headerBase(root)} · resolved by ${at(root.resolvedBy!)} · ${replies.length} ${replies.length === 1 ? "reply" : "replies"}`;
       return [root, ...replies].map((c) => `${c.parent === null ? "" : "↳ "}${header(c)}\n${c.body}`).join("\n\n");
     });
   return `## Comments\n${threads.join("\n\n")}`;
