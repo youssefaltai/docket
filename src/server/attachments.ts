@@ -52,7 +52,7 @@ const toAttachment = (r: Row): Attachment => ({
  * A file name without path separators, control characters (bidi overrides too: "gnp.exe" shown as "exe.png") or
  * quotes; at most 200 characters; "file" if nothing's left.
  */
-export function cleanName(name: unknown): string {
+function cleanName(name: unknown): string {
   const clean = (typeof name === "string" ? name : "").replace(/[/\\"\u0000-\u001f\u007f-\u009f‪-‮⁦-⁩]/g, "").trim();
   return [...clean].slice(0, 200).join("").trim() || "file";
 }
@@ -61,7 +61,7 @@ const startsWith = (bytes: Uint8Array, prefix: number[] | string, at = 0) =>
   [...(typeof prefix === "string" ? new TextEncoder().encode(prefix) : prefix)].every((b, i) => bytes[at + i] === b);
 
 /** What a file is, from its first bytes: a raster image, a PDF, UTF-8 text, or opaque bytes. SVG and HTML are text. */
-export function sniff(bytes: Uint8Array): string {
+function sniff(bytes: Uint8Array): string {
   if (startsWith(bytes, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return "image/png";
   if (startsWith(bytes, [0xff, 0xd8, 0xff])) return "image/jpeg";
   if (startsWith(bytes, "GIF87a") || startsWith(bytes, "GIF89a")) return "image/gif";

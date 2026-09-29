@@ -29,7 +29,7 @@ export function originOf(req: Request): string {
   return `${proto}://${req.headers.get("x-forwarded-host") ?? req.headers.get("host") ?? url.host}`;
 }
 
-const https = (req: Request) => new URL(req.url).protocol === "https:" || req.headers.get("x-forwarded-proto") === "https";
+export const https = (req: Request) => new URL(req.url).protocol === "https:" || req.headers.get("x-forwarded-proto") === "https";
 
 /**
  * Adds the security headers to a response. API answers are per user and per workspace: no-store (unless the

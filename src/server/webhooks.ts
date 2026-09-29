@@ -72,7 +72,7 @@ function isPrivate(address: string, family: number): boolean {
  * resolves to public (all unless DOCKET_WEBHOOK_ALLOW_PRIVATE=true, which also allows http). Checked on save and before
  * every attempt; redirects are never followed. Known limit: DNS can answer differently between this check and the connect.
  */
-export async function checkTarget(raw: string): Promise<string | null> {
+async function checkTarget(raw: string): Promise<string | null> {
   let url: URL;
   try {
     url = new URL(raw);
@@ -93,9 +93,6 @@ export async function checkTarget(raw: string): Promise<string | null> {
 
 let base = "http://localhost"; // the public origin, set by startWebhooks
 let started = false;
-
-/** A web app URL: the one place payload URLs are built. */
-const appUrl = (path: string) => base + path;
 
 function pathOf(type: WebhookResource, data: any): string {
   if (type === "Issue") return `/issue/${data.id}`;
@@ -156,7 +153,7 @@ export function enqueue(c: Change) {
     createdAt: c.time,
     data,
     ...(c.updatedFrom && { updatedFrom: c.updatedFrom }),
-    url: appUrl(`/${c.workspace}${pathOf(c.type, data)}`),
+    url: `${base}/${c.workspace}${pathOf(c.type, data)}`,
   };
   const due = hold ? new Date(Date.parse(c.time) + HOLD_MS).toISOString() : c.time;
   const insert = db.query(
@@ -206,8 +203,6 @@ function pass() {
   }
 }
 
-const sign = (secret: string, body: string) => createHmac("sha256", secret).update(body).digest("hex");
-
 /** One attempt: 2xx is delivered; anything else (a redirect, a timeout, a blocked target) is retried, then failed. */
 async function attempt(id: number) {
   const row = db
@@ -236,7 +231,7 @@ async function attempt(id: number) {
           "Docket-Delivery": row.uuid,
           "Docket-Event": row.type,
           "Docket-Timestamp": String(timestamp),
-          "Docket-Signature": sign(row.secret, body),
+          "Docket-Signature": createHmac("sha256", row.secret).update(body).digest("hex"),
         },
         body,
       });

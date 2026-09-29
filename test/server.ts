@@ -1,6 +1,7 @@
 // Runs a real Docket server in a subprocess against a throwaway database, so tests only see HTTP.
 // Tests authenticate only through s.as / s.user / s.agent / s.anon, so an auth redesign touches this file alone.
 // MCP goes through the real SDK client, bearer only: a caller's tool(), tools() (what tools/list shows), instructions() and server().
+import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -79,12 +80,14 @@ export interface TestServer {
   signIn: (handle: string, workspace?: string) => Promise<Caller>;
   /** Creates an agent in a workspace (default: setup's) as `handle`; `as` labels it (default: the handle). */
   agent: (handle: string, opts?: { workspace?: string; name?: string; as?: string }) => Promise<Caller>;
+  /** Runs SQL on this server's database (a fresh connection each time), for what a test can't reach over HTTP: the rows. */
+  sql: (query: string, ...params: (string | number)[]) => any[];
   /** Runs `bun run <script> ...args` with this server's environment and database. */
   cli: (script: string, ...args: string[]) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
   stop: () => Promise<void>;
 }
 
-export type Creds = { token?: string; cookie?: string };
+type Creds = { token?: string; cookie?: string };
 /** A test user's session cookie (people) and one API key per workspace, in the order they joined. */
 type Known = { cookie?: string; keys: Map<string, string> };
 type Internal = TestServer & { users: Map<string, Known> };
@@ -260,6 +263,14 @@ export async function startServer(
       const p = Bun.spawn(["bun", "run", script, ...args], { cwd: root, env, stdout: "pipe", stderr: "pipe" });
       const [stdout, stderr, exitCode] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
       return { exitCode, stdout, stderr };
+    },
+    sql(query, ...params) {
+      const db = new Database(databasePath);
+      try {
+        return db.query(query).all(...params) as any[];
+      } finally {
+        db.close();
+      }
     },
     async stop() {
       await Promise.all(mcps.map((c) => c.close()));
