@@ -2,7 +2,6 @@
 // upcoming ones; issues go in the current or an upcoming one; when a cycle ends its unfinished issues roll over to the
 // next (by @docket); changing the length re-dates only cycles not started; turning them off ends the current one and
 // removes the upcoming ones. Time moves by shifting cycle dates in the database, then reading the cycles (which syncs).
-import { Database } from "bun:sqlite";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { startServer, type Caller, type TestServer } from "./server.ts";
 
@@ -47,10 +46,8 @@ const refused = async (res: Promise<{ status: number; body: any }>, status: numb
 
 /** Moves a team's cycles `days` into the past, as if that much time went by. */
 function age(team: string, days: number) {
-  const db = new Database(s.databasePath);
   const shift = (column: string) => `${column} = strftime('%Y-%m-%dT%H:%M:%fZ', ${column}, '-${days} days')`;
-  db.run(`UPDATE cycles SET ${shift("starts_at")}, ${shift("ends_at")}, ${shift("completed_at")} WHERE team_id = (SELECT id FROM teams WHERE key = ?)`, [team]);
-  db.close();
+  s.sql(`UPDATE cycles SET ${shift("starts_at")}, ${shift("ends_at")}, ${shift("completed_at")} WHERE team_id = (SELECT id FROM teams WHERE key = ?)`, team);
 }
 
 test("turning cycles on makes the current cycle and the upcoming ones; bad settings are refused", async () => {

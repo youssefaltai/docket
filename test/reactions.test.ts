@@ -1,6 +1,5 @@
 // Emoji reactions (DKT-35): on an issue's description, issue comments and doc comments. Add/remove is
 // idempotent and yours alone, validated as a single emoji, capped, never bumps updatedAt or notifies anyone.
-import { Database } from "bun:sqlite";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { startServer, type Caller, type TestServer } from "./server.ts";
 
@@ -99,12 +98,10 @@ test("deleting a comment removes its reactions", async () => {
   const issue = (await s.api("POST", "/api/issues", { team: "RX", title: "Cleanup" })).body;
   const cid = (await s.api("POST", `/api/issues/${issue.id}/comments`, { body: "temp" })).body.comments.at(-1).id;
   await ana.api("PUT", `/api/issues/${issue.id}/comments/${cid}/reactions/${encodeURIComponent("👀")}`);
-  const db = new Database(s.databasePath);
-  const count = () => (db.query("SELECT COUNT(*) AS n FROM reactions WHERE target = ?").get(`comment:${cid}`) as { n: number }).n;
+  const count = () => s.sql("SELECT COUNT(*) AS n FROM reactions WHERE target = ?", `comment:${cid}`)[0].n;
   expect(count()).toBe(1);
   await s.api("DELETE", `/api/issues/${issue.id}/comments/${cid}`);
   expect(count()).toBe(0);
-  db.close();
 });
 
 test("MCP: an agent reacts and takes it back; get_issue shows the count", async () => {

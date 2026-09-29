@@ -1,7 +1,6 @@
 // Moving an issue to another team of its workspace (DKT-20): it takes that team's next number, its old identifier keeps
 // resolving (REST, MCP, /api/locate, doc mentions), its status carries over by key, else by category, else the default,
 // and the old team's own labels come off. Relations, comments, subscribers and doc refs come along.
-import { Database } from "bun:sqlite";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { startServer, type Caller, type TestServer } from "./server.ts";
 
@@ -29,15 +28,7 @@ const create = async (title: string, extra: object = {}, team = "SRC") => {
 };
 const get = async (id: string, caller = s.admin) => (await caller.api("GET", `/api/issues/${id}`)).body;
 const move = (id: string, team: string, extra: object = {}) => s.api("PATCH", `/api/issues/${id}`, { team, ...extra });
-const sql = (query: string) => {
-  const db = new Database(s.databasePath, { readonly: true });
-  try {
-    return db.query(query).all() as any[];
-  } finally {
-    db.close();
-  }
-};
-const nextNumber = (key: string) => sql(`SELECT next_number AS n FROM teams WHERE workspace = 'acme' AND key = '${key}'`)[0].n as number;
+const nextNumber = (key: string) => s.sql(`SELECT next_number AS n FROM teams WHERE workspace = 'acme' AND key = '${key}'`)[0].n as number;
 
 test("a moved issue takes the team's next number; every identifier it had still resolves to it, and history says so", async () => {
   const issue = await create("Filed in the wrong team", { status: "todo", priority: 2, dueOn: "2026-10-01" });
@@ -78,7 +69,7 @@ test("a moved issue takes the team's next number; every identifier it had still 
   const same = (await move(back.id, "SRC")).body;
   expect(same).toMatchObject({ id: back.id, updatedAt: expect.any(String) });
   expect(same.activity.filter((x: any) => x.kind === "team").length).toBe(2);
-  expect(sql(`SELECT COUNT(*) AS n FROM issue_aliases WHERE issue_id = (SELECT id FROM issues WHERE title = 'Renamed')`)[0].n).toBe(2);
+  expect(s.sql(`SELECT COUNT(*) AS n FROM issue_aliases WHERE issue_id = (SELECT id FROM issues WHERE title = 'Renamed')`)[0].n).toBe(2);
 });
 
 test("its status carries over by key, else the team's first of that category, else the team's default; completedAt follows categories", async () => {
@@ -192,13 +183,13 @@ test("only to a team of the same workspace: another workspace's team, an unknown
   // A key both workspaces have is this workspace's team.
   const moved = (await move(issue.id, "DST")).body;
   expect(moved.id).toBe(`DST-${numbered}`);
-  expect(sql(`SELECT t.workspace FROM issues i JOIN teams t ON t.id = i.team_id WHERE i.title = 'Stays'`)).toEqual([{ workspace: "acme" }]);
+  expect(s.sql(`SELECT t.workspace FROM issues i JOIN teams t ON t.id = i.team_id WHERE i.title = 'Stays'`)).toEqual([{ workspace: "acme" }]);
   expect((await s.as("admin", "cookie", "side").api("GET", `/api/issues/${issue.id}`)).status).toBe(404);
   const trashed = await create("Trashed");
   await s.api("DELETE", `/api/issues/${trashed.id}`);
   expect((await move(trashed.id, "DST")).status).toBe(409);
   // No stray aliases from the refusals.
-  expect(sql(`SELECT COUNT(*) AS n FROM issue_aliases a JOIN issues i ON i.id = a.issue_id WHERE i.title IN ('Stays', 'Trashed')`)[0].n).toBe(1);
+  expect(s.sql(`SELECT COUNT(*) AS n FROM issue_aliases a JOIN issues i ON i.id = a.issue_id WHERE i.title IN ('Stays', 'Trashed')`)[0].n).toBe(1);
 });
 
 test("MCP update_issue moves the same way; get_issue and /api/locate resolve the old identifier", async () => {
@@ -226,7 +217,7 @@ test("webhooks send one Issue update whose updatedFrom has the old identifier, t
   const hook = (await s.api("POST", "/api/workspaces/acme/webhooks", { url: "http://127.0.0.1:9/move", resourceTypes: ["Issue"] })).body.webhook;
   const issue = await create("Hooked", { status: "in_qa" });
   const moved = (await move(issue.id, "DST")).body;
-  const deliveries = sql(`SELECT entity, payload FROM webhook_deliveries WHERE webhook_id = ${hook.id} ORDER BY id`).map((d) => [d.entity, JSON.parse(d.payload)]);
+  const deliveries = s.sql(`SELECT entity, payload FROM webhook_deliveries WHERE webhook_id = ${hook.id} ORDER BY id`).map((d) => [d.entity, JSON.parse(d.payload)]);
   expect(deliveries.map(([entity, p]) => [entity, p.action])).toEqual([
     [issue.id, "create"],
     [moved.id, "update"],

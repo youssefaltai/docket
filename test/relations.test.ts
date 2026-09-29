@@ -1,6 +1,5 @@
 // Related and duplicate-of issues (DKT-22): related is two-way, a duplicate points at its canonical issue and is
 // set to its team's Duplicate status (a canceled one); neither names the issue itself, a trashed issue or one in another workspace, and duplicates never loop.
-import { Database } from "bun:sqlite";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { startServer, type TestServer } from "./server.ts";
 
@@ -19,14 +18,6 @@ const create = async (title: string, extra: object = {}) => {
 };
 const get = async (id: string) => (await s.api("GET", `/api/issues/${id}`)).body;
 const patch = (id: string, body: object) => s.api("PATCH", `/api/issues/${id}`, body);
-const sql = (query: string) => {
-  const db = new Database(s.databasePath, { readonly: true });
-  try {
-    return db.query(query).all() as any[];
-  } finally {
-    db.close();
-  }
-};
 
 test("related is symmetric: set from either side, both show it; removing it from one side removes it from both", async () => {
   const [a, b, c] = [await create("A"), await create("B"), await create("C")];
@@ -38,7 +29,7 @@ test("related is symmetric: set from either side, both show it; removing it from
   expect(listed.relatedTo).toEqual([a.id]);
   // Setting it from the other side too keeps one pair.
   expect((await patch(b.id, { relatedTo: [a.id] })).status).toBe(200);
-  expect(sql(`SELECT COUNT(*) AS n FROM issue_relations WHERE kind = 'related'`)[0].n).toBe(2);
+  expect(s.sql(`SELECT COUNT(*) AS n FROM issue_relations WHERE kind = 'related'`)[0].n).toBe(2);
   // B drops A: gone from A as well; C stays.
   expect((await patch(b.id, { relatedTo: [] })).body.relatedTo).toEqual([]);
   expect((await get(a.id)).relatedTo).toEqual([c.id]);
@@ -167,10 +158,10 @@ test("webhooks carry the relation's previous value; subscribers hear of a duplic
   expect(hook.status).toBe(201);
   const [canonical, dup] = [await create("Hook canonical"), await create("Hook dup", { status: "todo" })];
   await s.as("ana").api("PUT", `/api/issues/${dup.id}/subscription`);
-  const mark = sql("SELECT COALESCE(MAX(id), 0) AS id FROM webhook_deliveries")[0].id;
+  const mark = s.sql("SELECT COALESCE(MAX(id), 0) AS id FROM webhook_deliveries")[0].id;
   await patch(dup.id, { relatedTo: [canonical.id] });
   await patch(dup.id, { duplicateOf: canonical.id });
-  const log = sql(`SELECT entity, json_extract(payload, '$.updatedFrom') AS was FROM webhook_deliveries WHERE id > ${mark} ORDER BY id`);
+  const log = s.sql(`SELECT entity, json_extract(payload, '$.updatedFrom') AS was FROM webhook_deliveries WHERE id > ${mark} ORDER BY id`);
   // One event each, for the issue that changed; the canonical issue was only bumped, so it sends nothing.
   expect(log.map((d) => [d.entity, JSON.parse(d.was)])).toEqual([
     [dup.id, { relatedTo: [] }],

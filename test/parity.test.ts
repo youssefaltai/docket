@@ -1,6 +1,5 @@
 // Linear parity on the server: trash instead of hard delete, claims that respect started work, backlog
 // by default, filters that name unknown things as errors, strict PATCH bodies, and cursor pagination.
-import { Database } from "bun:sqlite";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { startServer, type TestServer } from "./server.ts";
 
@@ -66,10 +65,8 @@ test("docs go to the trash too, and anything there for 30 days is purged", async
   await s.api("DELETE", `/api/issues/${old.id}`);
   await s.api("DELETE", `/api/documents/${doc.slug}`);
   // Age both past the 30 days, then look at the trash, which purges as it goes.
-  const db = new Database(s.databasePath);
-  db.run("UPDATE issues SET deleted_at = '2000-01-01T00:00:00.000Z' WHERE deleted_at IS NOT NULL");
-  db.run("UPDATE documents SET deleted_at = '2000-01-01T00:00:00.000Z' WHERE deleted_at IS NOT NULL");
-  db.close();
+  s.sql("UPDATE issues SET deleted_at = '2000-01-01T00:00:00.000Z' WHERE deleted_at IS NOT NULL");
+  s.sql("UPDATE documents SET deleted_at = '2000-01-01T00:00:00.000Z' WHERE deleted_at IS NOT NULL");
   expect((await s.api("GET", "/api/teams/PAR/trash")).body).toEqual({ issues: [], documents: [] });
   expect((await s.api("GET", `/api/issues/${old.id}`)).status).toBe(404);
   expect((await s.api("GET", `/api/documents/${doc.slug}`)).status).toBe(404);

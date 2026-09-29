@@ -1,5 +1,4 @@
 // Issue history: every change is recorded once, by whoever made it, in the change's transaction.
-import { Database } from "bun:sqlite";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { startServer, type TestServer } from "./server.ts";
 
@@ -138,12 +137,10 @@ test("MCP: get_issue shows the latest 30 lines of history", async () => {
 test("purging an issue from the trash removes its history", async () => {
   const { id } = await create("Purge me");
   await s.api("DELETE", `/api/issues/${id}`);
-  const db = new Database(s.databasePath);
-  const row = db.query("SELECT i.id FROM issues i JOIN teams t ON t.id = i.team_id WHERE t.key || '-' || i.number = ?").get(id) as { id: number };
-  const count = () => (db.query("SELECT COUNT(*) AS n FROM issue_activity WHERE issue_id = ?").get(row.id) as { n: number }).n;
+  const [row] = s.sql("SELECT i.id FROM issues i JOIN teams t ON t.id = i.team_id WHERE t.key || '-' || i.number = ?", id);
+  const count = () => s.sql("SELECT COUNT(*) AS n FROM issue_activity WHERE issue_id = ?", row.id)[0].n;
   expect(count()).toBe(2);
-  db.run("UPDATE issues SET deleted_at = '2000-01-01T00:00:00.000Z' WHERE id = ?", [row.id]);
+  s.sql("UPDATE issues SET deleted_at = '2000-01-01T00:00:00.000Z' WHERE id = ?", row.id);
   expect((await s.api("GET", "/api/teams/ACT/trash")).status).toBe(200);
   expect(count()).toBe(0);
-  db.close();
 });
