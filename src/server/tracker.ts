@@ -132,9 +132,7 @@ function checkDate(value: unknown, field: string): string {
 }
 
 function checkLabels(value: unknown): string[] {
-  if (!Array.isArray(value) || !value.every((l) => typeof l === "string")) {
-    throw new AppError("labels must be an array of strings");
-  }
+  if (!Array.isArray(value) || !value.every((l) => typeof l === "string")) throw new AppError("labels must be an array of strings");
   return [...new Set(value.map((l) => l.trim()).filter(Boolean))];
 }
 
@@ -298,10 +296,7 @@ function listComments(owner: CommentOwner, ownerId: number, workspace: string): 
   const rows = db
     .query<Record<string, unknown>, [string, number]>(`${commentSelect(owner)} WHERE c.${COMMENTS[owner].column} = ?2 ORDER BY c.id`)
     .all(workspace, ownerId);
-  const reactions = listReactions(
-    workspace,
-    rows.map((r) => `${COMMENTS[owner].source}:${r.id}`),
-  );
+  const reactions = listReactions(workspace, rows.map((r) => `${COMMENTS[owner].source}:${r.id}`));
   return rows.map((r) => toComment(r, reactions.get(`${COMMENTS[owner].source}:${r.id}`) ?? []));
 }
 
@@ -372,9 +367,7 @@ function insertComment(a: Actor, owner: CommentOwner, ownerId: number, workspace
       commentEvent(a, owner, ownerId, workspace, root, "update", time, { resolvedAt: was });
     }
   }
-  const id = Number(
-    db.query(`INSERT INTO ${table} (${column}, author_id, body, created_at, parent_id) VALUES (?, ?, ?, ?, ?)`).run(ownerId, a.id, text, time, root).lastInsertRowid,
-  );
+  const id = Number(db.query(`INSERT INTO ${table} (${column}, author_id, body, created_at, parent_id) VALUES (?, ?, ?, ?, ?)`).run(ownerId, a.id, text, time, root).lastInsertRowid);
   commentEvent(a, owner, ownerId, workspace, id, "create", time); // before the notifications it causes
   const mentioned = commentMentions(a, owner, ownerId, workspace, id, text, time);
   const target = targetOf(owner, ownerId);
@@ -742,6 +735,7 @@ const teamStatuses = (teamId: number) =>
   db.query<StatusRow, [number]>(`SELECT id, key, name, category, color, position FROM workflow_statuses WHERE team_id = ? ${WORKFLOW_ORDER}`).all(teamId);
 
 const isClosed = (category: StatusCategory | null) => !!category && CLOSED_CATEGORIES.includes(category);
+const CLOSED_SQL = `(${CLOSED_CATEGORIES.map((c) => `'${c}'`).join(", ")})`;
 
 /** A status of the team, by key, else by name, case-insensitively; anything else is 400 naming the team's keys. */
 function statusOf(team: TeamRef, value: unknown): StatusRow {
@@ -755,19 +749,8 @@ function statusOf(team: TeamRef, value: unknown): StatusRow {
 /** Where a team's work goes when it's a duplicate: its Duplicate status, else its first canceled one. */
 const duplicateStatus = (teamId: number) =>
   db
-    .query<{ key: string }, [number, string]>(
-      "SELECT key FROM workflow_statuses WHERE team_id = ? AND category = 'canceled' ORDER BY key = ? DESC, position, id LIMIT 1",
-    )
+    .query<{ key: string }, [number, string]>("SELECT key FROM workflow_statuses WHERE team_id = ? AND category = 'canceled' ORDER BY key = ? DESC, position, id LIMIT 1")
     .get(teamId, DUPLICATE_STATUS)!.key;
-
-const CATEGORY_NAMES: Record<StatusCategory, string> = {
-  triage: "Triage",
-  backlog: "Backlog",
-  unstarted: "Unstarted",
-  started: "Started",
-  completed: "Completed",
-  canceled: "Canceled",
-};
 
 /** A workflow change: people only (like the rest of team settings), in the request's workspace (else 404). */
 function workflowTeam(a: Actor, key: unknown): TeamRow {
@@ -822,14 +805,7 @@ export function createStatus(a: Actor, teamKey: string, input: WorkflowStatusInp
   } else {
     key = pickSlug(undefined, name, (slug) => taken(slug.replace(/-/g, "_")), { label: "key", fallback: "status" }).replace(/-/g, "_");
   }
-  db.query("INSERT INTO workflow_statuses (team_id, key, name, category, color, position) VALUES (?, ?, ?, ?, ?, ?)").run(
-    team.id,
-    key,
-    name,
-    category,
-    color,
-    position,
-  );
+  db.query("INSERT INTO workflow_statuses (team_id, key, name, category, color, position) VALUES (?, ?, ?, ?, ?, ?)").run(team.id, key, name, category, color, position);
   changed("team", team.workspace, team.key);
   return toTeam(teamRow(a, team.key));
 }
@@ -860,16 +836,14 @@ export function deleteStatus(a: Actor, teamKey: string, key: string, moveTo?: st
   const statuses = teamStatuses(team.id);
   const others = statuses.filter((s) => s.id !== status.id);
   if (status.category !== "triage" && !others.some((s) => s.category === status.category && s.key !== DUPLICATE_STATUS)) {
-    throw new AppError(`${status.name} is the last ${CATEGORY_NAMES[status.category]} status: add another first`, 409);
+    throw new AppError(`${status.name} is the last ${status.category[0]!.toUpperCase()}${status.category.slice(1)} status: add another first`, 409);
   }
   const target = moveTo === undefined ? undefined : others.find((s) => s.key === String(moveTo).trim().toLowerCase());
   if (moveTo !== undefined && !target) throw new AppError(`moveTo: "${moveTo}" isn't another status of ${team.key}`);
   const time = now();
   const refs = db.transaction(() => {
     const issues = db.query<{ id: number }, [number, string]>("SELECT id FROM issues WHERE team_id = ? AND status = ? ORDER BY id").all(team.id, status.key);
-    if (issues.length && !target) {
-      throw new AppError(`${issues.length} ${issues.length === 1 ? "issue is" : "issues are"} ${status.name}: pass moveTo`, 409);
-    }
+    if (issues.length && !target) throw new AppError(`${issues.length} ${issues.length === 1 ? "issue is" : "issues are"} ${status.name}: pass moveTo`, 409);
     // completedAt changes only when the category crosses into or out of completed/canceled.
     const closing = isClosed(target?.category ?? null);
     const keep = closing === isClosed(status.category) ? 1 : 0;
@@ -964,10 +938,7 @@ export function listTemplates(a: Actor, filter: { team?: string } = {}): IssueTe
     where += " AND t.id = ?";
     params.push(teamRow(a, filter.team).id);
   }
-  return db
-    .query<TemplateRow, SQLQueryBindings[]>(`${TEMPLATE_SELECT} WHERE ${where} ORDER BY it.name COLLATE NOCASE, it.id`)
-    .all(...params)
-    .map(toTemplate);
+  return db.query<TemplateRow, SQLQueryBindings[]>(`${TEMPLATE_SELECT} WHERE ${where} ORDER BY it.name COLLATE NOCASE, it.id`).all(...params).map(toTemplate);
 }
 
 /** Creates a template in a team (people only): its name labels it in the picker; title/description/status/priority/labels prefill an issue. */
@@ -1007,15 +978,7 @@ export function updateTemplate(a: Actor, id: unknown, patch: IssueTemplatePatch)
   const priority = patch.priority === undefined ? row.priority : patch.priority == null ? null : checkPriority(patch.priority);
   const time = now();
   const created = db.transaction(() => {
-    db.query("UPDATE issue_templates SET name = ?, title = ?, description = ?, status = ?, priority = ?, updated_at = ? WHERE id = ?").run(
-      name,
-      title,
-      description,
-      status,
-      priority,
-      time,
-      row.id,
-    );
+    db.query("UPDATE issue_templates SET name = ?, title = ?, description = ?, status = ?, priority = ?, updated_at = ? WHERE id = ?").run(name, title, description, status, priority, time, row.id);
     return patch.labels === undefined ? [] : setTemplateLabels(row.id, row.workspace, team, checkLabels(patch.labels), time);
   })();
   changed("team", row.workspace, row.team_key);
@@ -1443,9 +1406,6 @@ function listScope(a: Actor, alias: string, filter: { team?: string; q?: string;
   return { where, params, workspace, teamId, seen };
 }
 
-/** `listScope` always adds the workspace condition, so there's always a WHERE. */
-const whereClause = (where: string[]) => `WHERE ${where.join(" AND ")}`;
-
 /**
  * A username filter on `column` ("me" is the actor): whoever holds that username in the workspace. It must
  * name someone who is or was there; anyone else is 400 (a typo shouldn't look like "no issues").
@@ -1508,7 +1468,7 @@ export function listIssuesPage(a: Actor, filter: IssueFilter, page: { first?: un
 
 // Linear's due-date filters, by the server's date (SQLite's date('now'), UTC). Finished work (completed or canceled) is never overdue.
 const DUE_WHERE: Record<(typeof DUE_FILTERS)[number], string> = {
-  overdue: `i.due_on < date('now') AND ws.category NOT IN (${CLOSED_CATEGORIES.map((c) => `'${c}'`).join(", ")})`,
+  overdue: `i.due_on < date('now') AND ws.category NOT IN ${CLOSED_SQL}`,
   soon: "i.due_on BETWEEN date('now') AND date('now', '+7 days')",
   today: "i.due_on = date('now')",
   any: "i.due_on IS NOT NULL",
@@ -1592,7 +1552,7 @@ function queryIssues(a: Actor, filter: IssueFilter, after?: Cursor, limit?: numb
     params.push(...restParams);
   }
   return db
-    .query<IssueRow, SQLQueryBindings[]>(`${issueSelect(seen)} ${whereClause(where)} ${byDue ? DUE_ORDER : ISSUE_ORDER}${limit ? ` LIMIT ${limit}` : ""}`)
+    .query<IssueRow, SQLQueryBindings[]>(`${issueSelect(seen)} WHERE ${where.join(" AND ")} ${byDue ? DUE_ORDER : ISSUE_ORDER}${limit ? ` LIMIT ${limit}` : ""}`)
     .all(...params);
 }
 
@@ -1610,9 +1570,7 @@ const NO_VALUES: ActivityKind[] = ["created", "description", "trashed", "restore
 function announced(issueId: number, status: string): boolean {
   if (status === "in_review") return true;
   const row = db
-    .query<{ category: StatusCategory }, [string, number]>(
-      "SELECT w.category FROM issues i JOIN workflow_statuses w ON w.team_id = i.team_id AND w.key = ? WHERE i.id = ?",
-    )
+    .query<{ category: StatusCategory }, [string, number]>("SELECT w.category FROM issues i JOIN workflow_statuses w ON w.team_id = i.team_id AND w.key = ? WHERE i.id = ?")
     .get(status, issueId);
   return isClosed(row?.category ?? null);
 }
@@ -1633,9 +1591,7 @@ function logActivity(
   time: string,
   was: Record<string, unknown> = {},
 ) {
-  const insert = db.query(
-    "INSERT INTO issue_activity (issue_id, actor_id, on_behalf_of_id, kind, from_value, to_value, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-  );
+  const insert = db.query("INSERT INTO issue_activity (issue_id, actor_id, on_behalf_of_id, kind, from_value, to_value, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)");
   const json = (kind: ActivityKind, value: unknown) => (NO_VALUES.includes(kind) || value == null ? null : JSON.stringify(value));
   for (const { kind, from, to } of changes) insert.run(issueId, a.id, a.onBehalfOf ?? null, kind, json(kind, from), json(kind, to), time);
   if (changes.length) issueEvent(a, issueId, workspace, changes, time, was);
@@ -1823,9 +1779,7 @@ export function getIssue(a: Actor, identifier: string): Issue {
 
 /** Bumps issues in SQL and returns their identifiers, for change events. */
 function bumpIssues(ids: Iterable<number>, time: string): string[] {
-  const bump = db.query<{ ref: string }, [string, string, number]>(
-    `UPDATE issues SET ${BUMPED_AT} WHERE id = ? RETURNING (SELECT key FROM teams WHERE id = issues.team_id) || '-' || number AS ref`,
-  );
+  const bump = db.query<{ ref: string }, [string, string, number]>(`UPDATE issues SET ${BUMPED_AT} WHERE id = ? RETURNING (SELECT key FROM teams WHERE id = issues.team_id) || '-' || number AS ref`);
   return [...ids].map((id) => bump.get(time, time, id)!.ref);
 }
 
@@ -1892,9 +1846,7 @@ export function createIssue(a: Actor, rawInput: IssueInput): Issue {
     // Docs in the workspace that mentioned this identifier before the issue existed now link to it.
     const mention = new RegExp(`\\b${identifier}\\b`);
     const docs = db
-      .query<{ id: number; slug: string; content: string }, [string, string]>(
-        "SELECT id, slug, content FROM documents WHERE workspace = ? AND content LIKE ?",
-      )
+      .query<{ id: number; slug: string; content: string }, [string, string]>("SELECT id, slug, content FROM documents WHERE workspace = ? AND content LIKE ?")
       .all(team.workspace, `%${identifier}%`)
       .filter((doc) => mention.test(doc.content));
     for (const doc of docs) saveRefs(doc.id, doc.content, team.workspace);
@@ -1961,9 +1913,7 @@ export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Is
   // IMMEDIATE holds the write lock from the read (the version check, the history's "before") to the write.
   const { refs, created, projects } = db.transaction(() => {
     const before = read.get(id)!;
-    if (patch.baseUpdatedAt !== undefined && patch.baseUpdatedAt !== before.updated_at) {
-      throw new AppError("Issue changed since you read it", 409);
-    }
+    if (patch.baseUpdatedAt !== undefined && patch.baseUpdatedAt !== before.updated_at) throw new AppError("Issue changed since you read it", 409);
     if (patch.project !== undefined || patch.milestone !== undefined) Object.assign(cols, projectColumns(a, patch, before));
     if (moving) {
       db.query("INSERT INTO issue_aliases (team_id, number, issue_id, created_at) VALUES (?, ?, ?, ?)").run(from.id, before.number, id, time);
@@ -1989,9 +1939,7 @@ export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Is
     }
     if (blockers) {
       const was = db
-        .query<{ blocker_id: number }, [number]>(
-          `SELECT x.blocker_id FROM issue_blocks x JOIN issues b ON b.id = x.blocker_id WHERE x.blocked_id = ? AND ${within("b.team_id", seen)}`,
-        )
+        .query<{ blocker_id: number }, [number]>(`SELECT x.blocker_id FROM issue_blocks x JOIN issues b ON b.id = x.blocker_id WHERE x.blocked_id = ? AND ${within("b.team_id", seen)}`)
         .all(id)
         .map((b) => b.blocker_id);
       for (const b of was) if (!blockers.includes(b)) related.add(b);
@@ -2067,9 +2015,7 @@ export function linkIssue(a: Actor, identifier: string, link: LinkInput): { id: 
   if (issue.deleted_at || issue.archived_at) return null;
   const values = [link.kind, link.title, link.number, link.state, link.closes ? 1 : 0] as const;
   const fresh = db.transaction(() => {
-    const was = db
-      .query<LinkRow, [number, string]>("SELECT * FROM issue_links WHERE issue_id = ? AND url = ?")
-      .get(issue.id, link.url);
+    const was = db.query<LinkRow, [number, string]>("SELECT * FROM issue_links WHERE issue_id = ? AND url = ?").get(issue.id, link.url);
     if (was && JSON.stringify([was.kind, was.title, was.number, was.state, was.closes]) === JSON.stringify(values)) return false;
     const time = now();
     db.query(
@@ -2101,9 +2047,7 @@ export function advanceIssue(a: Actor, identifier: string, event: "draft" | "ope
   const statuses = teamStatuses(team.id);
   const unstarted = category === "triage" || category === "backlog" || category === "unstarted";
   const otherOpen = () =>
-    db
-      .query("SELECT 1 FROM issue_links WHERE issue_id = ? AND url != ? AND kind = 'pull_request' AND closes = 1 AND state IN ('open', 'draft')")
-      .get(id, url);
+    db.query("SELECT 1 FROM issue_links WHERE issue_id = ? AND url != ? AND kind = 'pull_request' AND closes = 1 AND state IN ('open', 'draft')").get(id, url);
   const to =
     event === "draft"
       ? unstarted && statuses.find((s) => s.category === "started")
@@ -2120,7 +2064,6 @@ export function advanceIssue(a: Actor, identifier: string, event: "draft" | "ope
 type IssueNode = { id: number; status: string; category: StatusCategory; team_id: number; parent_id: number | null; deleted_at: string | null };
 const NODE_SELECT = `SELECT i.id, i.status, ws.category, i.team_id, i.parent_id, i.deleted_at FROM issues i
   JOIN workflow_statuses ws ON ws.team_id = i.team_id AND ws.key = i.status`;
-const CLOSED_SQL = `(${CLOSED_CATEGORIES.map((c) => `'${c}'`).join(", ")})`;
 const teamFlag = (teamId: number, flag: "auto_close_parent" | "auto_close_children") =>
   db.query<{ on: number }, [number]>(`SELECT ${flag} AS "on" FROM teams WHERE id = ?`).get(teamId)!.on === 1;
 
@@ -2358,9 +2301,7 @@ export function claimIssue(a: Actor, identifier: string): Issue {
       )
       .get(workspace, id)!;
     if (isClosed(row.category)) throw new AppError(`${row.ref} is ${row.status}`, 409);
-    if (row.holder !== null && row.holder !== a.id && row.active) {
-      throw new AppError(`${row.ref} is claimed by ${row.username}`, 409);
-    }
+    if (row.holder !== null && row.holder !== a.id && row.active) throw new AppError(`${row.ref} is claimed by ${row.username}`, 409);
     const started = row.category === "started";
     if (row.holder === a.id && started) return false;
     const status = started ? row.status : teamStatuses(team.id).find((s) => s.category === "started")!.key;
@@ -2456,7 +2397,7 @@ const labelSelectOpen = (seen: Seen) => `SELECT ${LABEL_COLUMNS},
     (SELECT COUNT(DISTINCT x.issue_id) FROM issue_labels x JOIN labels o ON o.id = x.label_id JOIN issues i ON i.id = x.issue_id
      LEFT JOIN workflow_statuses ws ON ws.team_id = i.team_id AND ws.key = i.status
      WHERE (o.id = l.id OR o.parent_id = l.id) AND i.deleted_at IS NULL AND ${within("i.team_id", seen)}
-       AND COALESCE(ws.category, '') NOT IN (${CLOSED_CATEGORIES.map((c) => `'${c}'`).join(", ")})) AS open
+       AND COALESCE(ws.category, '') NOT IN ${CLOSED_SQL}) AS open
   ${LABEL_FROM}`;
 /** SQL: label `l` is the workspace's, or its team is one the reader sees. */
 const labelSeen = (seen: Seen) => `(l.team_id IS NULL OR ${within("l.team_id", seen)})`;
@@ -2485,9 +2426,7 @@ const readLabel = (a: Actor, id: number) =>
 function insertLabel(workspace: string, l: { teamId: number | null; parentId: number | null; name: string; color?: string; isGroup?: boolean }, time: string): number {
   const { n } = db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM labels WHERE workspace = ?").get(workspace)!;
   return db
-    .query<{ id: number }, SQLQueryBindings[]>(
-      "INSERT INTO labels (workspace, team_id, parent_id, name, color, is_group, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
-    )
+    .query<{ id: number }, SQLQueryBindings[]>("INSERT INTO labels (workspace, team_id, parent_id, name, color, is_group, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id")
     .get(workspace, l.teamId, l.parentId, l.name, l.color ?? LABEL_COLORS[n % LABEL_COLORS.length]!, l.isGroup ? 1 : 0, time)!.id;
 }
 
@@ -2790,9 +2729,7 @@ function checkViewFilter(a: Actor, value: unknown): ViewFilter {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new AppError("filter must be an object");
   const filter: Record<string, unknown> = {};
   for (const [field, given] of Object.entries(value)) {
-    if (!(VIEW_FILTER_FIELDS as readonly string[]).includes(field)) {
-      throw new AppError(`Unknown filter field "${field}": use ${VIEW_FILTER_FIELDS.join(", ")}`);
-    }
+    if (!(VIEW_FILTER_FIELDS as readonly string[]).includes(field)) throw new AppError(`Unknown filter field "${field}": use ${VIEW_FILTER_FIELDS.join(", ")}`);
     const v = typeof given === "string" ? given.trim() : given;
     if (v === undefined || v === null || v === "" || v === false || (Array.isArray(v) && !v.length)) continue;
     if (LIST_FIELDS.includes(field) ? !Array.isArray(v) || !v.every((s) => typeof s === "string") : FLAG_FIELDS.includes(field) ? v !== true : typeof v !== "string") {
@@ -2860,15 +2797,7 @@ export function updateView(a: Actor, id: unknown, patch: CustomViewPatch): Custo
   const name = patch.name === undefined ? view.name : requireText(patch.name, "name");
   const filter = patch.filter === undefined ? view.filter : JSON.stringify(checkViewFilter(a, patch.filter));
   const d = patch.display === undefined ? toView(view).display : checkDisplay(patch.display, toView(view).display);
-  db.query("UPDATE custom_views SET name = ?, filter = ?, group_by = ?, order_by = ?, layout = ?, updated_at = ? WHERE id = ?").run(
-    name,
-    filter,
-    d.groupBy,
-    d.orderBy,
-    d.layout,
-    now(),
-    view.id,
-  );
+  db.query("UPDATE custom_views SET name = ?, filter = ?, group_by = ?, order_by = ?, layout = ?, updated_at = ? WHERE id = ?").run(name, filter, d.groupBy, d.orderBy, d.layout, now(), view.id);
   changed("view", view.workspace, String(view.id));
   return getView(a, view.id);
 }
@@ -2941,9 +2870,7 @@ function documentRow(a: Actor, slug: unknown): DocumentRow {
   const row =
     typeof slug === "string"
       ? db
-          .query<DocumentRow, [string, string]>(
-            `SELECT d.content, ${DOC_COLUMNS} ${DOC_FROM} WHERE d.workspace = ? AND d.slug = ? AND ${SEES_TEAM(String(a.id), "t")}`,
-          )
+          .query<DocumentRow, [string, string]>(`SELECT d.content, ${DOC_COLUMNS} ${DOC_FROM} WHERE d.workspace = ? AND d.slug = ? AND ${SEES_TEAM(String(a.id), "t")}`)
           .get(workspace, slug.trim().toLowerCase())
       : null;
   if (!row) throw new AppError(`Document ${slug} not found`, 404);
@@ -2981,9 +2908,7 @@ function applyEdits(content: string, edits: unknown): string {
     // Overlapping matches count too: "aa" occurs twice in "aaa", which is ambiguous.
     let matches = 0;
     for (let at = text.indexOf(oldText); at !== -1; at = text.indexOf(oldText, at + 1)) matches++;
-    if (matches === 0) {
-      throw new AppError(`edits[${i}]: oldText not found (0 matches). Nothing was applied. Copy the text exactly from the current content.`);
-    }
+    if (matches === 0) throw new AppError(`edits[${i}]: oldText not found (0 matches). Nothing was applied. Copy the text exactly from the current content.`);
     if (matches > 1) {
       throw new AppError(`edits[${i}]: oldText matches ${matches} times. Nothing was applied. Include more surrounding text so it matches exactly once.`);
     }
@@ -3009,13 +2934,7 @@ function saveVersion(documentId: number, title: string, content: string, authorI
     // created_at stays put, so the window is anchored to the version's start and can't slide forever.
     db.query("UPDATE document_versions SET title = ?, content = ? WHERE id = ?").run(title, content, last.id);
   } else {
-    db.query("INSERT INTO document_versions (document_id, title, content, author_id, created_at) VALUES (?, ?, ?, ?, ?)").run(
-      documentId,
-      title,
-      content,
-      authorId,
-      time,
-    );
+    db.query("INSERT INTO document_versions (document_id, title, content, author_id, created_at) VALUES (?, ?, ?, ?, ?)").run(documentId, title, content, authorId, time);
   }
 }
 
@@ -3027,9 +2946,7 @@ function saveRefs(documentId: number, content: string, workspace: string) {
     const id = findIssue(workspace, key!, Number(number)); // an identifier from before a move too
     if (id !== null) ids.add(id);
   }
-  [...ids].forEach((issueId, ord) => {
-    db.query("INSERT INTO document_refs (document_id, issue_id, ord) VALUES (?, ?, ?)").run(documentId, issueId, ord);
-  });
+  [...ids].forEach((issueId, ord) => db.query("INSERT INTO document_refs (document_id, issue_id, ord) VALUES (?, ?, ?)").run(documentId, issueId, ord));
 }
 
 export function listDocuments(a: Actor, filter: DocumentFilter): DocumentSummary[] {
@@ -3038,10 +2955,7 @@ export function listDocuments(a: Actor, filter: DocumentFilter): DocumentSummary
     where.push("d.project_id = ?");
     params.push(projectIn(a, filter.project).id);
   }
-  return db
-    .query<DocumentRow, SQLQueryBindings[]>(`${DOC_SELECT} ${whereClause(where)} ORDER BY t.key, d.position, d.id`)
-    .all(...params)
-    .map(toDocSummary);
+  return db.query<DocumentRow, SQLQueryBindings[]>(`${DOC_SELECT} WHERE ${where.join(" AND ")} ORDER BY t.key, d.position, d.id`).all(...params).map(toDocSummary);
 }
 
 /** A doc as you see it: the issues it mentions leave out those in teams you don't see (their chips stay plain text). */
@@ -3049,9 +2963,7 @@ export function getDocument(a: Actor, slug: string): Document {
   const row = documentRow(a, slug);
   const seen = seenBy(a);
   const issues = db
-    .query<IssueRow, [number]>(
-      `${issueSelect(seen)} JOIN document_refs r ON r.issue_id = i.id WHERE r.document_id = ? AND ${LIVE} AND ${within("t.id", seen)} ORDER BY r.ord`,
-    )
+    .query<IssueRow, [number]>(`${issueSelect(seen)} JOIN document_refs r ON r.issue_id = i.id WHERE r.document_id = ? AND ${LIVE} AND ${within("t.id", seen)} ORDER BY r.ord`)
     .all(row.id)
     .map(toSummary);
   const { n: versionCount } = db.query<{ n: number }, [number]>("SELECT COUNT(*) AS n FROM document_versions WHERE document_id = ?").get(row.id)!;
@@ -3089,12 +3001,8 @@ export function createDocument(a: Actor, input: DocumentInput): Document {
 
 export function updateDocument(a: Actor, slug: string, patch: DocumentPatch): Document {
   const row = liveDocument(a, slug);
-  if (patch.baseUpdatedAt !== undefined && patch.baseUpdatedAt !== row.updated_at) {
-    throw new AppError("Document changed since you started editing", 409);
-  }
-  if (patch.content !== undefined && patch.edits !== undefined) {
-    throw new AppError("Pass either content (full replacement) or edits, not both");
-  }
+  if (patch.baseUpdatedAt !== undefined && patch.baseUpdatedAt !== row.updated_at) throw new AppError("Document changed since you started editing", 409);
+  if (patch.content !== undefined && patch.edits !== undefined) throw new AppError("Pass either content (full replacement) or edits, not both");
   const cols: Record<string, SQLQueryBindings> = {};
   if (patch.title !== undefined) cols.title = requireText(patch.title, "title");
   if (patch.content !== undefined) cols.content = checkContent(patch.content);
@@ -3198,18 +3106,14 @@ const VERSION_FROM = `FROM document_versions v JOIN documents d ON d.id = v.docu
 
 export function listDocumentVersions(a: Actor, slug: string): DocumentVersionSummary[] {
   return db
-    .query<Record<string, unknown>, [number]>(
-      `SELECT v.id, v.title, v.created_at, ${userCols("u", "a")} ${VERSION_FROM} WHERE v.document_id = ? ORDER BY v.id DESC`,
-    )
+    .query<Record<string, unknown>, [number]>(`SELECT v.id, v.title, v.created_at, ${userCols("u", "a")} ${VERSION_FROM} WHERE v.document_id = ? ORDER BY v.id DESC`)
     .all(documentRow(a, slug).id)
     .map((r) => ({ id: r.id as number, author: ref(r, "a")!, title: r.title as string, createdAt: r.created_at as string }));
 }
 
 export function getDocumentVersion(a: Actor, slug: string, id: unknown): DocumentVersion {
   const r = db
-    .query<Record<string, unknown>, [number, number]>(
-      `SELECT v.id, v.title, v.content, v.created_at, ${userCols("u", "a")} ${VERSION_FROM} WHERE v.document_id = ? AND v.id = ?`,
-    )
+    .query<Record<string, unknown>, [number, number]>(`SELECT v.id, v.title, v.content, v.created_at, ${userCols("u", "a")} ${VERSION_FROM} WHERE v.document_id = ? AND v.id = ?`)
     .get(documentRow(a, slug).id, Number(id));
   if (!r) throw new AppError(`Version ${id} of ${slug} not found`, 404);
   return { id: r.id as number, author: ref(r, "a")!, title: r.title as string, content: r.content as string, createdAt: r.created_at as string };
@@ -3330,10 +3234,7 @@ export function listProjects(a: Actor, filter: { team?: string; status?: string[
     where.push(`p.status IN (${inList(filter.status)})`);
     params.push(...filter.status.map((s) => checkOneOf(s, PROJECT_STATUSES, "status")));
   }
-  return db
-    .query<ProjectRow, SQLQueryBindings[]>(`${projectSelect(seen)} ${whereClause(where)} ${PROJECT_ORDER}`)
-    .all(...params)
-    .map(toProjectSummary);
+  return db.query<ProjectRow, SQLQueryBindings[]>(`${projectSelect(seen)} WHERE ${where.join(" AND ")} ${PROJECT_ORDER}`).all(...params).map(toProjectSummary);
 }
 
 export function getProject(a: Actor, slug: string): Project {
@@ -3344,9 +3245,7 @@ export function getProject(a: Actor, slug: string): Project {
       `SELECT m.*, ${tally(`i.milestone_id = m.id AND ${within("i.team_id", seen)}`)} AS tally FROM milestones m WHERE m.project_id = ? ORDER BY m.position, m.id`,
     )
     .all(row.id)
-    .map(
-      (m): Milestone => ({ id: m.id, name: m.name, description: m.description, targetDate: m.target_date, position: m.position, ...progressOf(m.tally) }),
-    );
+    .map((m): Milestone => ({ id: m.id, name: m.name, description: m.description, targetDate: m.target_date, position: m.position, ...progressOf(m.tally) }));
   const docs = db
     .query<DocumentRow, [number]>(`${DOC_SELECT} WHERE d.project_id = ? AND d.deleted_at IS NULL AND ${within("t.id", seen)} ORDER BY t.key, d.position, d.id`)
     .all(row.id)
@@ -3446,14 +3345,7 @@ export function createMilestone(a: Actor, slug: string, input: MilestoneInput): 
   const targetDate = input.targetDate === undefined ? null : checkTargetDate(input.targetDate);
   const last = db.query<{ n: number }, [number]>("SELECT COALESCE(MAX(position), 0) AS n FROM milestones WHERE project_id = ?").get(project.id)!.n;
   const position = input.position === undefined ? last + 1 : checkPosition(input.position);
-  db.query("INSERT INTO milestones (project_id, name, description, target_date, position, created_at) VALUES (?, ?, ?, ?, ?, ?)").run(
-    project.id,
-    name,
-    description,
-    targetDate,
-    position,
-    now(),
-  );
+  db.query("INSERT INTO milestones (project_id, name, description, target_date, position, created_at) VALUES (?, ?, ?, ?, ?, ?)").run(project.id, name, description, targetDate, position, now());
   changed("project", project.workspace, project.slug);
   return getProject(a, project.slug);
 }
@@ -3661,8 +3553,7 @@ export function listCycles(a: Actor, key: string): Cycle[] {
   return db
     .query<CycleRow & { tally: string }, [number]>(`SELECT c.*, ${tally("i.cycle_id = c.id")} AS tally FROM cycles c WHERE c.team_id = ? ORDER BY c.number`)
     .all(team.id)
-    .map(
-      (c): Cycle => ({
+    .map((c): Cycle => ({
       team: team.key,
       number: c.number,
       startsAt: c.starts_at,
@@ -3670,8 +3561,7 @@ export function listCycles(a: Actor, key: string): Cycle[] {
       state: c.completed_at ? "completed" : c.starts_at <= time ? "current" : "upcoming",
       completedCount: (JSON.parse(c.tally) as { completed: number }).completed,
       ...progressOf(c.tally),
-    }),
-    );
+    }));
 }
 
 // --- Realtime: which teams a change is about ---
