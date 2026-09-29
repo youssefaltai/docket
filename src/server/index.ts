@@ -11,7 +11,7 @@ import { onChange } from "./db.ts";
 import { HARD_MAX_BODY, http, publicFile, secure, webApp } from "./http.ts";
 import { handleMcp } from "./mcp.ts";
 import { startPush } from "./push.ts";
-import { autoArchive, eventTeams, syncCycles } from "./tracker.ts";
+import { autoArchive, eventTeams, memberAudience, syncCycles } from "./tracker.ts";
 import { startWebhooks } from "./webhooks.ts";
 
 /** Whose credentials each socket rides on, so signing out, revoking or suspending closes it; and what it hears. */
@@ -42,10 +42,14 @@ const topicsOf = (a: Actor) =>
 
 /** Where a change goes: a team's to those who see it (see eventTeams), anything else to the whole workspace. */
 function topicsFor(event: ServerEvent): string[] {
+  // A member: everyone but guests, who hear only of those sharing a team with them (their member list shows no one else),
+  // and of themselves.
+  if (event.entity === "member") {
+    const { teams, alone } = memberAudience(event.workspace, event.id);
+    return [publicTopic(event.workspace), ...teams.map(teamTopic), ...(alone === null ? [] : [userTopic(alone, event.workspace)])];
+  }
   const teams = eventTeams(event);
   if (teams === null) return [topic(event.workspace)];
-  // A member: everyone but guests, who hear only of those sharing a team with them (their member list shows no one else).
-  if (event.entity === "member") return [publicTopic(event.workspace), ...teams.map((t) => teamTopic(t.id))];
   return [...new Set(teams.flatMap((t) => (t.private ? [teamTopic(t.id)] : [publicTopic(event.workspace), teamTopic(t.id)])))];
 }
 

@@ -450,6 +450,16 @@ describe("guests work in their teams but set nothing up", () => {
     await ok(s.api("POST", "/api/labels", { name: "Area", isGroup: true, team: "WEB" }), 201);
     expect((await ok(gus.api("PATCH", `/api/issues/${issue.id}`, { labels: ["known", "Area/frontend"] }))).labels.sort()).toEqual(["Area/frontend", "known"]);
   });
+
+  test("/ws: a guest in no team still hears about themselves (DKT-42)", async () => {
+    const gil = s.as("gil"); // left WEB above: in no team now
+    expect(await ok(gil.api("GET", "/api/teams"))).toEqual([]);
+    const socket = gil.ws();
+    expect(await socket.opened).toBeTrue();
+    await ok(gil.api("PATCH", "/api/workspaces/acme/profile", { name: "Gil G" }));
+    await socket.until((e) => e.entity === "member" && e.id === "gil");
+    socket.close();
+  });
 });
 
 describe("what moves with an issue or doc out of a private team", () => {
