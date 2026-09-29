@@ -1,4 +1,4 @@
-// Every API key, agent token and chat key belongs to one workspace and acts only there (DKT-4).
+// Every API key and agent token belongs to one workspace and acts only there (DKT-4).
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { startServer, type Caller, type TestServer } from "./server.ts";
 

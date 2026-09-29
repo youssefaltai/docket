@@ -6,29 +6,22 @@
 
 **The issue tracker your AI agents can actually use.**
 
-Issues, boards and docs, with a clean web UI for you and an MCP server for Claude and other agents. Same tracker, both at the same time, live.
-
-One container. One SQLite file. Your people and your agents, each with their own sign-in. No SaaS.
+Issues, boards and docs, with a web UI for people and an MCP server for Claude and other agents. Self-hosted: one container, one SQLite file.
 
 [![MIT license](https://img.shields.io/badge/license-MIT-black)](LICENSE)
 [![Bun](https://img.shields.io/badge/runtime-Bun-black?logo=bun)](https://bun.sh)
-[![MCP](https://img.shields.io/badge/MCP-ready-black)](https://modelcontextprotocol.io)
-[![PRs welcome](https://img.shields.io/badge/PRs-welcome-black)](CONTRIBUTING.md)
 
 <img src=".github/screenshots/list.png" alt="Docket issue list" width="880">
 
 </div>
 
-## Why Docket
+## Features
 
-Agents are good at doing work and bad at keeping track of it. Docket gives them a place to do that: they pick up issues, post progress, write the spec and move things to review, while you watch it happen in the browser.
-
-- **Built for agents and humans together.** 35 MCP tools for issues, projects, comments, docs, notifications and files (screenshots and logs too). Every agent gets its own token and name, and claims issues as a delegate, the way Linear's agents do. What an agent does shows up in your UI right away over WebSocket, and in its history.
-- **Linear's model, tiny code.** Workspaces with members, admins and guests, public and private teams with their own workflows, projects with milestones, cycles, estimates, list and board views you can save, an inbox with @mentions and push notifications (your phone too, as an installed app), and a command menu (`⌘K`) with keyboard shortcuts for everything.
-- **Docs next to your issues.** Rich-text docs stored as Markdown, with version history. Write `API-1` and it links to the issue, with its status shown inline.
-- **Connected.** Pull requests and commits move issues along (GitHub), and signed webhooks tell your own services what changed.
-- **Yours.** Self-hosted, a SQLite file and a folder of uploads, eleven runtime dependencies. Back it up live with `./backup.sh`.
-- **Works everywhere.** Install it as a PWA on iPhone, iPad or Mac. It works offline for the issues and docs you've already opened.
+- **For agents and people together.** 35 MCP tools for issues, projects, comments, docs, notifications and files. Every agent has its own name and token, and claims issues as a delegate, the way Linear's agents do. What an agent does shows up in the UI live, over WebSocket, and in the issue's history.
+- **Modeled on Linear.** Workspaces with admins, members and guests; public and private teams with their own workflows; projects with milestones; cycles; estimates; saved list and board views; an inbox with @mentions and push notifications (the iPhone Home Screen app too); a command menu (`⌘K` / `Ctrl+K`) and keyboard shortcuts.
+- **Docs next to issues.** Rich-text docs stored as Markdown, with version history. Write `API-1` and it links to the issue, with its status icon.
+- **Connected.** GitHub pull requests and commits move issues along; signed webhooks tell your own services what changed.
+- **Installable.** A PWA, with a service worker that keeps what you've opened readable offline.
 
 <table>
   <tr>
@@ -49,11 +42,9 @@ mkdir -p data && sudo chown -R 1000:1000 data
 docker compose up -d --build
 ```
 
-Open http://localhost:7100. Your data lives in `./data`: a SQLite file and an `attachments` folder (uploaded files). Don't `cp` either while Docket is running — WAL mode makes that unsafe for the database. Use `./backup.sh` instead: it takes a consistent snapshot with `VACUUM INTO`, safe to run live, then copies new attachments.
+Open http://localhost:7100. `chown` gives `./data` to the container's non-root user (`bun`, uid 1000); run it once on an existing install too.
 
-The `chown` matches `./data` to the container's non-root user (`bun`, uid 1000), which owns it inside the image. Already running Docket without it? Same command, run once, fixes an existing deployment too.
-
-The first time it starts, Docket prints a one-time setup code (`docker compose logs docket`). Enter it at http://localhost:7100/setup to create your account; you become the admin of your first workspace.
+On first start Docket prints a one-time setup code (`docker compose logs docket`). Enter it at http://localhost:7100/setup to create your account; you become admin of your first workspace.
 
 Then give Claude Code its own token: **Settings → Workspace → Add agent** shows a ready-to-paste command:
 
@@ -64,47 +55,22 @@ claude mcp add --transport http docket-<workspace> http://localhost:7100/mcp \
 
 Run it in your project folder. Each workspace is its own server (`docket-acme`, `docket-side`), so they never clash.
 
-Try: *"Create a team called Website in Docket and file issues for everything in TODO.md."*
+## Data and backups
+
+`./data` holds `docket.db` (SQLite, WAL mode) and `attachments/` (uploaded files). Don't `cp` them while Docket runs; use `./backup.sh`.
+
+`./backup.sh` runs `VACUUM INTO` inside the container, safe while Docket is live. It writes `data/backups/docket-YYYY-MM-DD.db`, deletes snapshots older than 14 days, and copies new uploads into `data/backups/attachments/` (never pruned: snapshots link to them). Run it nightly from cron (there's an example line in the script) and copy `data/backups/` off the server.
+
+To restore, stop Docket, then put a snapshot back as `data/docket.db` and `data/backups/attachments/` as `data/attachments/`.
 
 ## Going further
 
 <details>
 <summary><b>Put it on a server</b></summary>
 
-The container listens on `127.0.0.1:7100` only. Put it behind whatever you already use for HTTPS: a reverse proxy (Caddy, nginx, Traefik), a tunnel, or a private network like Tailscale or WireGuard.
+`docker-compose.yml` publishes the port on `127.0.0.1` only. Put HTTPS in front with whatever you already use: a reverse proxy (Caddy, nginx, Traefik), a tunnel, or a private network like Tailscale or WireGuard. Add the hostname to `DOCKET_HOSTS`, or data routes answer 403.
 
-Back up with `./backup.sh`. Run it from a nightly cron: it writes a consistent snapshot into `data/backups/` and keeps 14 days, then copies new uploads into `data/backups/attachments/` (kept for good: the snapshots link to them). Copy `data/backups/` off the server to keep both. To restore, stop Docket, put a snapshot back as `data/docket.db` and `data/backups/attachments/` as `data/attachments/`.
-
-</details>
-
-<details>
-<summary><b>Add the assistant</b></summary>
-
-The assistant is a separate service, docket-chat, next to Docket on the same host. Docket's compose creates a Docker network, `docket`, and docket-chat joins it. Docket reaches it at `http://docket-chat:7110`, and it reaches Docket at `http://docket:7100`. Both stay published on `127.0.0.1` only.
-
-```sh
-cd /opt/apps/docket
-echo 'CHAT_URL=http://docket-chat:7110' >> .env
-docker compose up -d                       # Docket first: it creates the network
-cd /opt/apps/docket-chat                   # then docket-chat (see its README)
-mkdir -p data && sudo chown -R 1000:1000 data
-docker compose up -d --build
-```
-
-Back up its conversations nightly with Docket's script:
-
-```
-19 3 * * * /opt/apps/docket/backup.sh /opt/apps/docket-chat docket-chat /data/chat.db >> $HOME/docket-backup.log 2>&1
-```
-
-</details>
-
-<details>
-<summary><b>Connect GitHub</b></summary>
-
-Pull requests and commits link to the issues they mention, and move them along: a branch like `ana/dkt-12-fix-login` (copy it from the issue page, or press `⌘/Ctrl+Shift+.` there), the identifier in the PR title, or `Fixes DKT-12` in its description. Opening the PR moves the issue to In Review, and merging it to Done. `Part of DKT-12` links without moving it.
-
-An admin connects it in **Settings → Workspace → GitHub** and gets a payload URL and a secret, shown once. Add them as a webhook in the GitHub repo or organization (**Settings → Webhooks → Add webhook**): content type `application/json`, the events Pull requests and Pushes. GitHub must be able to reach Docket at that URL, and its host must be in `DOCKET_HOSTS`.
+Give each Docket its own hostname: browsers share cookies across ports, so two Dockets on `localhost:7100` and `localhost:7200` sign each other out.
 
 </details>
 
@@ -117,23 +83,28 @@ git pull
 docker compose up -d --build
 ```
 
-Schema changes apply by themselves on startup and never drop data. Keep the backup until you know the new version works: it is your way back.
+Schema changes apply on startup. Keep the backup until you know the new version works.
 
 </details>
 
 <details>
 <summary><b>People, agents and sign-in</b></summary>
 
-Docket copies Linear's model: everyone signs in, each workspace has its own members, and agents are apps with their own tokens.
+- **People** join with an invite link (**Settings → Workspace → Invite**): whoever opens it creates an account, or joins with the one they're signed in to. There are no passwords: to sign in on a new device, open **Settings → Account → Sign in on another device** on one where you're signed in. Invite and sign-in links work once and expire after 15 minutes.
+- **Agents** are added by an admin (**Settings → Workspace → Add agent**) and get a token, shown once. They write under their own name; claiming an issue makes an agent its delegate while a person stays the assignee.
+- **Scripts** use personal API keys (**Settings → Account → API keys**), read-only or read-write. A key works only in the workspace it was made in. It can't create keys, workspaces, invites or sign-in links: that takes a browser session.
+- **Removing someone** suspends them: their access to the workspace and their API keys there end at once, and their history keeps their name. If it was their only workspace, their sessions are deleted too.
 
-- **People** join with an invite link (**Settings → Workspace → Invite**): whoever opens it creates an account, or joins with the one they're signed in to. There are no passwords and no email: to sign in on a new device, open **Settings → Account → Sign in on another device** on one where you're signed in (no one else can sign you in, not even an admin). Links work once and expire after 15 minutes.
-- **Agents** are added by an admin (**Settings → Workspace → Add agent**) and get a token, shown once. They write under their own name, and claiming an issue makes them its delegate while a person stays the assignee.
-- **Scripts** use personal API keys (**Settings → Account → API keys**), read-only or read-write. Each key works in the workspace it was made in, and only there. Keys can't create other keys, workspaces, invites or sign-in links: that takes the web app.
-- **Removing someone** is suspending them: their access to the workspace ends at once, their API keys there stop working, and their history keeps their name. If it was their only workspace, their sessions are deleted too, and reinstating them means they sign in again.
+**Locked out?** On the server, `docker compose exec docket bun run sign-in-link <username> [workspace]` prints a one-time sign-in link. Usernames are per workspace: name the workspace if several people hold the username. Set `DOCKET_URL` so the link uses your public address.
 
-Serve it over HTTPS anywhere but localhost. Give each Docket its own hostname: browsers share cookies across ports, so two Dockets on one host (say `localhost:7100` and `localhost:7200`) sign each other out, and any other app on that host can read the session cookie.
+</details>
 
-**Locked out?** On the server, `docker compose exec docket bun run sign-in-link <username> [workspace]` prints a one-time sign-in link (usernames are per workspace: name the workspace if several people hold it). Set `DOCKET_URL` so it points at your public address.
+<details>
+<summary><b>Connect GitHub</b></summary>
+
+Pull requests and commits link to the issues they mention: a branch like `ana/dkt-12-fix-login` (copy it from the issue page, or press `⌘/Ctrl+Shift+.` there), the identifier in the PR title, or `Fixes DKT-12` in its title or description. Opening a PR moves the issue to In Review (a draft PR: to the team's first started status), and merging it to Done. `Part of DKT-12` links without moving it.
+
+An admin connects it in **Settings → Workspace → GitHub** and gets a payload URL and a secret, shown once. Add them as a webhook in the GitHub repo or organization (**Settings → Webhooks → Add webhook**): content type `application/json`, events Pull requests and Pushes. GitHub must be able to reach that URL, and its host must be in `DOCKET_HOSTS`.
 
 </details>
 
@@ -143,17 +114,15 @@ Serve it over HTTPS anywhere but localhost. Give each Docket its own hostname: b
 | Variable | Default |
 |---|---|
 | `PORT` | `7100` |
-| `DATABASE_PATH` | `$XDG_DATA_HOME/docket/docket.db` |
-| `DOCKET_SETUP_CODE` | random, printed at startup while there are no users; set it to fix the code (tests, automation) |
-| `DOCKET_URL` | `http://localhost:$PORT`; the public address `sign-in-link` puts in links, and push notifications give as their contact (when https) |
-| `DOCKET_HOSTS` | unset — extra hostnames (comma-separated) allowed in the `Host` header, besides `localhost`, e.g. `docket.example.com,vps.tailnet.ts.net`. Needed when serving over Tailscale or another hostname. |
-| `CHAT_URL` | unset — the docket-chat assistant's address: `http://docket-chat:7110` in Docker (see Add the assistant). Set, the web app shows the assistant and proxies `/api/chat/*` to it; unset, both are off. |
-| `DOCKET_NETWORK` | `docket` — the Docker network docket-chat joins. Give a second Docket on the same host (a test instance) its own. |
-| `DOCKET_WEBHOOK_ALLOW_PRIVATE` | unset — `true` lets webhooks (Workspace settings) target private, loopback and link-local addresses and plain `http`, e.g. an agent runner on the same host or tailnet. Otherwise only public `https` endpoints. Set it only if every workspace admin may reach this server's network. |
+| `DATABASE_PATH` | `$XDG_DATA_HOME/docket/docket.db` (`~/.local/share` if unset); `/app/data/docket.db` in Docker |
+| `DOCKET_SETUP_CODE` | random, printed at startup while there are no users; set it to fix the code |
+| `DOCKET_URL` | unset. The public address: used in `sign-in-link` links (default `http://localhost:$PORT`), the setup-code line and, when `https`, as the contact push services see |
+| `DOCKET_HOSTS` | unset. Extra hostnames (comma-separated) allowed in the `Host` header, besides `localhost`, `127.0.0.1` and `[::1]`, e.g. `docket.example.com,vps.tailnet.ts.net` |
+| `DOCKET_WEBHOOK_ALLOW_PRIVATE` | unset. `true` lets webhooks target private, loopback and link-local addresses and plain `http`; otherwise only public `https`. Set it only if every workspace admin may reach this server's network. |
 
-In Docker, set these in a `.env` file next to `docker-compose.yml` (see `.env.example`). `PORT` there only changes the host-side port mapping; the container always listens on `7100` internally.
+In Docker, set these in a `.env` file next to `docker-compose.yml` (see `.env.example`). There `PORT` only changes the host-side port; the container always listens on `7100`.
 
-You can also use an optional config file at `$XDG_CONFIG_HOME/docket/config` or `$XDG_CONFIG_DIRS/docket/config`, with `KEY=VALUE` lines (`#` starts a comment line; an unquoted value drops a trailing ` # comment`; surrounding quotes are stripped). Real env vars win over the file, unless a var is set but empty — e.g. docker-compose's `${DOCKET_HOSTS:-}` — which counts as unset.
+Docket also reads the first `KEY=VALUE` file found at `$XDG_CONFIG_HOME/docket/config` (`~/.config` if unset), then in each of `$XDG_CONFIG_DIRS` (`/etc/xdg` if unset). Lines starting with `#` are comments, an unquoted value drops a trailing ` # comment`, and surrounding quotes are stripped. Real env vars win over the file; an empty one (like compose's `${DOCKET_HOSTS:-}`) counts as unset.
 
 </details>
 
@@ -167,23 +136,15 @@ You can also use an optional config file at `$XDG_CONFIG_HOME/docket/config` or 
 - **Comments:** `update_comment`, `delete_comment`, `resolve_thread`
 - **Inbox and files:** `list_notifications`, `mark_notifications_read`, `attach_file`, `get_attachment`
 
-A key works in one workspace, so the tools act there.
+A key acts in one workspace and sees only the tools it can use: read-only keys get the 13 `list_*` and `get_*` tools; `create_team` and `update_team` are for people, `update_workspace` for admins.
 
-The full REST API and data model are in [SPEC.md](SPEC.md).
+The REST API and data model are in [SPEC.md](SPEC.md).
 
 </details>
 
 ## Contributing
 
-Contributions are welcome, from typo fixes to new features. Docket is small on purpose, so you can read the whole codebase in an afternoon.
-
-```sh
-bun install
-bun run dev   # http://localhost:7100, hot reload, data in ./dev.db, setup code DEVEL-SETUP
-bun test
-```
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for how the code is laid out and what makes a PR easy to merge. Not sure where to start? [Open an issue](https://github.com/youssefaltai/docket/issues/new) and say hi.
+See [CONTRIBUTING.md](CONTRIBUTING.md). Not sure where to start? [Open an issue](https://github.com/youssefaltai/docket/issues/new).
 
 ## License
 

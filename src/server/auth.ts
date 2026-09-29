@@ -5,15 +5,15 @@ import type { SetupInput } from "../shared/types.ts";
 import * as access from "./access.ts";
 import { SESSION_IDLE_MS, type Actor, type Client } from "./access.ts";
 import { AppError } from "./db.ts";
+import { https } from "./http.ts";
 
 const COOKIE = "docket_session";
 
 /** Exact media type check: "text/plain;charset=application/json" is a CORS-simple request, so it must not pass. */
-export const isJson = (req: Request) =>
-  req.headers.get("content-type")?.split(";")[0]!.trim().toLowerCase() === "application/json";
+export const mediaType = (req: Request) => req.headers.get("content-type")?.split(";")[0]!.trim().toLowerCase();
+export const isJson = (req: Request) => mediaType(req) === "application/json";
 
 const json = (data: unknown, status = 200, headers?: HeadersInit) => Response.json(data, { status, headers });
-const unauthorized = (headers?: HeadersInit) => json({ error: "Unauthorized" }, 401, headers);
 const notJson = () => json({ error: "Expected Content-Type: application/json" }, 415);
 
 // DNS rebinding defence: a browser tricked into resolving evil.example to us still sends Host: evil.example.
@@ -36,8 +36,6 @@ function sameOrigin(req: Request): boolean {
     return false;
   }
 }
-
-const https = (req: Request) => new URL(req.url).protocol === "https:" || req.headers.get("x-forwarded-proto") === "https";
 
 function cookieHeader(req: Request, value: string, maxAge: number): string {
   return `${COOKIE}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${https(req) ? "; Secure" : ""}`;
@@ -91,7 +89,7 @@ export function guard<T>(route: T, { mcp = false } = {}): T {
     if (!hostAllowed(req)) return forbiddenHost();
     const { actor, stale, crossSite } = identify(req, mcp);
     if (crossSite) return json({ error: "Cross-origin request refused" }, 403);
-    if (!actor) return unauthorized(stale ? signedOut(req) : undefined);
+    if (!actor) return json({ error: "Unauthorized" }, 401, stale ? signedOut(req) : undefined);
     if (!mcp && actor.scope === "read" && req.method !== "GET") return json({ error: "This API key is read-only" }, 403);
     // The web app says which account it thinks is signed in (its id). Tabs share one cookie, so after signing
     // in as someone else in another tab, a stale tab would silently act as the new account: refuse, and it reloads.

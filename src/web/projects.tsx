@@ -5,7 +5,7 @@ import { PROJECT_STATUS_LABELS, type Milestone, type Project, type ProjectPatch,
 import { HttpError, api } from "./api";
 import { useBulk } from "./bulk";
 import { Description, type Edit } from "./issue";
-import { IssueList, LISTED, useListShortcuts } from "./issues";
+import { IssueList, LISTED, listPatch, useListShortcuts } from "./issues";
 import { LeadPicker, ProjectStatusPicker, RowMenu, TeamsPicker } from "./pickers";
 import {
   Avatar,
@@ -36,10 +36,9 @@ import {
   nav,
   percent,
   Progress,
-  toPatch,
-  type IssueChange,
   useApp,
   useFetch,
+  useTitle,
 } from "./ui";
 
 const issues = (n: number) => `${n} ${n === 1 ? "issue" : "issues"}`;
@@ -51,10 +50,8 @@ export function ProjectsView({ teamKey }: { teamKey: string | null }) {
   const team = teamKey ? app.teams?.find((t) => t.key === teamKey) : undefined;
   const [search, setSearch] = useState("");
 
-  useEffect(() => {
-    nav.lastProjects = location.pathname;
-    document.title = `${team ? `${team.name} projects` : teamKey || "Projects"} · Docket`;
-  }, [teamKey, team?.name]);
+  useEffect(() => void (nav.lastProjects = location.pathname), [teamKey]);
+  useTitle(team ? `${team.name} projects` : teamKey || "Projects");
 
   const { data: projects, failed, reload } = useFetch(() => api.projects({ team: teamKey ?? undefined }), [teamKey]);
   const q = search.trim().toLowerCase();
@@ -159,9 +156,7 @@ export function ProjectPage({ slug }: { slug: string }) {
   useListShortcuts(list.setData, list.invalidate, list.reload);
   const { selection, bar } = useBulk(shown, { setIssues: list.setData, invalidate: list.invalidate, reload: list.reload }, [slug, milestone]);
 
-  useEffect(() => {
-    document.title = `${project?.name ?? slug} · Docket`;
-  }, [slug, project?.name]);
+  useTitle(project?.name ?? slug);
 
   const header = (
     <header className="header">
@@ -235,14 +230,7 @@ export function ProjectPage({ slug }: { slug: string }) {
     throw new HttpError("Project changed since you read it", 409);
   };
 
-  const patchIssue = (id: string, p: IssueChange) => {
-    list.invalidate();
-    list.setData((issues) => issues?.map((i) => (i.id === id ? { ...i, ...p, updatedAt: new Date().toISOString() } : i)) ?? null);
-    api.updateIssue(id, toPatch(p)).catch((e) => {
-      errorToast(e);
-      list.reload();
-    });
-  };
+  const patchIssue = listPatch(list.setData, list.invalidate, list.reload);
 
   const teamName = (key: string) => app.teams?.find((t) => t.key === key)?.name ?? key;
   const team = project.teams[0];

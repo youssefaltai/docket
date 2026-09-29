@@ -1,20 +1,18 @@
 # Contributing to Docket
 
-Thanks for helping out! Bug reports, ideas, docs fixes and code are all welcome.
-
 ## Get running
 
 You need [Bun](https://bun.sh) 1.4+ (CI uses the version in `package.json`).
 
 ```sh
 bun install
-bun run dev          # http://localhost:7100, hot reload; set it up with code DEVEL-SETUP (dev only: never expose it)
-DOCKET_API_KEY=dk_... bun run seed   # demo data, in another terminal (create a key in Settings)
+bun run dev          # http://localhost:7100, hot reload; setup code DEVEL-SETUP (dev only: never expose it)
+DOCKET_API_KEY=dk_... bun run seed   # demo data, in another terminal; only into an empty Docket
 bun test
 bun run typecheck
 ```
 
-The dev server keeps its data in `./dev.db` (gitignored), so it never touches a real Docket install. Delete it for a clean slate. It listens on port 7100, like the Docker container: stop one before starting the other, or set `PORT`.
+Create the key in Settings → Account → API keys. The dev server keeps its data in `./dev.db` (gitignored; delete `dev.db*` for a clean slate). It listens on port 7100, like the Docker container: stop one before starting the other, or set `PORT`.
 
 ## Find your way around
 
@@ -25,7 +23,7 @@ src/shared/types.ts   the contract between server and UI
 src/server/           Bun.serve, SQLite, REST, MCP
 src/web/              React UI, no framework beyond React
 test/                 bun test, black-box over HTTP
-scripts/seed.ts       demo data, created over REST
+scripts/              seed (demo data over REST) and sign-in-link (recovery CLI)
 ```
 
 ## Tests
@@ -41,11 +39,11 @@ Tests start a real server in a subprocess against a temp database, set it up wit
 Docket's one rule is **minimal, simple, clean, smooth**. In practice:
 
 - **Small and focused.** One change per PR. Open an issue first for anything big.
-- **No new dependencies** unless there's really no other way. The one exception: the rich text editor, Tiptap (DKT-29), pinned to exact versions.
+- **No new dependencies** unless there's really no other way. The exception is the rich text editor, Tiptap, pinned to exact versions.
 - **Keep SPEC.md in sync** when you change behaviour, the API or the data model.
 - **Migrations never lose data; rebuilds follow SQLite's 12-step procedure.** People have real data in their SQLite files.
 - **Match the UI.** Neutral, light, Linear-like. Check it on a phone width too.
-- **`bun test` and `bun run typecheck` pass.** CI runs both, plus a Docker build, on every PR.
+- **`bun test` and `bun run typecheck` pass.** CI runs both (tests with `--rerun-each 3`), plus a Docker build, on every PR.
 
 ## Reporting bugs
 

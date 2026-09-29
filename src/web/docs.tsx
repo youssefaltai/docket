@@ -43,6 +43,7 @@ import {
   useFetch,
   useKeydown,
   TrashBanner,
+  useTitle,
 } from "./ui";
 import { deleteToTrash } from "./trashActions";
 
@@ -54,10 +55,8 @@ export function DocsView({ teamKey }: { teamKey: string | null }) {
   const [search, setSearch] = useState("");
   const q = useDebounced(search.trim(), 150);
 
-  useEffect(() => {
-    nav.lastDocs = location.pathname;
-    document.title = `${team ? `${team.name} docs` : teamKey || "All docs"} · Docket`;
-  }, [teamKey, team?.name]);
+  useEffect(() => void (nav.lastDocs = location.pathname), [teamKey]);
+  useTitle(team ? `${team.name} docs` : teamKey || "All docs");
 
   const { data: docs, failed, reload } = useFetch(
     () => api.documents({ team: teamKey ?? undefined, q: q || undefined }),
@@ -202,9 +201,7 @@ export function DocPage({ slug }: { slug: string }) {
     if (nav.editDoc === slug) nav.editDoc = "";
   }, [slug]);
 
-  useEffect(() => {
-    document.title = `${doc?.title || "Doc"} · Docket`;
-  }, [doc?.title]);
+  useTitle(doc?.title || "Doc");
 
   useEffect(() => setDocTeam(doc?.team ?? null), [doc?.team, setDocTeam]);
   useEffect(() => () => setDocTeam(null), [setDocTeam]);
@@ -354,7 +351,7 @@ export function DocPage({ slug }: { slug: string }) {
     }
   };
 
-  const shown = preview ? preview.content : doc.content;
+  const shown = preview?.content ?? doc.content;
 
   return (
     <>

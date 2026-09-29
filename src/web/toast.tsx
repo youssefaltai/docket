@@ -2,6 +2,7 @@
 import { useSyncExternalStore } from "react";
 import { Link } from "./routing";
 import { Modal } from "./modal";
+import { createStore } from "./util";
 
 interface Toast {
   id: number;
@@ -9,20 +10,14 @@ interface Toast {
   href?: string; // a View link
   undo?: () => void; // an Undo button
 }
-let toasts: Toast[] = [];
+const toasts = createStore<Toast[]>([]);
 let toastId = 0;
-const toastListeners = new Set<() => void>();
-const emitToasts = () => toastListeners.forEach((l) => l());
 
-const dismiss = (t: Toast) => {
-  toasts = toasts.filter((x) => x !== t);
-  emitToasts();
-};
+const dismiss = (t: Toast) => toasts.set(toasts.get().filter((x) => x !== t));
 
 export function toast(text: string, href?: string, undo?: () => void) {
   const t = { id: ++toastId, text, href, undo };
-  toasts = [...toasts.slice(-2), t];
-  emitToasts();
+  toasts.set([...toasts.get().slice(-2), t]);
   setTimeout(() => dismiss(t), undo ? 8000 : 4000); // time to reach Undo
 }
 
@@ -40,13 +35,7 @@ export const copyText = (text: string, done: string) =>
   );
 
 export function Toaster() {
-  const list = useSyncExternalStore(
-    (cb) => {
-      toastListeners.add(cb);
-      return () => void toastListeners.delete(cb);
-    },
-    () => toasts,
-  );
+  const list = useSyncExternalStore(toasts.subscribe, toasts.get);
   return (
     <div className="toasts" role="status" aria-live="polite">
       {list.map((t) => (
@@ -81,31 +70,20 @@ interface Question {
   action: string;
   resolve: (ok: boolean) => void;
 }
-let question: Question | null = null;
-const questionListeners = new Set<() => void>();
-function setQuestion(q: Question | null) {
-  question = q;
-  questionListeners.forEach((l) => l());
-}
+const question = createStore<Question | null>(null);
 
 /** The app's own confirm(): resolves true if the user confirms. `action` labels the button ("Delete"). */
 export function ask(text: string, action: string): Promise<boolean> {
-  question?.resolve(false);
-  return new Promise((resolve) => setQuestion({ text, action, resolve }));
+  question.get()?.resolve(false);
+  return new Promise((resolve) => question.set({ text, action, resolve }));
 }
 
 /** Renders the pending `ask`, if any; mounted once by the app. */
 export function Confirm() {
-  const q = useSyncExternalStore(
-    (cb) => {
-      questionListeners.add(cb);
-      return () => void questionListeners.delete(cb);
-    },
-    () => question,
-  );
+  const q = useSyncExternalStore(question.subscribe, question.get);
   if (!q) return null;
   const answer = (ok: boolean) => {
-    setQuestion(null);
+    question.set(null);
     q.resolve(ok);
   };
   return (

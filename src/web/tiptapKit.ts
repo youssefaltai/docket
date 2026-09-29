@@ -9,7 +9,7 @@ import { Plugin } from "@tiptap/pm/state";
 import { StarterKit } from "@tiptap/starter-kit";
 import { Marked } from "marked";
 import { ATTACHMENT_URL } from "../shared/types";
-import { pastedFiles } from "./util";
+import { pastedFiles, safeUrl } from "./util";
 
 /**
  * @tiptap/extension-table's renderTableToMarkdown, ported line for line with one change: `|` in a cell's text is
@@ -150,13 +150,6 @@ function fenceCode(node: Json & { marks?: { type: string }[] }) {
   node.text = fence + pad + text + pad + fence;
 }
 
-/** Only web and mail links, or paths in the app. Anything else (javascript:, data:) is refused. */
-export const allowedHref = (href: string) => {
-  const url = href.replace(/[\u0000- ]/g, "");
-  const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(url)?.[1];
-  return !scheme || /^(https?|mailto)$/i.test(scheme);
-};
-
 /**
  * Images, but only attachments: same-origin `/api/attachments/<id>/<name>`, private to the workspace. Any other image
  * markdown reads as a link to it (the guard sends such text to the source, see plainText), so the editor never loads a
@@ -199,7 +192,7 @@ const ImageParagraph = Paragraph.extend({
 });
 
 /** Files to upload, and where they go: a drop's position, or null for the selection (a paste). */
-export type OnFiles = (files: File[], at: number | null) => void;
+type OnFiles = (files: File[], at: number | null) => void;
 
 /**
  * Nothing pasted or dropped loads anything remote: HTML loses its images and media before it's parsed (the image node
@@ -249,7 +242,7 @@ export function extensions(extra: AnyExtension[] = [], onFiles?: OnFiles): AnyEx
         openOnClick: false,
         autolink: true,
         shouldAutoLink: (url) => /^(https?:\/\/|www\.)/i.test(url), // not every "file.ts"
-        isAllowedUri: (url) => allowedHref(url),
+        isAllowedUri: (url) => safeUrl(url) !== null, // only web and mail links, or paths in the app
         HTMLAttributes: { target: "_blank", rel: "noopener noreferrer" },
       },
     }),

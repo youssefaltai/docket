@@ -1,7 +1,6 @@
 // Team membership, private teams and guests (DKT-27): one visibility rule. A private team is seen only by its members
 // (admins too, once they join), a guest sees only the teams they're in, and anything outside what you see is 404, like
 // another workspace's: over REST, MCP and /ws, in lists, counts, relations, history, the inbox and attachments.
-import { Database } from "bun:sqlite";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { startServer, type Caller, type TestServer } from "./server.ts";
 
@@ -20,14 +19,6 @@ const ok = async (reply: Promise<{ status: number; body: any }>, status = 200) =
 const create = (who: Caller, body: Record<string, unknown>) => ok(who.api("POST", "/api/issues", body), 201);
 const ids = (list: { id: string }[]) => list.map((i) => i.id).sort();
 const keys = (list: { key: string }[]) => list.map((t) => t.key).sort();
-const sql = (query: string, ...params: any[]) => {
-  const db = new Database(s.databasePath);
-  try {
-    return db.query(query).all(...params) as any[];
-  } finally {
-    db.close();
-  }
-};
 
 beforeAll(async () => {
   s = await startServer();
@@ -309,7 +300,7 @@ describe("mentions, the inbox and live events", () => {
   test("you can't @mention someone who doesn't see the team, and they aren't told", async () => {
     const issue = await create(ana, { team: "SEC", title: "Mentions" });
     await ok(ana.api("POST", `/api/issues/${issue.id}/comments`, { body: "@bob @admin have a look" }), 201);
-    expect(sql("SELECT * FROM mentions m JOIN issues i ON i.id = m.issue_id WHERE i.title = 'Mentions'")).toEqual([]);
+    expect(s.sql("SELECT * FROM mentions m JOIN issues i ON i.id = m.issue_id WHERE i.title = 'Mentions'")).toEqual([]);
     for (const who of [bob, s.admin]) {
       const inbox = await ok(who.api("GET", "/api/notifications"));
       expect(inbox.notifications.some((n: any) => n.issue?.id === issue.id)).toBeFalse();
@@ -321,7 +312,7 @@ describe("mentions, the inbox and live events", () => {
     const issue = await create(ana, { team: "SEC", title: "For bob", assignee: "bob" });
     const before = await ok(bob.api("GET", "/api/notifications"));
     expect(before.notifications.some((n: any) => n.issue?.id === issue.id)).toBeTrue();
-    const [{ id: nid }] = sql("SELECT n.id FROM notifications n JOIN issues i ON i.id = n.issue_id WHERE i.title = 'For bob'");
+    const [{ id: nid }] = s.sql("SELECT n.id FROM notifications n JOIN issues i ON i.id = n.issue_id WHERE i.title = 'For bob'");
     await ok(ana.api("PATCH", `/api/issues/${issue.id}`, { assignee: null }));
     await ok(ana.api("DELETE", "/api/teams/SEC/members/bob"));
     const after = await ok(bob.api("GET", "/api/notifications"));
@@ -332,7 +323,7 @@ describe("mentions, the inbox and live events", () => {
     expect((await bob.api("PATCH", "/api/notifications", { ids: [nid], read: true })).status).toBe(404);
     expect((await bob.api("GET", `/api/issues/${issue.id}`)).status).toBe(404);
     // He still follows it, but isn't told of anything new there.
-    const told = () => sql("SELECT COUNT(*) AS n FROM notifications n JOIN issues i ON i.id = n.issue_id WHERE i.title = 'For bob'")[0].n;
+    const told = () => s.sql("SELECT COUNT(*) AS n FROM notifications n JOIN issues i ON i.id = n.issue_id WHERE i.title = 'For bob'")[0].n;
     const count = told();
     await ok(ana.api("POST", `/api/issues/${issue.id}/comments`, { body: "An update" }), 201);
     await ok(ana.api("PATCH", `/api/issues/${issue.id}`, { status: "done" }));

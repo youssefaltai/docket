@@ -1,6 +1,5 @@
 // @mentions (DKT-10): `@username` in descriptions, comments and docs is stored per text for active members of the
 // text's own workspace, recomputed on every save. Mentions aren't in the API, so these read the table directly.
-import { Database } from "bun:sqlite";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { startServer, type Caller, type TestServer } from "./server.ts";
 
@@ -23,40 +22,21 @@ afterAll(() => s.stop());
 
 /** Who a text mentions, as acme knows them (anyone else shows as `outsider`), with the author. */
 function mentioned(source: string): string[] {
-  const db = new Database(s.databasePath, { readonly: true });
-  try {
-    return db
-      .query<{ who: string }, [string]>(
-        `SELECT COALESCE(m.username, 'outsider') || ' by ' || a.username AS who FROM mentions x
-         LEFT JOIN workspace_members m ON m.user_id = x.user_id AND m.workspace = 'acme'
-         JOIN workspace_members a ON a.user_id = x.author_id AND a.workspace = 'acme'
-         WHERE x.source = ? ORDER BY who`,
-      )
-      .all(source)
-      .map((r) => r.who);
-  } finally {
-    db.close();
-  }
+  return s
+    .sql(
+      `SELECT COALESCE(m.username, 'outsider') || ' by ' || a.username AS who FROM mentions x
+       LEFT JOIN workspace_members m ON m.user_id = x.user_id AND m.workspace = 'acme'
+       JOIN workspace_members a ON a.user_id = x.author_id AND a.workspace = 'acme'
+       WHERE x.source = ? ORDER BY who`,
+      source,
+    )
+    .map((r) => r.who);
 }
-const rowId = (sql: string, ...params: (string | number)[]) => {
-  const db = new Database(s.databasePath, { readonly: true });
-  try {
-    return (db.query(sql).get(...params) as { id: number }).id;
-  } finally {
-    db.close();
-  }
-};
+const rowId = (sql: string, ...params: (string | number)[]) => s.sql(sql, ...params)[0].id as number;
 const issueSource = (number: number) =>
   `issue:${rowId("SELECT i.id FROM issues i JOIN teams t ON t.id = i.team_id WHERE t.workspace = 'acme' AND t.key = 'MEN' AND i.number = ?", number)}`;
 const docSource = (slug: string) => `document:${rowId("SELECT id FROM documents WHERE workspace = 'acme' AND slug = ?", slug)}`;
-const createdAt = (source: string) => {
-  const db = new Database(s.databasePath, { readonly: true });
-  try {
-    return db.query("SELECT user_id, created_at FROM mentions WHERE source = ? ORDER BY user_id").all(source);
-  } finally {
-    db.close();
-  }
-};
+const createdAt = (source: string) => s.sql("SELECT user_id, created_at FROM mentions WHERE source = ? ORDER BY user_id", source);
 
 const issue = async (title: string, description?: string) => (await s.api("POST", "/api/issues", { team: "MEN", title, description })).body;
 const comment = async (by: Caller, id: string, body: string) => {
@@ -86,12 +66,8 @@ test("only active members of the text's own workspace, never the author; trailin
   await side.api("POST", "/api/teams", { key: "SID", name: "Side" });
   await side.api("POST", "/api/issues", { team: "SID", title: "Over there" });
   const there = (await side.api("POST", "/api/issues/SID-1/comments", { body: "@zed @kim @ana @claude" })).body.comments.at(-1).id;
-  const db = new Database(s.databasePath, { readonly: true });
-  const rows = db
-    .query("SELECT m.username FROM mentions x JOIN workspace_members m ON m.user_id = x.user_id AND m.workspace = 'side' WHERE x.source = ? ORDER BY 1")
-    .all(`comment:${there}`);
-  const total = db.query("SELECT COUNT(*) AS n FROM mentions WHERE source = ?").get(`comment:${there}`);
-  db.close();
+  const rows = s.sql("SELECT m.username FROM mentions x JOIN workspace_members m ON m.user_id = x.user_id AND m.workspace = 'side' WHERE x.source = ? ORDER BY 1", `comment:${there}`);
+  const [total] = s.sql("SELECT COUNT(*) AS n FROM mentions WHERE source = ?", `comment:${there}`);
   expect(rows).toEqual([{ username: "kim" }, { username: "zed" }]);
   expect(total).toEqual({ n: 2 });
 });
@@ -160,9 +136,7 @@ test("purging an issue from the trash takes its mentions with it", async () => {
   const cid = (await comment(s.admin, gone.id, "@kim")).split(":")[1];
   const source = issueSource(gone.number);
   await s.api("DELETE", `/api/issues/${gone.id}`);
-  const db = new Database(s.databasePath);
-  db.run("UPDATE issues SET deleted_at = '2000-01-01T00:00:00.000Z' WHERE deleted_at IS NOT NULL");
-  db.close();
+  s.sql("UPDATE issues SET deleted_at = '2000-01-01T00:00:00.000Z' WHERE deleted_at IS NOT NULL");
   await s.api("GET", "/api/teams/MEN/trash");
   expect([mentioned(source), mentioned(`comment:${cid}`)]).toEqual([[], []]);
 });

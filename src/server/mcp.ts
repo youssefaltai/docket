@@ -64,35 +64,15 @@ ${
 
 const identifier = z.string().describe('Issue identifier: team key + number, e.g. "BRD-12" (case-insensitive)');
 const teamKey = z.string().describe('Team key, e.g. "BRD" (see list_teams)');
-const status = z
-  .string()
-  .describe('A status key of the issue\'s team, e.g. "in_progress" (list_teams lists each team\'s statuses; the name, e.g. "In Progress", also works)');
+const status = z.string().describe('A status key of the issue\'s team, e.g. "in_progress" (list_teams lists each team\'s statuses; the name, e.g. "In Progress", also works)');
 const priority = z.literal(PRIORITIES).describe("0 none, 1 urgent, 2 high, 3 medium, 4 low");
-const labels = z
-  .array(z.string())
-  .describe(
-    'Label names, e.g. ["bug", "Type/Feature"]. Reuse labels from list_labels; an unknown name creates a workspace label, and Group/Label creates it in that group. At most one label per group.',
-  );
+const labels = z.array(z.string()).describe('Label names, e.g. ["bug", "Type/Feature"]. Reuse labels from list_labels; an unknown name creates a workspace label, and Group/Label creates it in that group. At most one label per group.');
 const blockedBy = z.array(identifier).describe("Identifiers of issues that must be finished before this one");
-const relatedTo = z
-  .array(identifier)
-  .describe("Identifiers of issues connected to this one that aren't duplicates or blockers; related is two-way. Replaces the whole list");
+const relatedTo = z.array(identifier).describe("Identifiers of issues connected to this one that aren't duplicates or blockers; related is two-way. Replaces the whole list");
 const duplicateOf = identifier.describe("The issue this one duplicates: it's set to its team's Duplicate status (a canceled one) and the relation is recorded");
-const dueOn = z
-  .string()
-  .regex(/^\d{4}-\d{2}-\d{2}$/)
-  .describe('Due date, a calendar date like "2026-09-30" (no time)');
-const estimate = z
-  .number()
-  .int()
-  .min(1)
-  .max(5)
-  .describe("A position in the team's estimate scale, 1 (smallest) to 5, if the team has estimates on (list_teams shows its scale and values)");
-const cycle = z
-  .union([z.number().int(), z.enum(["current", "next"])])
-  .describe(
-    'The team\'s cycle: its number, "current" or "next"; null to take it out. Only for teams that use cycles (list_teams says so). Unfinished issues roll over to the next cycle automatically.',
-  );
+const dueOn = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).describe('Due date, a calendar date like "2026-09-30" (no time)');
+const estimate = z.number().int().min(1).max(5).describe("A position in the team's estimate scale, 1 (smallest) to 5, if the team has estimates on (list_teams shows its scale and values)");
+const cycle = z.union([z.number().int(), z.enum(["current", "next"])]).describe('The team\'s cycle: its number, "current" or "next"; null to take it out. Only for teams that use cycles (list_teams says so). Unfinished issues roll over to the next cycle automatically.');
 const assignee = z.string().describe('A person\'s username (see list_members), or "me"');
 const delegate = z.string().describe('An agent\'s username (see list_members), or "me" if you are one');
 
@@ -100,25 +80,14 @@ const slug = z.string().describe('Document slug, e.g. "architecture" (see list_d
 const projectSlug = z.string().describe('Project slug, e.g. "launch" (see list_projects)');
 const milestone = z.string().describe("A milestone's name in the issue's project (get_project lists them)");
 const docProject = projectSlug.describe("Attach the doc to a project (slug) of its workspace; null to detach");
-const targetDate = z
-  .string()
-  .regex(/^\d{4}-\d{2}-\d{2}$/)
-  .describe('Target date, a calendar date like "2026-12-01"');
+const targetDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).describe('Target date, a calendar date like "2026-12-01"');
 const MENTION = "Mention people or agents as @username (list_members has usernames).";
-const docContent = z
-  .string()
-  .describe(`Markdown. Mention issues by identifier (e.g. BRD-2) and they auto-link; link other docs with [Title](/doc/slug). ${MENTION}`);
+const docContent = z.string().describe(`Markdown. Mention issues by identifier (e.g. BRD-2) and they auto-link; link other docs with [Title](/doc/slug). ${MENTION}`);
 
 const title = z.string().describe("Short, imperative title");
 const description = z.string().describe(`Markdown description. ${MENTION}`);
 const body = z.string().describe(`Markdown. ${MENTION}`);
-const parent = z
-  .number()
-  .int()
-  .optional()
-  .describe(
-    "Reply in the thread of comment #N (ids are shown in get_issue/get_document). Reply to the comment you're answering rather than starting a new one; replying reopens a resolved thread.",
-  );
+const parent = z.number().int().optional().describe("Reply in the thread of comment #N (ids are shown in get_issue/get_document). Reply to the comment you're answering rather than starting a new one; replying reopens a resolved thread.");
 const THREADS = "Comments are threaded: top-level comments start threads, replies go under them.";
 
 const at = (user: UserRef) => `@${user.username}`;
@@ -151,9 +120,7 @@ function line(issue: IssueSummary): string {
     issue.delegate && `→${at(issue.delegate)}`,
     issue.labels.map((l) => `#${l}`).join(" "),
     due(issue),
-  ]
-    .filter(Boolean)
-    .join(" · ");
+  ].filter(Boolean).join(" · ");
 }
 
 /** A linked PR or commit: `PR #12 · open · Fix login · <url>`, `commit · Fix typo · <url>`. */
@@ -178,16 +145,14 @@ function details(issue: Issue, scale: EstimateScale | null): string {
     `updated ${issue.updatedAt}`,
     `branch ${issue.branchName}`,
   ];
-  const parts = [line(issue), meta.filter(Boolean).join(" · "), issue.description || "_No description._"];
-  const reactions = reactionsLine(issue.reactions);
-  if (reactions) parts.push(reactions);
+  const parts = [line(issue), meta.filter(Boolean).join(" · "), issue.description || "_No description._", reactionsLine(issue.reactions)];
   if (issue.deletedAt) parts.unshift(`**In the trash** since ${issue.deletedAt}: read-only until someone restores it.`);
   if (issue.children.length) parts.push(`## Sub-issues\n${issue.children.map(line).join("\n")}`);
   if (issue.docs.length) parts.push(`## Docs\n${issue.docs.map(docLine).join("\n")}`);
   if (issue.links.length) parts.push(`## Links\n${issue.links.map(linkLine).join("\n")}`);
   if (issue.activity.length) parts.push(historySection(issue.activity, scale));
   if (issue.comments.length) parts.push(commentsSection(issue.comments));
-  return parts.join("\n\n");
+  return parts.filter(Boolean).join("\n\n");
 }
 
 /** One change, compactly: `status todo → in_progress`, `labels +bug −ui`; Docket's own say whose change set them off. */
@@ -206,7 +171,10 @@ function change(row: Activity, scale: EstimateScale | null): string {
   };
   switch (kind) {
     case "created":
-      return "created";
+    case "restored":
+    case "archived":
+    case "unarchived":
+      return kind;
     case "title":
       return `title ${JSON.stringify(from)} → ${JSON.stringify(to)}`;
     case "description":
@@ -225,12 +193,6 @@ function change(row: Activity, scale: EstimateScale | null): string {
       return `claimed (${from} → ${to})`;
     case "trashed":
       return "moved to trash";
-    case "restored":
-      return "restored";
-    case "archived":
-      return "archived";
-    case "unarchived":
-      return "unarchived";
     default:
       return `${kind} ${show(from)} → ${show(to)}`;
   }
@@ -266,20 +228,14 @@ function commentsSection(comments: Comment[]): string {
     .filter((c) => c.parent === null)
     .map((root) => {
       const replies = comments.filter((c) => c.parent === root.id);
-      if (root.resolvedAt) {
-        return `${headerBase(root)} · resolved by ${at(root.resolvedBy!)} · ${replies.length} ${replies.length === 1 ? "reply" : "replies"}`;
-      }
+      if (root.resolvedAt) return `${headerBase(root)} · resolved by ${at(root.resolvedBy!)} · ${replies.length} ${replies.length === 1 ? "reply" : "replies"}`;
       return [root, ...replies].map((c) => `${c.parent === null ? "" : "↳ "}${header(c)}\n${c.body}`).join("\n\n");
     });
   return `## Comments\n${threads.join("\n\n")}`;
 }
 
 /** Routes a comment tool to its issue or its document; exactly one must be given. */
-function commentOn<T>(
-  { issue, document }: { issue?: string; document?: string },
-  onIssue: (id: string) => T,
-  onDocument: (slug: string) => T,
-): T {
+function commentOn<T>({ issue, document }: { issue?: string; document?: string }, onIssue: (id: string) => T, onDocument: (slug: string) => T): T {
   if (issue && !document) return onIssue(issue);
   if (document && !issue) return onDocument(document);
   throw new AppError("Pass exactly one of issue or document");
@@ -294,9 +250,7 @@ function ago(iso: string): string {
 }
 
 /** One line per document: `slug · Title · TEAM · updated 2h ago by @alice`. */
-function docLine(doc: DocumentSummary): string {
-  return `${doc.slug} · ${doc.title} · ${doc.team} · updated ${ago(doc.updatedAt)} by ${at(doc.updatedBy)}`;
-}
+const docLine = (doc: DocumentSummary) => `${doc.slug} · ${doc.title} · ${doc.team} · updated ${ago(doc.updatedAt)} by ${at(doc.updatedBy)}`;
 
 function docDetails(doc: Document): string {
   const parts = [
@@ -353,22 +307,13 @@ function notificationLine(n: Notification): string {
 }
 
 /** Mutations echo metadata only, so a long document isn't sent back on every edit. */
-function docMeta({ content, ...meta }: Document) {
-  return { document: meta };
-}
+const docMeta = ({ content, ...meta }: Document) => ({ document: meta });
 
-function result(text: string, structuredContent: Record<string, unknown>): CallToolResult {
-  return { content: [{ type: "text", text }], structuredContent };
-}
+const result = (text: string, structuredContent: Record<string, unknown>): CallToolResult => ({ content: [{ type: "text", text }], structuredContent });
 
 function createServer(a: Actor, origin: string): McpServer {
   const workspace = access.requestWorkspace(a); // a key's own
-  const here = {
-    origin,
-    workspace,
-    workspaceName: access.listWorkspaces(a).find((w) => w.key === workspace)!.name,
-    username: access.usernameOf(a)!,
-  };
+  const here = { origin, workspace, workspaceName: access.listWorkspaces(a).find((w) => w.key === workspace)!.name, username: access.usernameOf(a)! };
   const server = new McpServer(
     { name: `docket-${workspace}`, title: `Docket · ${here.workspaceName}`, version: "1.0.0", websiteUrl: origin },
     { instructions: instructions(a, here) },
@@ -415,8 +360,7 @@ function createServer(a: Actor, origin: string): McpServer {
   register(
     "list_members",
     {
-      description:
-        "List a workspace's people and agents, one line each: @username · name · role · status, marking you. Assignees are people; delegates are agents.",
+      description: "List a workspace's people and agents, one line each: @username · name · role · status, marking you. Assignees are people; delegates are agents.",
       annotations: { readOnlyHint: true },
     },
     () => {
@@ -432,8 +376,7 @@ function createServer(a: Actor, origin: string): McpServer {
   register(
     "list_teams",
     {
-      description:
-        "List the teams you can see in this workspace, one line each: key · name · workspace · `private` (only its members see it) · `member` (you're in it) · open count · status keys in workflow order, the default for new issues marked, the estimate scale if the team has estimates on (an issue's estimate is a position 1-5 in it), and its cycle length and current cycle if it uses cycles. A team's key (e.g. BRD) prefixes its issue identifiers (BRD-12). Statuses are per team: use a team's own keys for its issues (categories: triage, backlog, unstarted, started, completed, canceled; structuredContent has each status's name and category).",
+      description: "List the teams you can see in this workspace, one line each: key · name · workspace · `private` (only its members see it) · `member` (you're in it) · open count · status keys in workflow order, the default for new issues marked, the estimate scale if the team has estimates on (an issue's estimate is a position 1-5 in it), and its cycle length and current cycle if it uses cycles. A team's key (e.g. BRD) prefixes its issue identifiers (BRD-12). Statuses are per team: use a team's own keys for its issues (categories: triage, backlog, unstarted, started, completed, canceled; structuredContent has each status's name and category).",
       annotations: { readOnlyHint: true },
     },
     () => {
@@ -454,8 +397,7 @@ function createServer(a: Actor, origin: string): McpServer {
   register(
     "create_team",
     {
-      description:
-        "Create a team in a workspace (people only). The key is 2–5 letters (uppercased), permanent, unique within this workspace, and prefixes every issue identifier: key BRD gives BRD-1, BRD-2… Check list_teams first; only create a team when asked to.",
+      description: "Create a team in a workspace (people only). The key is 2–5 letters (uppercased), permanent, unique within this workspace, and prefixes every issue identifier: key BRD gives BRD-1, BRD-2… Check list_teams first; only create a team when asked to.",
       inputSchema: {
         key: z.string().describe('2–5 letters, e.g. "BRD"'),
         name: z.string(),
@@ -472,34 +414,16 @@ function createServer(a: Actor, origin: string): McpServer {
   register(
     "update_team",
     {
-      description:
-        "Update a team's name, description, auto-close settings, auto-archive, estimate scale or cycles (people only); only the fields you pass change. Its key and workspace never change. Only do this when asked to.",
+      description: "Update a team's name, description, auto-close settings, auto-archive, estimate scale or cycles (people only); only the fields you pass change. Its key and workspace never change. Only do this when asked to.",
       inputSchema: {
         key: teamKey,
         name: z.string().optional(),
         description: z.string().optional(),
         autoCloseParent: z.boolean().optional().describe("Close a parent issue (to the team's first completed status) once all its sub-issues are completed or canceled"),
         autoCloseChildren: z.boolean().optional().describe("When a parent issue is completed or canceled, close its open sub-issues to the same status"),
-        autoArchiveDays: z
-          .number()
-          .int()
-          .positive()
-          .nullable()
-          .optional()
-          .describe("Archive an issue this many days after it's completed or canceled; null for never"),
-        estimateScale: z
-          .enum(ESTIMATE_SCALES)
-          .nullable()
-          .optional()
-          .describe("Turn estimates on with this scale: exponential 1,2,4,8,16; fibonacci 1,2,3,5,8; linear 1-5; tshirt XS,S,M,L,XL. null turns them off (issues keep theirs, hidden)"),
-        cycleWeeks: z
-          .number()
-          .int()
-          .min(1)
-          .max(8)
-          .nullable()
-          .optional()
-          .describe("Turn cycles on with this length in weeks (1-8), or change the length of cycles not started yet; null turns cycles off"),
+        autoArchiveDays: z.number().int().positive().nullable().optional().describe("Archive an issue this many days after it's completed or canceled; null for never"),
+        estimateScale: z.enum(ESTIMATE_SCALES).nullable().optional().describe("Turn estimates on with this scale: exponential 1,2,4,8,16; fibonacci 1,2,3,5,8; linear 1-5; tshirt XS,S,M,L,XL. null turns them off (issues keep theirs, hidden)"),
+        cycleWeeks: z.number().int().min(1).max(8).nullable().optional().describe("Turn cycles on with this length in weeks (1-8), or change the length of cycles not started yet; null turns cycles off"),
         upcomingCycles: z.number().int().min(1).max(15).optional().describe("How many upcoming cycles to keep ready (1-15)"),
         cycleStartsOn: z.string().optional().describe("YYYY-MM-DD, today or later: where the first cycle starts. Only when turning cycles on"),
       },
@@ -514,8 +438,7 @@ function createServer(a: Actor, origin: string): McpServer {
   register(
     "list_labels",
     {
-      description:
-        "List labels, one line each: label · color · open issue count, plus `team KEY` for a team's own label (usable only on that team's issues). A label written Group/Label belongs to a group, and an issue carries at most one label per group. Check this before labeling an issue and reuse an existing label rather than inventing a near-duplicate.",
+      description: "List labels, one line each: label · color · open issue count, plus `team KEY` for a team's own label (usable only on that team's issues). A label written Group/Label belongs to a group, and an issue carries at most one label per group. Check this before labeling an issue and reuse an existing label rather than inventing a near-duplicate.",
       inputSchema: { team: teamKey.optional().describe("Only labels usable on this team's issues") },
       annotations: { readOnlyHint: true },
     },
@@ -529,8 +452,7 @@ function createServer(a: Actor, origin: string): McpServer {
   register(
     "list_cycles",
     {
-      description:
-        "List a team's cycles (its repeating planning periods, if it uses them), one line each: Cycle N · current|upcoming|completed · start – end dates · done/total issues · progress %. Put an issue in one with create_issue or update_issue's `cycle`.",
+      description: "List a team's cycles (its repeating planning periods, if it uses them), one line each: Cycle N · current|upcoming|completed · start – end dates · done/total issues · progress %. Put an issue in one with create_issue or update_issue's `cycle`.",
       inputSchema: { team: teamKey },
       annotations: { readOnlyHint: true },
     },
@@ -543,8 +465,7 @@ function createServer(a: Actor, origin: string): McpServer {
   register(
     "list_templates",
     {
-      description:
-        "List a team's issue templates, one line each: id · name · TEAM. Pass a template's id as create_issue's template to prefill title, description, status, priority and labels. Team-scoped only: managed by people in team settings.",
+      description: "List a team's issue templates, one line each: id · name · TEAM. Pass a template's id as create_issue's template to prefill title, description, status, priority and labels. Team-scoped only: managed by people in team settings.",
       inputSchema: { team: teamKey.optional().describe("Only this team's templates") },
       annotations: { readOnlyHint: true },
     },
@@ -558,34 +479,21 @@ function createServer(a: Actor, origin: string): McpServer {
   register(
     "list_issues",
     {
-      description:
-        "List issues, one line each: identifier · status · priority · title · @assignee · →@delegate · #labels · due date (\"overdue\" when an open issue's date has passed). Sorted by status (category order: triage, backlog, unstarted, started, completed, canceled; then the team's order), then priority (urgent first, none last), then most recently updated; sort \"due\" puts the earliest due date first (none last). By default only active issues (backlog, unstarted and started categories); pass `category` (e.g. [\"triage\"] for issues waiting to be accepted, [\"completed\"] for finished ones) or `status` keys for others. There is no 'open' status. Pages of `limit` (default 50): when there are more, the output ends with a cursor to pass as `after` for the next page. Unknown team, assignee, delegate, creator or parent is an error, not an empty list. Use get_issue for the description, comments, sub-issues and blockers.",
+      description: "List issues, one line each: identifier · status · priority · title · @assignee · →@delegate · #labels · due date (\"overdue\" when an open issue's date has passed). Sorted by status (category order: triage, backlog, unstarted, started, completed, canceled; then the team's order), then priority (urgent first, none last), then most recently updated; sort \"due\" puts the earliest due date first (none last). By default only active issues (backlog, unstarted and started categories); pass `category` (e.g. [\"triage\"] for issues waiting to be accepted, [\"completed\"] for finished ones) or `status` keys for others. There is no 'open' status. Pages of `limit` (default 50): when there are more, the output ends with a cursor to pass as `after` for the next page. Unknown team, assignee, delegate, creator or parent is an error, not an empty list. Use get_issue for the description, comments, sub-issues and blockers.",
       inputSchema: {
         team: teamKey.optional(),
-        status: z
-          .array(z.string())
-          .optional()
-          .describe('Only these status keys, e.g. ["in_progress"] (list_teams shows each team\'s). Leave status and category out for active issues; "open" is not a status.'),
-        category: z
-          .array(z.enum(STATUS_CATEGORIES))
-          .optional()
-          .describe("Only statuses in these categories, e.g. [\"triage\"] or [\"completed\", \"canceled\"]. Default (with no status either): backlog, unstarted, started"),
+        status: z.array(z.string()).optional().describe('Only these status keys, e.g. ["in_progress"] (list_teams shows each team\'s). Leave status and category out for active issues; "open" is not a status.'),
+        category: z.array(z.enum(STATUS_CATEGORIES)).optional().describe("Only statuses in these categories, e.g. [\"triage\"] or [\"completed\", \"canceled\"]. Default (with no status either): backlog, unstarted, started"),
         label: z.string().optional(),
         assignee: assignee.optional(),
         delegate: delegate.optional(),
         creator: assignee.optional().describe('Who filed it: a username, or "me"'),
         parent: identifier.optional().describe("Only sub-issues of this issue, e.g. BRD-12"),
         project: projectSlug.optional().describe("Only issues in this project (slug, see list_projects)"),
-        cycle: z
-          .union([z.number().int(), z.literal("current")])
-          .optional()
-          .describe('Only issues in this cycle: "current" (each team\'s current cycle) or a number (with team)'),
+        cycle: z.union([z.number().int(), z.literal("current")]).optional().describe('Only issues in this cycle: "current" (each team\'s current cycle) or a number (with team)'),
         query: z.string().optional().describe("Text to find in identifier, title or description"),
         subscribed: z.boolean().optional().describe("true: only issues you're subscribed to"),
-        due: z
-          .enum(DUE_FILTERS)
-          .optional()
-          .describe("By due date (the server's date, UTC): overdue (past, open issues only), soon (today to 7 days ahead), today, any (has one), none"),
+        due: z.enum(DUE_FILTERS).optional().describe("By due date (the server's date, UTC): overdue (past, open issues only), soon (today to 7 days ahead), today, any (has one), none"),
         sort: z.enum(ISSUE_SORTS).optional().describe("default (status, priority, recently updated) or due (earliest due date first, none last)"),
         archived: z.boolean().optional().describe("true: also include archived issues (excluded by default, but still found by query)"),
         limit: z.number().int().min(1).max(500).optional().describe("Page size (default 50)"),
@@ -605,8 +513,7 @@ function createServer(a: Actor, origin: string): McpServer {
   register(
     "get_issue",
     {
-      description:
-        "Get one issue by identifier (e.g. BRD-12; one it had before it moved team works too): markdown description, status, priority, labels, assignee, delegate, parent, sub-issues, blocked-by/blocks, related, duplicate-of/duplicates, and comments, plus its history: who changed what and when (latest 30), the git branch name to use, and linked pull requests. Read it before starting work on an issue.",
+      description: "Get one issue by identifier (e.g. BRD-12; one it had before it moved team works too): markdown description, status, priority, labels, assignee, delegate, parent, sub-issues, blocked-by/blocks, related, duplicate-of/duplicates, and comments, plus its history: who changed what and when (latest 30), the git branch name to use, and linked pull requests. Read it before starting work on an issue.",
       inputSchema: { id: identifier },
       annotations: { readOnlyHint: true },
     },
@@ -620,8 +527,7 @@ function createServer(a: Actor, origin: string): McpServer {
   register(
     "create_issue",
     {
-      description:
-        "Create an issue in a team; returns its identifier (e.g. BRD-13). Defaults: the team's default status (backlog unless the team changed it; list_teams marks it; pass todo when it's ready to be picked up, or triage to leave it for the team to accept, in teams with Triage), priority 0 (none). Set parent to make it a sub-issue, blockedBy for issues that must be finished first. Mark an issue a duplicate with duplicateOf: it's set to its team's Duplicate status and the relation is recorded; use relatedTo for issues that are connected but not duplicates or blockers. A sub-issue joins its parent's project unless you pass one. A sub-issue joins its parent's cycle when it starts out unstarted or started. Pass template (see list_templates) to prefill title, description, status, priority and labels from a team template; any of those fields you also pass override the template's, and title becomes optional once a template supplies one.",
+      description: "Create an issue in a team; returns its identifier (e.g. BRD-13). Defaults: the team's default status (backlog unless the team changed it; list_teams marks it; pass todo when it's ready to be picked up, or triage to leave it for the team to accept, in teams with Triage), priority 0 (none). Set parent to make it a sub-issue, blockedBy for issues that must be finished first. Mark an issue a duplicate with duplicateOf: it's set to its team's Duplicate status and the relation is recorded; use relatedTo for issues that are connected but not duplicates or blockers. A sub-issue joins its parent's project unless you pass one. A sub-issue joins its parent's cycle when it starts out unstarted or started. Pass template (see list_templates) to prefill title, description, status, priority and labels from a team template; any of those fields you also pass override the template's, and title becomes optional once a template supplies one.",
       inputSchema: {
         team: teamKey,
         title: title.optional().describe("Required unless template supplies one"),
@@ -640,13 +546,7 @@ function createServer(a: Actor, origin: string): McpServer {
         project: projectSlug.optional().describe("Project slug (see list_projects); its team joins the project"),
         milestone: milestone.optional(),
         cycle: cycle.nullable().optional(),
-        template: z
-          .number()
-          .int()
-          .optional()
-          .describe(
-            "An issue template's id (see list_templates in the team) to prefill title, description, labels, priority and status; fields you also pass override the template's",
-          ),
+        template: z.number().int().optional().describe("An issue template's id (see list_templates in the team) to prefill title, description, labels, priority and status; fields you also pass override the template's"),
       },
     },
     writes((input) => {
@@ -658,15 +558,10 @@ function createServer(a: Actor, origin: string): McpServer {
   register(
     "update_issue",
     {
-      description:
-        "Update an issue; only the fields you pass change. Status flow: in_progress when you start, in_review when ready for review, done when finished (or the team's statuses in the started and completed categories; list_teams), canceled instead of deleting (there is no delete). labels, blockedBy and relatedTo replace the whole list, so include existing entries you want to keep, and pass baseUpdatedAt (from get_issue) when replacing them or the description, so you don't overwrite someone else's change. To start work, use claim_issue. Don't reassign an issue someone else holds; use claim_issue. Mark an issue a duplicate with duplicateOf: it's set to its team's Duplicate status and the relation is recorded; use relatedTo for issues that are connected but not duplicates or blockers. Pass null for assignee, delegate, parent or duplicateOf to clear it (clearing duplicateOf leaves the status as it is). Log progress with comment_issue rather than editing the description. Closing an issue may also close its parent or its sub-issues, per the teams' auto-close settings: check get_issue after; @docket made those changes, after yours. Move an issue to another team (team) only when asked to.",
+      description: "Update an issue; only the fields you pass change. Status flow: in_progress when you start, in_review when ready for review, done when finished (or the team's statuses in the started and completed categories; list_teams), canceled instead of deleting (there is no delete). labels, blockedBy and relatedTo replace the whole list, so include existing entries you want to keep, and pass baseUpdatedAt (from get_issue) when replacing them or the description, so you don't overwrite someone else's change. To start work, use claim_issue. Don't reassign an issue someone else holds; use claim_issue. Mark an issue a duplicate with duplicateOf: it's set to its team's Duplicate status and the relation is recorded; use relatedTo for issues that are connected but not duplicates or blockers. Pass null for assignee, delegate, parent or duplicateOf to clear it (clearing duplicateOf leaves the status as it is). Log progress with comment_issue rather than editing the description. Closing an issue may also close its parent or its sub-issues, per the teams' auto-close settings: check get_issue after; @docket made those changes, after yours. Move an issue to another team (team) only when asked to.",
       inputSchema: {
         id: identifier,
-        team: teamKey
-          .optional()
-          .describe(
-            "Move it to this team of the same workspace: it gets a new identifier there (the old one keeps resolving), keeps its status if that team has it (else the team's first of that category, else its default), and loses the old team's own labels",
-          ),
+        team: teamKey.optional().describe("Move it to this team of the same workspace: it gets a new identifier there (the old one keeps resolving), keeps its status if that team has it (else the team's first of that category, else its default), and loses the old team's own labels"),
         title: title.optional(),
         description: description.optional(),
         status: status.optional(),
@@ -680,16 +575,10 @@ function createServer(a: Actor, origin: string): McpServer {
         relatedTo: relatedTo.optional(),
         duplicateOf: duplicateOf.nullable().optional().describe("The issue this one duplicates (it's set to its team's Duplicate status); null to clear"),
         dueOn: dueOn.nullable().optional().describe('Due date, a calendar date like "2026-09-30"; null to clear'),
-        project: projectSlug
-          .nullable()
-          .optional()
-          .describe("Project slug (see list_projects); null to take it out. A new project clears the milestone unless you pass one of its own"),
+        project: projectSlug.nullable().optional().describe("Project slug (see list_projects); null to take it out. A new project clears the milestone unless you pass one of its own"),
         milestone: milestone.nullable().optional().describe("A milestone's name in the issue's project; null to clear"),
         cycle: cycle.nullable().optional(),
-        baseUpdatedAt: z
-          .string()
-          .optional()
-          .describe("The updated time you read with get_issue. If the issue changed since, nothing is applied (reread and retry)."),
+        baseUpdatedAt: z.string().optional().describe("The updated time you read with get_issue. If the issue changed since, nothing is applied (reread and retry)."),
       },
     },
     writes(({ id, ...patch }) => {
@@ -703,8 +592,7 @@ function createServer(a: Actor, origin: string): McpServer {
   register(
     "claim_issue",
     {
-      description:
-        "Take an issue to work on, in one step no one else can interleave with: an agent becomes its delegate, a person its assignee, and an issue not started yet (triage, backlog or unstarted category) moves to the team's first started status (in_progress by default); one already started keeps its status. Fails if it's completed or canceled, or someone else holds it (the error names them): then pick another issue rather than working on it too. Claiming your own again is fine. To hand it back, update_issue with delegate (or assignee) null and status todo.",
+      description: "Take an issue to work on, in one step no one else can interleave with: an agent becomes its delegate, a person its assignee, and an issue not started yet (triage, backlog or unstarted category) moves to the team's first started status (in_progress by default); one already started keeps its status. Fails if it's completed or canceled, or someone else holds it (the error names them): then pick another issue rather than working on it too. Claiming your own again is fine. To hand it back, update_issue with delegate (or assignee) null and status todo.",
       inputSchema: { id: identifier },
     },
     writes(({ id }) => {
@@ -716,8 +604,7 @@ function createServer(a: Actor, origin: string): McpServer {
   register(
     "comment_issue",
     {
-      description:
-        `Add a markdown comment to an issue, as you. Use it for progress notes, findings, decisions, and a summary of what you did when finishing (changes made, links). ${THREADS} Comments bump the issue's updated time.`,
+      description: `Add a markdown comment to an issue, as you. Use it for progress notes, findings, decisions, and a summary of what you did when finishing (changes made, links). ${THREADS} Comments bump the issue's updated time.`,
       inputSchema: { id: identifier, body, parent },
     },
     writes(({ id, body, parent }) => {
@@ -729,8 +616,7 @@ function createServer(a: Actor, origin: string): McpServer {
   register(
     "list_documents",
     {
-      description:
-        "List documents (specs, plans, notes), one line each: slug · title · team · updated time and author. Ordered by team, then position. Use get_document with the slug to read one.",
+      description: "List documents (specs, plans, notes), one line each: slug · title · team · updated time and author. Ordered by team, then position. Use get_document with the slug to read one.",
       inputSchema: {
         team: teamKey.optional(),
         project: projectSlug.optional().describe("Only docs attached to this project"),
@@ -747,8 +633,7 @@ function createServer(a: Actor, origin: string): McpServer {
   register(
     "get_document",
     {
-      description:
-        "Get a document by slug: its full markdown content, metadata, the issues it mentions (with status), and comments. Read it before editing so `edits` can quote the current text exactly.",
+      description: "Get a document by slug: its full markdown content, metadata, the issues it mentions (with status), and comments. Read it before editing so `edits` can quote the current text exactly.",
       inputSchema: { slug },
       annotations: { readOnlyHint: true },
     },
@@ -761,8 +646,7 @@ function createServer(a: Actor, origin: string): McpServer {
   register(
     "create_document",
     {
-      description:
-        "Create a markdown document in a team; returns its slug. Docs are markdown: use headings, lists, tables, code blocks. Mention issues by identifier (e.g. BRD-2) and they auto-link and appear on the issue's page; link other docs with [Title](/doc/slug). The slug defaults to the title slugified (deduped) and never changes, even if the title does.",
+      description: "Create a markdown document in a team; returns its slug. Docs are markdown: use headings, lists, tables, code blocks. Mention issues by identifier (e.g. BRD-2) and they auto-link and appear on the issue's page; link other docs with [Title](/doc/slug). The slug defaults to the title slugified (deduped) and never changes, even if the title does.",
       inputSchema: {
         team: teamKey,
         title: z.string().describe('Document title, e.g. "Architecture"'),
@@ -781,8 +665,7 @@ function createServer(a: Actor, origin: string): McpServer {
   register(
     "update_document",
     {
-      description:
-        "Update a document; only the fields you pass change. For small changes to a long doc, prefer `edits`: exact find/replace pairs applied in order, each oldText must match the current content exactly once (quote enough surrounding text to be unique). If any edit fails, nothing is applied and the error names the edit. `content` replaces the whole document; don't pass both. Content is markdown: issue identifiers (e.g. BRD-2) auto-link, link docs with [Title](/doc/slug). The slug never changes.",
+      description: "Update a document; only the fields you pass change. For small changes to a long doc, prefer `edits`: exact find/replace pairs applied in order, each oldText must match the current content exactly once (quote enough surrounding text to be unique). If any edit fails, nothing is applied and the error names the edit. `content` replaces the whole document; don't pass both. Content is markdown: issue identifiers (e.g. BRD-2) auto-link, link docs with [Title](/doc/slug). The slug never changes.",
       inputSchema: {
         slug,
         title: z.string().optional(),
@@ -799,10 +682,7 @@ function createServer(a: Actor, origin: string): McpServer {
         team: teamKey.optional().describe("Move the doc to this team (same workspace)"),
         position: z.number().optional().describe("Order within the team, ascending"),
         project: docProject.nullable().optional(),
-        baseUpdatedAt: z
-          .string()
-          .optional()
-          .describe("The updatedAt you read with get_document. If the doc changed since, nothing is applied (reread and retry). Recommended with `content`."),
+        baseUpdatedAt: z.string().optional().describe("The updatedAt you read with get_document. If the doc changed since, nothing is applied (reread and retry). Recommended with `content`."),
       },
     },
     writes(({ slug, ...patch }) => {
@@ -814,8 +694,7 @@ function createServer(a: Actor, origin: string): McpServer {
   register(
     "comment_document",
     {
-      description:
-        `Add a markdown comment to a document, as you, e.g. review notes, questions, or a summary of what you changed. ${THREADS} Comments don't change the content.`,
+      description: `Add a markdown comment to a document, as you, e.g. review notes, questions, or a summary of what you changed. ${THREADS} Comments don't change the content.`,
       inputSchema: { slug, body, parent },
     },
     writes(({ slug, body, parent }) => {
@@ -833,8 +712,7 @@ function createServer(a: Actor, origin: string): McpServer {
   register(
     "update_comment",
     {
-      description:
-        "Edit one of your own comments on an issue or a document, e.g. to fix a typo or an outdated note. It shows as edited. For new information, add a new comment instead.",
+      description: "Edit one of your own comments on an issue or a document, e.g. to fix a typo or an outdated note. It shows as edited. For new information, add a new comment instead.",
       inputSchema: { ...commentTarget, body: z.string().describe(`Markdown, replaces the whole comment. ${MENTION}`) },
     },
     writes(({ comment, body, ...target }) =>
@@ -877,8 +755,7 @@ function createServer(a: Actor, origin: string): McpServer {
   register(
     "resolve_thread",
     {
-      description:
-        "Mark a comment thread resolved (the question is answered or the decision made), or reopen it with resolved: false. Anyone can. Pass the thread's first comment; a resolved thread shows collapsed, and a new reply reopens it.",
+      description: "Mark a comment thread resolved (the question is answered or the decision made), or reopen it with resolved: false. Anyone can. Pass the thread's first comment; a resolved thread shows collapsed, and a new reply reopens it.",
       inputSchema: {
         issue: commentTarget.issue,
         document: commentTarget.document,
@@ -905,8 +782,7 @@ function createServer(a: Actor, origin: string): McpServer {
   register(
     "delete_document",
     {
-      description:
-        "Move a document to the trash (with its versions and comments); any member can restore it for 30 days, then it's gone. Only when asked to, or to remove a duplicate you just created; otherwise edit it.",
+      description: "Move a document to the trash (with its versions and comments); any member can restore it for 30 days, then it's gone. Only when asked to, or to remove a duplicate you just created; otherwise edit it.",
       inputSchema: { slug },
       annotations: { destructiveHint: true },
     },
@@ -919,8 +795,7 @@ function createServer(a: Actor, origin: string): McpServer {
   register(
     "list_projects",
     {
-      description:
-        "List projects, one line each: slug · name · status · progress % · @lead · target date · teams. Use get_project for its description, milestones and docs, and list_issues with `project` for its issues.",
+      description: "List projects, one line each: slug · name · status · progress % · @lead · target date · teams. Use get_project for its description, milestones and docs, and list_issues with `project` for its issues.",
       inputSchema: {
         team: teamKey.optional().describe("Only projects this team takes part in"),
         status: z.array(z.enum(PROJECT_STATUSES)).optional().describe("Only projects in these statuses"),
@@ -936,8 +811,7 @@ function createServer(a: Actor, origin: string): McpServer {
   register(
     "get_project",
     {
-      description:
-        "Get a project by slug: its markdown description, status, lead, target date, teams, progress, milestones (each with progress and target date) and attached docs. For its issues use list_issues with project.",
+      description: "Get a project by slug: its markdown description, status, lead, target date, teams, progress, milestones (each with progress and target date) and attached docs. For its issues use list_issues with project.",
       inputSchema: { slug: projectSlug },
       annotations: { readOnlyHint: true },
     },
@@ -953,8 +827,7 @@ function createServer(a: Actor, origin: string): McpServer {
   register(
     "create_project",
     {
-      description:
-        'Create a project, a body of work toward a goal that spans one or more teams of a workspace; returns its slug. Check list_projects first and only create one when asked to. Status: backlog (default), planned, in_progress, paused, completed, canceled. The lead is a person\'s username or "me". targetDate is YYYY-MM-DD.',
+      description: 'Create a project, a body of work toward a goal that spans one or more teams of a workspace; returns its slug. Check list_projects first and only create one when asked to. Status: backlog (default), planned, in_progress, paused, completed, canceled. The lead is a person\'s username or "me". targetDate is YYYY-MM-DD.',
       inputSchema: {
         teams: z.array(teamKey).min(1).describe('Keys of the teams taking part, e.g. ["WEB", "APP"]'),
         name: z.string(),
@@ -974,8 +847,7 @@ function createServer(a: Actor, origin: string): McpServer {
   register(
     "update_project",
     {
-      description:
-        "Update a project; only the fields you pass change. `teams` replaces the list (a team with issues in the project can't be dropped). Pass baseUpdatedAt from get_project when replacing the description. There is no delete: set status canceled. The slug never changes.",
+      description: "Update a project; only the fields you pass change. `teams` replaces the list (a team with issues in the project can't be dropped). Pass baseUpdatedAt from get_project when replacing the description. There is no delete: set status canceled. The slug never changes.",
       inputSchema: {
         slug: projectSlug,
         name: z.string().optional(),
@@ -984,10 +856,7 @@ function createServer(a: Actor, origin: string): McpServer {
         lead: lead.nullable().optional().describe('The person leading it, or "me"; null to clear'),
         targetDate: targetDate.nullable().optional().describe('A calendar date like "2026-12-01"; null to clear'),
         teams: z.array(teamKey).min(1).optional().describe("Keys of the teams taking part; replaces the list"),
-        baseUpdatedAt: z
-          .string()
-          .optional()
-          .describe("The updatedAt you read with get_project. If the project changed since, nothing is applied (reread and retry)."),
+        baseUpdatedAt: z.string().optional().describe("The updatedAt you read with get_project. If the project changed since, nothing is applied (reread and retry)."),
       },
     },
     writes(({ slug, ...patch }) => {
@@ -999,8 +868,7 @@ function createServer(a: Actor, origin: string): McpServer {
   register(
     "create_milestone",
     {
-      description:
-        'Add a milestone (a stage such as "Beta", with an optional target date) to a project. Put an issue in it with update_issue\'s milestone.',
+      description: 'Add a milestone (a stage such as "Beta", with an optional target date) to a project. Put an issue in it with update_issue\'s milestone.',
       inputSchema: {
         project: projectSlug,
         name: z.string().describe('Unique within the project, e.g. "Beta"'),
@@ -1037,8 +905,7 @@ function createServer(a: Actor, origin: string): McpServer {
   register(
     "list_notifications",
     {
-      description:
-        'Your notifications, newest first, one line each: #id · unread · kind · target · by @actor · time · "excerpt". Kinds: delegated (an issue was delegated to you: start with get_issue and claim_issue), assigned, mentioned, commented, status (an issue you follow moved to in_review or a completed or canceled status, e.g. done, canceled, duplicate). Mark them read with mark_notifications_read when handled.',
+      description: 'Your notifications, newest first, one line each: #id · unread · kind · target · by @actor · time · "excerpt". Kinds: delegated (an issue was delegated to you: start with get_issue and claim_issue), assigned, mentioned, commented, status (an issue you follow moved to in_review or a completed or canceled status, e.g. done, canceled, duplicate). Mark them read with mark_notifications_read when handled.',
       inputSchema: {
         unread: z.boolean().optional().describe("Only unread ones (default true); false lists read ones too"),
         limit: z.number().int().min(1).max(200).optional().describe("How many (default 50)"),
@@ -1072,8 +939,7 @@ function createServer(a: Actor, origin: string): McpServer {
   register(
     "subscribe",
     {
-      description:
-        "Follow or unfollow an issue or doc: subscribers get its new comments and status changes in their inbox. You're subscribed automatically to what you create, claim, comment on, or are assigned, delegated or mentioned in.",
+      description: "Follow or unfollow an issue or doc: subscribers get its new comments and status changes in their inbox. You're subscribed automatically to what you create, claim, comment on, or are assigned, delegated or mentioned in.",
       inputSchema: {
         issue: identifier.optional().describe("The issue; pass this or document"),
         document: slug.optional().describe("The document; pass this or issue"),
@@ -1098,8 +964,7 @@ function createServer(a: Actor, origin: string): McpServer {
   register(
     "react",
     {
-      description:
-        "Add (or with remove, take back) your emoji reaction on an issue's description or on a comment, e.g. 👀 to show you've picked up a request, 👍 to agree. It doesn't notify anyone; use a comment for anything that needs an answer.",
+      description: "Add (or with remove, take back) your emoji reaction on an issue's description or on a comment, e.g. 👀 to show you've picked up a request, 👍 to agree. It doesn't notify anyone; use a comment for anything that needs an answer.",
       inputSchema: {
         issue: identifier.optional().describe("The issue; pass this or document"),
         document: slug.optional().describe("The document; pass this or issue (comment is then required)"),
@@ -1114,7 +979,7 @@ function createServer(a: Actor, origin: string): McpServer {
       return commentOn(
         target,
         (id) => {
-          const issue = comment === undefined ? tracker.reactToIssue(a, id, emoji, on) : tracker.reactToIssueComment(a, id, comment, emoji, on);
+          const issue = tracker.reactToIssue(a, id, emoji, on, comment);
           return result(done(comment === undefined ? issue.id : `#${comment} on ${issue.id}`), { issue });
         },
         (slug) => {
@@ -1129,8 +994,7 @@ function createServer(a: Actor, origin: string): McpServer {
   register(
     "attach_file",
     {
-      description:
-        "Upload a file (a log, a report, a screenshot) to link from a comment, description or doc; returns the markdown to paste: ![name](url) for images, [name](url) otherwise. Prefer this over pasting long logs into comments. Pass exactly one of text (UTF-8) or base64. At most about 700 KB per call over MCP; files are private to this workspace's members, and with `team` to those who see that team: pass the team of the issue or doc you'll link it from.",
+      description: "Upload a file (a log, a report, a screenshot) to link from a comment, description or doc; returns the markdown to paste: ![name](url) for images, [name](url) otherwise. Prefer this over pasting long logs into comments. Pass exactly one of text (UTF-8) or base64. At most about 700 KB per call over MCP; files are private to this workspace's members, and with `team` to those who see that team: pass the team of the issue or doc you'll link it from.",
       inputSchema: {
         name: z.string().describe('File name, e.g. "build.log" or "screenshot.png"'),
         text: z.string().optional().describe("The file's content as UTF-8 text"),
@@ -1155,8 +1019,7 @@ function createServer(a: Actor, origin: string): McpServer {
   register(
     "get_attachment",
     {
-      description:
-        "Read an attached file by its URL as found in markdown (/api/attachments/…): text files come back as text, PNG/JPEG/GIF/WebP images as images you can see (up to 5 MB), anything else as its name, type and size.",
+      description: "Read an attached file by its URL as found in markdown (/api/attachments/…): text files come back as text, PNG/JPEG/GIF/WebP images as images you can see (up to 5 MB), anything else as its name, type and size.",
       inputSchema: { url: z.string().describe('The attachment\'s URL or path, e.g. "/api/attachments/AbC…/shot.png"') },
       annotations: { readOnlyHint: true },
     },
@@ -1186,18 +1049,12 @@ const IMAGE_LIMIT = 5 * 1024 * 1024; // bytes of an image it returns as image co
 /** Stateless Streamable HTTP: a fresh server and transport per request, JSON responses. */
 export async function handleMcp(req: Request): Promise<Response> {
   if (req.method !== "POST") {
-    return Response.json(
-      { jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed" }, id: null },
-      { status: 405, headers: { Allow: "POST" } },
-    );
+    return Response.json({ jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed" }, id: null }, { status: 405, headers: { Allow: "POST" } });
   }
   // The public origin: DOCKET_URL (as for sign-in-link), else the one the client used.
   const origin = process.env.DOCKET_URL?.replace(/\/+$/, "") || originOf(req);
   const server = createServer(actorOf(req), origin);
-  const transport = new WebStandardStreamableHTTPServerTransport({
-    sessionIdGenerator: undefined,
-    enableJsonResponse: true,
-  });
+  const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   await server.connect(transport);
   try {
     return await transport.handleRequest(req);

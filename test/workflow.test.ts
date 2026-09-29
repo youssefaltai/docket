@@ -10,9 +10,7 @@ const DEFAULT_KEYS = ["backlog", "todo", "in_progress", "in_review", "done", "ca
 
 beforeAll(async () => {
   s = await startServer();
-  for (const key of ["WF", "OTH", "CLW", "TRI", "ORD", "DEL"]) {
-    expect((await s.api("POST", "/api/teams", { key, name: key })).status).toBe(201);
-  }
+  for (const key of ["WF", "OTH", "CLW", "TRI", "ORD", "DEL"]) expect((await s.api("POST", "/api/teams", { key, name: key })).status).toBe(201);
   expect((await s.api("POST", "/api/workspaces", { name: "Side", key: "side" })).status).toBe(201);
   expect((await s.api("POST", "/api/teams", { key: "SDE", name: "Side" }, { "X-Docket-Workspace": "side" })).status).toBe(201);
   ana = await s.user("ana");

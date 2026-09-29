@@ -1,27 +1,21 @@
 // "My Issues": what's yours across every team in this workspace. Assigned / Created / Delegated / Subscribed.
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import type { IssueFilter } from "../shared/types";
-import { api, store } from "./api";
+import { api } from "./api";
 import { useBulk } from "./bulk";
-import { Board, IssueList, LISTED, useListShortcuts } from "./issues";
+import { Board, IssueList, LISTED, LayoutToggle, listPatch, useLayout, useListShortcuts } from "./issues";
 import { MY_TABS, type MyTab } from "./routing";
 import {
-  BoardIcon,
   EmptyState,
   IssuesIcon,
-  ListIcon,
   LoadFailed,
   MenuButton,
   Tabs,
   cls,
-  errorToast,
   nav,
-  toPatch,
-  type IssueChange,
   useFetch,
+  useTitle,
 } from "./ui";
-
-type View = "list" | "board";
 
 const TAB_LABEL: Record<MyTab, string> = {
   assigned: "Assigned",
@@ -49,12 +43,10 @@ function filterFor(tab: MyTab): IssueFilter {
 }
 
 export function MyIssuesView({ tab }: { tab: MyTab }) {
-  const [view, setView] = useState<View>(() => (store.get("view") === "board" ? "board" : "list"));
+  const [view, changeView] = useLayout();
 
-  useEffect(() => {
-    nav.lastList = location.pathname;
-    document.title = "My Issues · Docket";
-  }, []);
+  useEffect(() => void (nav.lastList = location.pathname), []);
+  useTitle("My Issues");
 
   const { data: issues, setData: setIssues, failed, reload, invalidate } = useFetch(() => api.issues({ ...filterFor(tab), category: LISTED }), [tab]);
   const shown = tab === "delegated" ? issues?.filter((i) => i.delegate) : issues;
@@ -62,20 +54,7 @@ export function MyIssuesView({ tab }: { tab: MyTab }) {
   useListShortcuts(setIssues, invalidate, reload);
   const { selection, bar } = useBulk(shown ?? null, { setIssues, invalidate, reload }, [tab]);
 
-  const patch = (id: string, p: IssueChange) => {
-    invalidate();
-    const now = new Date().toISOString();
-    setIssues((list) => list?.map((i) => (i.id === id ? { ...i, ...p, updatedAt: now } : i)) ?? null);
-    api.updateIssue(id, toPatch(p)).catch((e) => {
-      errorToast(e);
-      reload();
-    });
-  };
-
-  const changeView = (v: View) => {
-    setView(v);
-    store.set("view", v);
-  };
+  const patch = listPatch(setIssues, invalidate, reload);
 
   let body;
   if (!shown) {
@@ -103,14 +82,7 @@ export function MyIssuesView({ tab }: { tab: MyTab }) {
         </div>
         <div className="controls">
           <Tabs label="My issues views" tabs={MY_TABS.map((t): [string, string, boolean] => [`/my/${t}`, TAB_LABEL[t], t === tab])} />
-          <div className="segmented" role="group" aria-label="Layout">
-            <button className={cls(view === "list" && "on")} onClick={() => changeView("list")} aria-pressed={view === "list"} title="List">
-              <ListIcon />
-            </button>
-            <button className={cls(view === "board" && "on")} onClick={() => changeView("board")} aria-pressed={view === "board"} title="Board">
-              <BoardIcon />
-            </button>
-          </div>
+          <LayoutToggle layout={view} onChange={changeView} />
         </div>
       </header>
       <div className={cls("content", view === "board" && !!shown?.length && "content-board")}>{body}</div>

@@ -1,6 +1,5 @@
 // Due dates (DKT-23): a calendar date on an issue, Linear's due filters by the server's date (UTC), a due-date sort
 // that pages like the default one, and parity over MCP, history and webhooks.
-import { Database } from "bun:sqlite";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { startServer, type TestServer } from "./server.ts";
 
@@ -153,19 +152,11 @@ test("webhooks carry the previous due date in updatedFrom", async () => {
   const hook = await s.api("POST", "/api/workspaces/acme/webhooks", { url: "http://127.0.0.1:1/hook", resourceTypes: ["Issue"] });
   expect(hook.status).toBe(201);
   const a = await create("DUE", "Hooked");
-  const sql = (query: string) => {
-    const db = new Database(s.databasePath, { readonly: true });
-    try {
-      return db.query(query).all() as any[];
-    } finally {
-      db.close();
-    }
-  };
-  const mark = sql("SELECT COALESCE(MAX(id), 0) AS id FROM webhook_deliveries")[0].id;
+  const mark = s.sql("SELECT COALESCE(MAX(id), 0) AS id FROM webhook_deliveries")[0].id;
   await patch(a.id, { dueOn: "2026-10-01" });
   await patch(a.id, { dueOn: "2026-10-02", priority: 2 });
   await patch(a.id, { dueOn: null });
-  const log = sql(`SELECT json_extract(payload, '$.updatedFrom') AS was, json_extract(payload, '$.data.dueOn') AS due FROM webhook_deliveries WHERE id > ${mark} ORDER BY id`);
+  const log = s.sql(`SELECT json_extract(payload, '$.updatedFrom') AS was, json_extract(payload, '$.data.dueOn') AS due FROM webhook_deliveries WHERE id > ${mark} ORDER BY id`);
   expect(log.map((d) => [JSON.parse(d.was), d.due])).toEqual([
     [{ dueOn: null }, "2026-10-01"],
     [{ priority: 0, dueOn: "2026-10-01" }, "2026-10-02"],

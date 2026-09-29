@@ -6,9 +6,7 @@ let s: TestServer;
 beforeAll(async () => {
   s = await startServer();
   await s.api("POST", "/api/teams", { key: "CLM", workspace: "acme", name: "Claims" });
-  for (const title of ["Agents race", "Done already", "People race", "Versioned", "Mine"]) {
-    await s.api("POST", "/api/issues", { team: "CLM", title });
-  }
+  for (const title of ["Agents race", "Done already", "People race", "Versioned", "Mine"]) await s.api("POST", "/api/issues", { team: "CLM", title });
   await s.api("PATCH", "/api/issues/CLM-2", { status: "done" });
   await s.agent("alpha");
   await s.agent("beta");
@@ -32,9 +30,7 @@ test("two agents racing for one issue: exactly one gets the delegate slot", asyn
 });
 
 test("two people racing for one issue: exactly one gets the assignee slot", async () => {
-  const results = await Promise.all(
-    ["ana", "bo"].map((who) => s.as(who).api("POST", "/api/issues/CLM-3/claim", {}).then((r) => ({ who, ...r }))),
-  );
+  const results = await Promise.all(["ana", "bo"].map((who) => s.as(who).api("POST", "/api/issues/CLM-3/claim", {}).then((r) => ({ who, ...r }))));
   const won = results.filter((r) => r.status === 200);
   const lost = results.filter((r) => r.status === 409);
   expect(won).toHaveLength(1);
@@ -120,9 +116,7 @@ test("creating an issue bumps and publishes its parent and blockers", async () =
   expect(await sock.opened).toBeTrue();
   const child = (await s.api("POST", "/api/issues", { team: "CLM", title: "Child", parent: parent.id, blockedBy: [blocker.id] })).body;
   // Wait for the events rather than a fixed time, so a busy machine can't make this flaky.
-  for (const id of [child.id, parent.id, blocker.id]) {
-    expect(await sock.until((e) => e.id === id)).toMatchObject({ workspace: "acme" });
-  }
+  for (const id of [child.id, parent.id, blocker.id]) expect(await sock.until((e) => e.id === id)).toMatchObject({ workspace: "acme" });
   sock.close();
   expect((await s.api("GET", `/api/issues/${parent.id}`)).body.updatedAt > parent.updatedAt).toBeTrue();
   expect((await s.api("GET", `/api/issues/${blocker.id}`)).body.updatedAt > blocker.updatedAt).toBeTrue();

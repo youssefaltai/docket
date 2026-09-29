@@ -5,7 +5,6 @@ import type { CustomView, CustomViewInput, Inbox, IssueInput, Label, Team, Works
 import { api, connectionStore, setCurrentWorkspace, setOnAccessLost, setOnUnauthorized, store, subscribe } from "./api";
 import { auth, getMe, getYou, loadMe } from "./auth";
 import { syncPush } from "./push";
-import { ChatDock, ChatNavItem } from "./chat";
 import { CommandMenu, openCommandMenu } from "./commandmenu";
 import { DocPage, DocsView } from "./docs";
 import { InboxView } from "./inbox";
@@ -73,6 +72,9 @@ type ModalState =
   | { kind: "workspace" }
   | { kind: "view"; defaults: Omit<CustomViewInput, "name"> }
   | null;
+
+// Switching workspaces keeps you on the same kind of page.
+const SAME_PAGE: Partial<Record<Route["view"], string>> = { docs: "/docs", doc: "/docs", projects: "/projects", project: "/projects", inbox: "/inbox", views: "/views", customview: "/views" };
 
 function App() {
   const path = usePath();
@@ -216,21 +218,7 @@ function App() {
   }, [currentKey]);
   useEffect(loadDirectory, [loadDirectory, live]);
 
-  // Switching keeps you on the same kind of page: settings, docs, the inbox, my issues, or issues.
-  const same =
-    route.view === "settings"
-      ? `/settings/${route.section}`
-      : route.view === "docs" || route.view === "doc"
-        ? "/docs"
-        : route.view === "projects" || route.view === "project"
-          ? "/projects"
-        : route.view === "inbox"
-          ? "/inbox"
-          : route.view === "my"
-            ? `/my/${route.tab}`
-            : route.view === "views" || route.view === "customview"
-              ? "/views"
-              : "";
+  const same = route.view === "settings" ? `/settings/${route.section}` : route.view === "my" ? `/my/${route.tab}` : (SAME_PAGE[route.view] ?? "");
   const switchWorkspace = (key: string) => navigate(`/${key}${same}`);
 
   // Access changed under us (the socket closed with 4401): ask who we are now. A 401 goes to the sign-in
@@ -415,7 +403,6 @@ function App() {
             )}
             <Fragment key={currentKey}>{page}</Fragment>
           </main>
-          {getMe().chat && <ChatDock />}
         </div>
         {modal?.kind === "issue" && <NewIssueModal defaults={modal.defaults} onClose={() => setModal(null)} />}
         {modal?.kind === "doc" && <NewDocModal team={modal.team} project={modal.project} onClose={() => setModal(null)} />}
@@ -521,7 +508,6 @@ function Sidebar({ route, active, onSwitch }: { route: Route; active: string | n
             <span className="nav-label">Views</span>
           </Link>
         )}
-        {getMe().chat && <ChatNavItem />}
         {favorites.length > 0 && (
           <div className="nav-section">
             <span>Favorites</span>

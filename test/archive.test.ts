@@ -2,7 +2,6 @@
 // issues from default views once they've been closed for `autoArchiveDays`. A sweep runs at startup and after
 // any change that closes an issue; archiving/unarchiving by hand is REST-only (no MCP tool), attributed to whoever
 // did it, or to @docket with no onBehalfOf for the time-based sweep.
-import { Database } from "bun:sqlite";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { startServer, type TestServer } from "./server.ts";
 
@@ -30,9 +29,7 @@ const get = async (id: string) => (await s.api("GET", `/api/issues/${id}`)).body
 /** Backdates an issue's completedAt directly in the fixture DB (the acceptance test's suggested shortcut). */
 function backdate(id: string, iso: string) {
   const [, key, number] = /^([A-Z]+)-(\d+)$/.exec(id)!;
-  const db = new Database(s.databasePath);
-  db.run("UPDATE issues SET completed_at = ? WHERE team_id = (SELECT id FROM teams WHERE key = ?) AND number = ?", [iso, key!, Number(number)]);
-  db.close();
+  s.sql("UPDATE issues SET completed_at = ? WHERE team_id = (SELECT id FROM teams WHERE key = ?) AND number = ?", iso, key!, Number(number));
 }
 
 /** The sweep runs after any change that closes an issue: close a throwaway one in `team` to trigger it. */
@@ -50,9 +47,7 @@ test("PATCH /api/teams/:key { autoArchiveDays } round-trips through GET /api/tea
   expect((await s.api("GET", "/api/teams")).body.find((t: any) => t.key === "ARC").autoArchiveDays).toBe(90);
 
   expect((await s.api("PATCH", "/api/teams/ARC", { autoArchiveDays: null })).body.autoArchiveDays).toBeNull();
-  for (const bad of [0, -5, 1.5, "30"]) {
-    expect((await s.api("PATCH", "/api/teams/ARC", { autoArchiveDays: bad })).status).toBe(400);
-  }
+  for (const bad of [0, -5, 1.5, "30"]) expect((await s.api("PATCH", "/api/teams/ARC", { autoArchiveDays: bad })).status).toBe(400);
   // No dedicated MCP tool for archiving/unarchiving by hand (REST-only): only update_team's autoArchiveDays.
   expect(await s.as("claude").tools()).not.toContain("archive_issue");
 });

@@ -28,8 +28,7 @@ const labels = async (query = "", caller = s.admin) => (await caller.api("GET", 
 const label = async (path: string) => (await labels()).find((l) => l.path === path);
 const issue = async (id: string) => (await s.api("GET", `/api/issues/${id}`)).body;
 const newLabel = (body: Record<string, unknown>, caller = s.admin) => caller.api("POST", "/api/labels", body);
-const patchLabel = async (path: string, body: Record<string, unknown>, caller = s.admin) =>
-  caller.api("PATCH", `/api/labels/${(await label(path)).id}`, body);
+const patchLabel = async (path: string, body: Record<string, unknown>, caller = s.admin) => caller.api("PATCH", `/api/labels/${(await label(path)).id}`, body);
 
 test("naming labels creates them: a workspace label, and Group/Label its group and label", async () => {
   const ws = s.admin.ws();

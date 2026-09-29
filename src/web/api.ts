@@ -48,6 +48,7 @@ import type {
   WorkspaceMember,
   WorkspacePatch,
 } from "../shared/types";
+import { createStore } from "./util";
 
 export class HttpError extends Error {
   status: number;
@@ -69,20 +70,11 @@ export const setOnAccessLost = (fn: () => void) => (onAccessLost = fn);
 
 /** "reconnecting": the live connection dropped and the retry hasn't landed yet. */
 export type Connection = "online" | "offline" | "reconnecting";
-let connection: Connection = navigator.onLine ? "online" : "offline";
-const connectionListeners = new Set<() => void>();
-function setConnection(c: Connection) {
-  if (c === connection) return;
-  connection = c;
-  connectionListeners.forEach((l) => l());
-}
-export const connectionStore = {
-  subscribe: (l: () => void) => (connectionListeners.add(l), () => void connectionListeners.delete(l)),
-  get: () => connection,
-};
+export const connectionStore = createStore<Connection>(navigator.onLine ? "online" : "offline");
+const setConnection = connectionStore.set;
 
 /** A network failure says so in words, instead of the browser's "Failed to fetch". */
-export const unreachable = () =>
+const unreachable = () =>
   new HttpError(navigator.onLine ? "Can’t reach Docket. Check your connection and try again." : "You’re offline.", 0);
 
 /** Per-browser preferences; storage can be unavailable (private mode, blocked site data). */
@@ -108,13 +100,13 @@ export const store = {
  */
 let signedInAs: string | null = null;
 export const setSignedInAs = (id: number) => (signedInAs = String(id));
-export const signedInHeader = (): Record<string, string> => (signedInAs ? { "x-docket-user": signedInAs } : {});
+const signedInHeader = (): Record<string, string> => (signedInAs ? { "x-docket-user": signedInAs } : {});
 
 /** The workspace this tab shows (the URL's), sent as X-Docket-Workspace: every data request acts there. */
 let currentWorkspace: string | null = null;
 export const setCurrentWorkspace = (key: string | null) => (currentWorkspace = key);
 export const getCurrentWorkspace = () => currentWorkspace;
-export const workspaceHeader = (): Record<string, string> => (currentWorkspace ? { "x-docket-workspace": currentWorkspace } : {});
+const workspaceHeader = (): Record<string, string> => (currentWorkspace ? { "x-docket-workspace": currentWorkspace } : {});
 
 export const request = <T>(method: string, path: string, body?: unknown): Promise<T> =>
   body === undefined ? send<T>(method, path) : send<T>(method, path, JSON.stringify(body), "application/json");

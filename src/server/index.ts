@@ -1,12 +1,11 @@
 import "./config.ts";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
-import { type Actor, formatCode, heardTeams, needsSetup, onRevoke, purgeExpiredKeys, setupCode } from "./access.ts";
+import { type Actor, formatCode, heardTeams, needsSetup, onRevoke, setupCode } from "./access.ts";
 import { MAX_UPLOAD_BYTES, type ServerEvent } from "../shared/types.ts";
 import { apiRoutes } from "./api.ts";
 import { attachmentRoutes } from "./attachments.ts";
 import { actorOf, authRoutes, guard } from "./auth.ts";
-import { proxyChat } from "./chat.ts";
 import { receive as receiveGitHub } from "./github.ts";
 import { onChange } from "./db.ts";
 import { HARD_MAX_BODY, http, publicFile, secure, webApp } from "./http.ts";
@@ -83,8 +82,6 @@ const server = Bun.serve({
     // GitHub's webhook: public, signed with the workspace's secret; rate-limited per IP, since it takes no credential.
     "/api/github/:workspace": http({ POST: receiveGitHub }, { perIp: true }),
     "/mcp": http(guard(handleMcp, { mcp: true })),
-    "/api/chat": http(guard(proxyChat)),
-    "/api/chat/*": http(guard(proxyChat)),
     "/ws": http(
       guard((req: Request, server: Bun.Server<SocketData>) => {
         const a = actorOf(req);
@@ -108,7 +105,6 @@ const server = Bun.serve({
   },
 });
 
-setInterval(purgeExpiredKeys, 60 * 60 * 1000);
 setInterval(autoArchive, 60 * 60 * 1000);
 setInterval(() => syncCycles(), 60 * 1000); // a cycle ends within a minute of midnight UTC
 

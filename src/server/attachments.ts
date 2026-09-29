@@ -8,7 +8,8 @@ import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ATTACHMENT_URL, INLINE_IMAGE_TYPES, MAX_UPLOAD_BYTES, type Attachment, type UserKind } from "../shared/types.ts";
 import { type Actor, requestWorkspace, SEES_TEAM, seesTeam } from "./access.ts";
-import { actorOf } from "./auth.ts";
+import { errorResponse } from "./api.ts";
+import { actorOf, mediaType } from "./auth.ts";
 import { AppError, db, now } from "./db.ts";
 import { attachmentsDir } from "./paths.ts";
 
@@ -52,7 +53,7 @@ const toAttachment = (r: Row): Attachment => ({
  * A file name without path separators, control characters (bidi overrides too: "gnp.exe" shown as "exe.png") or
  * quotes; at most 200 characters; "file" if nothing's left.
  */
-export function cleanName(name: unknown): string {
+function cleanName(name: unknown): string {
   const clean = (typeof name === "string" ? name : "").replace(/[/\\"\u0000-\u001f\u007f-\u009f‪-‮⁦-⁩]/g, "").trim();
   return [...clean].slice(0, 200).join("").trim() || "file";
 }
@@ -61,7 +62,7 @@ const startsWith = (bytes: Uint8Array, prefix: number[] | string, at = 0) =>
   [...(typeof prefix === "string" ? new TextEncoder().encode(prefix) : prefix)].every((b, i) => bytes[at + i] === b);
 
 /** What a file is, from its first bytes: a raster image, a PDF, UTF-8 text, or opaque bytes. SVG and HTML are text. */
-export function sniff(bytes: Uint8Array): string {
+function sniff(bytes: Uint8Array): string {
   if (startsWith(bytes, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return "image/png";
   if (startsWith(bytes, [0xff, 0xd8, 0xff])) return "image/jpeg";
   if (startsWith(bytes, "GIF87a") || startsWith(bytes, "GIF89a")) return "image/gif";
@@ -134,26 +135,20 @@ export function getAttachment(a: Actor, idOrUrl: string): { attachment: Attachme
 const disposition = (kind: string, name: string) =>
   `${kind}; filename="${name.replace(/[^\x20-\x7e]|["\\]/g, "_")}"; filename*=UTF-8''${encodeName(name)}`;
 
-const error = (err: unknown) => {
-  if (err instanceof AppError) return Response.json({ error: err.message }, { status: err.status });
-  console.error(err);
-  return Response.json({ error: "Internal server error" }, { status: 500 });
-};
-
 export const attachmentRoutes = {
   // Raw bytes, `Content-Type: application/octet-stream` exactly: like JSON, a browser can't send that cross-site
   // without a CORS preflight, which Docket never allows (and a cookie write still needs our Origin).
   "/api/attachments": {
     POST: async (req: Request) => {
       try {
-        if (req.headers.get("content-type")?.split(";")[0]!.trim().toLowerCase() !== "application/octet-stream") {
+        if (mediaType(req) !== "application/octet-stream") {
           throw new AppError("Expected Content-Type: application/octet-stream", 415);
         }
         const bytes = new Uint8Array(await req.arrayBuffer());
         const query = new URL(req.url).searchParams;
         return Response.json(saveAttachment(actorOf(req), query.get("name"), bytes, query.get("team")), { status: 201 });
       } catch (err) {
-        return error(err);
+        return errorResponse(err);
       }
     },
   },
@@ -176,7 +171,7 @@ export const attachmentRoutes = {
           },
         });
       } catch (err) {
-        return error(err);
+        return errorResponse(err);
       }
     },
   },

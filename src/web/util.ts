@@ -2,6 +2,31 @@
 import type { CSSProperties } from "react";
 
 export const cls = (...xs: (string | false | null | undefined)[]) => xs.filter(Boolean).join(" ");
+
+/** A value outside React that components read with `useSyncExternalStore(store.subscribe, store.get)`. */
+export function createStore<T>(value: T) {
+  const listeners = new Set<() => void>();
+  return {
+    get: () => value,
+    set(next: T) {
+      if (Object.is(next, value)) return;
+      value = next;
+      listeners.forEach((l) => l());
+    },
+    subscribe: (l: () => void) => (listeners.add(l), () => void listeners.delete(l)),
+  };
+}
+
+/**
+ * The URL if it's a web or mail link, or a path in the app; null for anything else (javascript:, data:). Browsers strip
+ * whitespace/control chars when parsing URLs, so this checks, and returns, the cleaned form.
+ */
+export function safeUrl(href: string): string | null {
+  const url = href.replace(/[\u0000- ]/g, "");
+  const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(url)?.[1];
+  return !scheme || /^(https?|mailto)$/i.test(scheme) ? url : null;
+}
+
 export const MOD = /Mac|iPhone|iPad/.test(navigator.userAgent) ? "⌘" : "Ctrl";
 
 export function timeAgo(iso: string): string {

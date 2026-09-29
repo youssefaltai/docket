@@ -79,6 +79,7 @@ import {
   useResolved,
   useKeydown,
   TrashBanner,
+  useTitle,
 } from "./ui";
 import { deleteToTrash } from "./trashActions";
 
@@ -86,9 +87,7 @@ export function IssuePage({ id }: { id: string }) {
   const app = useApp();
   const { data: issue, setData: setIssue, missing, failed, reload, invalidate, isLatest } = useFetch(() => api.issue(id), [id]);
 
-  useEffect(() => {
-    document.title = `${issue ? `${issue.id} ${issue.title}` : id} · Docket`;
-  }, [id, issue?.title]);
+  useTitle(issue ? `${issue.id} ${issue.title}` : id);
 
   // Opened by an identifier it had before it moved team, or just moved: show its current one in the address bar.
   useEffect(() => {
@@ -246,8 +245,6 @@ export function IssuePage({ id }: { id: string }) {
 
   const remove = () => deleteToTrash(() => api.deleteIssue(issue.id), issue.id, () => api.restoreIssue(issue.id), `/issue/${issue.id}`, nav.lastList);
 
-  const copyId = () => copyText(issue.id, `Copied ${issue.id}`);
-
   return (
     <>
       {header(
@@ -258,7 +255,7 @@ export function IssuePage({ id }: { id: string }) {
             </button>
           )}
           {!issue.deletedAt && !issue.archivedAt && <SubscribeButton subscribed={issue.subscribed} onToggle={() => withFresh(() => api.subscribeIssue(issue.id, !issue.subscribed)).catch(errorToast)} />}
-          <button className="icon-btn" onClick={copyId} aria-label="Copy ID" title="Copy ID">
+          <button className="icon-btn" onClick={() => copyText(issue.id, `Copied ${issue.id}`)} aria-label="Copy ID" title="Copy ID">
             <CopyIcon />
           </button>
           <CopyBranchButton branch={issue.branchName} />
@@ -308,7 +305,7 @@ export function IssuePage({ id }: { id: string }) {
               <SubIssues issue={issue} onPatch={patchChild} />
               <Docs issue={issue} />
               <Links issue={issue} />
-              {!issue.deletedAt && <Activity issue={issue} actions={comments} />}
+              {!issue.deletedAt && <Comments title="Activity" comments={issue.comments} activity={issue.activity} team={issue.team} actions={comments} />}
             </fieldset>
           </div>
         </div>
@@ -368,12 +365,9 @@ export function Description({
     setConflict(false);
     setEditing(true);
   };
-  const close = () => {
-    setConflict(false);
-    setEditing(false);
-  };
+  const close = () => setEditing(false);
   const save = () => {
-    if (saving || conflict || inFlight.current) return;
+    if (conflict || inFlight.current) return;
     if (draft.trim() === started.current.value.trim()) return close();
     inFlight.current = true;
     setSaving(true);
@@ -564,10 +558,6 @@ function Links({ issue }: { issue: Issue }) {
       </div>
     </Section>
   );
-}
-
-function Activity({ issue, actions }: { issue: Issue; actions: CommentActions }) {
-  return <Comments title="Activity" comments={issue.comments} activity={issue.activity} team={issue.team} actions={actions} />;
 }
 
 /**

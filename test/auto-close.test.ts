@@ -1,6 +1,5 @@
 // Auto-close (Linear's per-team settings): a parent closes when its last open sub-issue does, and closing a parent
 // closes its open sub-issues. Docket makes those changes itself, as @docket, on behalf of whoever set them off.
-import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { startServer, type TestServer } from "./server.ts";
@@ -203,13 +202,11 @@ test("Docket's account never signs in: no sign-in link, and a session or key nam
   // Plant credentials straight in the database: even then they don't work.
   const hash = (v: string) => createHash("sha256").update(v).digest("hex");
   const [session, key] = ["f".repeat(64), `dk_${"f".repeat(64)}`];
-  const db = new Database(s.databasePath);
-  const { id } = db.query<{ id: number }, []>("SELECT id FROM users WHERE system = 1").get()!;
-  expect(db.query("SELECT * FROM mentions WHERE user_id = ?").all(id)).toEqual([]);
+  const [{ id }] = s.sql("SELECT id FROM users WHERE system = 1");
+  expect(s.sql("SELECT * FROM mentions WHERE user_id = ?", id)).toEqual([]);
   const time = new Date().toISOString();
-  db.run("INSERT INTO sessions (user_id, token_hash, created_at, last_seen_at, user_agent, ip) VALUES (?, ?, ?, ?, 'x', 'x')", [id, hash(session), time, time]);
-  db.run("INSERT INTO api_keys (user_id, workspace, name, scope, token_hash, created_at) VALUES (?, 'acme', 'x', 'write', ?, ?)", [id, hash(key), time]);
-  db.close();
+  s.sql("INSERT INTO sessions (user_id, token_hash, created_at, last_seen_at, user_agent, ip) VALUES (?, ?, ?, ?, 'x', 'x')", id, hash(session), time, time);
+  s.sql("INSERT INTO api_keys (user_id, workspace, name, scope, token_hash, created_at) VALUES (?, 'acme', 'x', 'write', ?, ?)", id, hash(key), time);
   expect((await s.with({ cookie: `docket_session=${session}` }, "cookie").api("GET", "/api/me")).status).toBe(401);
   expect((await s.with({ token: key }).api("GET", "/api/me")).status).toBe(401);
 });

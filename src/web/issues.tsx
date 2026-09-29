@@ -67,9 +67,11 @@ import {
   useFetch,
   useIssueShortcuts,
   useResolved,
+  useTitle,
 } from "./ui";
 
 type Patch = (id: string, change: IssueChange) => void;
+type SetIssues = (fn: (list: IssueSummary[] | null) => IssueSummary[] | null) => void;
 
 /** What lists and boards show: every category but triage (its issues wait on the Triage tab). */
 export const LISTED = STATUS_CATEGORIES.filter((c) => c !== "triage");
@@ -79,11 +81,7 @@ export const LISTED = STATUS_CATEGORIES.filter((c) => c !== "triage");
  * own buttons make, applied to this list's state like any other row edit (see `useIssueShortcuts` for
  * `S`/`P`/`A`, which click the row's own picker triggers instead). Shared by `IssuesView` and `MyIssuesView`.
  */
-export function useListShortcuts(
-  setIssues: (fn: (list: IssueSummary[] | null) => IssueSummary[] | null) => void,
-  invalidate: () => number,
-  reload: () => void,
-) {
+export function useListShortcuts(setIssues: SetIssues, invalidate: () => number, reload: () => void) {
   const claim = (id: string) => {
     invalidate();
     api.claimIssue(id).then((fresh) => setIssues((list) => list?.map((i) => (i.id === id ? fresh : i)) ?? null), errorToast);
@@ -109,42 +107,10 @@ export function useListShortcuts(
   }, { claim, delete: del });
 }
 
-/** A team's issues, or all of them; with `cycle`, one of the team's cycles (its page, /t/:key/cycles/:n). */
-export function IssuesView({ teamKey, cycle }: { teamKey: string | null; cycle?: number }) {
-  const app = useApp();
-  const team = teamKey ? app.teams?.find((t) => t.key === teamKey) : undefined;
-  const [view, setView] = useState<Layout>(() => (store.get("view") === "board" ? "board" : "list"));
-  const [search, setSearch] = useState("");
-  const [label, setLabel] = useState("");
-  const [assignee, setAssignee] = useState("");
-  const [delegate, setDelegate] = useState("");
-  const [due, setDue] = useState<DueFilter | "">("");
-  const q = useDebounced(search.trim(), 150);
-  const filtered = !!(q || label || assignee || delegate || due);
-
-  useEffect(() => {
-    nav.lastList = location.pathname;
-    document.title = `${cycle ? `Cycle ${cycle} · ` : ""}${team?.name ?? (teamKey || "All issues")} · Docket`;
-  }, [teamKey, team?.name, cycle]);
-
-  const {
-    data: issues,
-    setData: setIssues,
-    failed,
-    reload,
-    invalidate,
-  } = useFetch(
-    () => api.issues({ team: teamKey ?? undefined, cycle: cycle?.toString(), category: LISTED, q, label, assignee, delegate, due: due || undefined }),
-    [teamKey, cycle, q, label, assignee, delegate, due],
-  );
-  const cycles = useFetch(cycle && teamKey ? () => api.cycles(teamKey) : null, [teamKey, cycle]).data;
-  const shown = cycles?.find((c) => c.number === cycle);
-
-  useListShortcuts(setIssues, invalidate, reload);
-  const { selection, bar } = useBulk(issues, { setIssues, invalidate, reload }, [teamKey, q, label, assignee, delegate, due]);
-
-  const patch: Patch = (id, p) => {
-    invalidate(); // drop any in-flight fetch that predates this change
+/** Edits one issue of a list at once (dropping any fetch in flight), and reloads the truth if the server refuses. */
+export function listPatch(setIssues: SetIssues, invalidate: () => number, reload: () => void): Patch {
+  return (id, p) => {
+    invalidate();
     const now = new Date().toISOString();
     setIssues((list) => list?.map((i) => (i.id === id ? { ...i, ...p, updatedAt: now } : i)) ?? null);
     api.updateIssue(id, toPatch(p)).catch((e) => {
@@ -152,11 +118,46 @@ export function IssuesView({ teamKey, cycle }: { teamKey: string | null; cycle?:
       reload();
     });
   };
+}
 
-  const changeView = (v: Layout) => {
-    setView(v);
-    store.set("view", v);
-  };
+/** List or board, remembered across visits. */
+export function useLayout() {
+  const [layout, setLayout] = useState<Layout>(() => (store.get("view") === "board" ? "board" : "list"));
+  return [layout, (l: Layout) => (setLayout(l), store.set("view", l))] as const;
+}
+
+/** A team's issues, or all of them; with `cycle`, one of the team's cycles (its page, /t/:key/cycles/:n). */
+export function IssuesView({ teamKey, cycle }: { teamKey: string | null; cycle?: number }) {
+  const app = useApp();
+  const team = teamKey ? app.teams?.find((t) => t.key === teamKey) : undefined;
+  const [view, changeView] = useLayout();
+  const [search, setSearch] = useState("");
+  const [label, setLabel] = useState("");
+  const [assignee, setAssignee] = useState("");
+  const [delegate, setDelegate] = useState("");
+  const [due, setDue] = useState<DueFilter | "">("");
+  const q = useDebounced(search.trim(), 150);
+  const filtered = !!(q || label || assignee || delegate || due);
+  const filter = { team: teamKey ?? undefined, cycle: cycle?.toString(), q, label, assignee, delegate, due: due || undefined };
+
+  useEffect(() => void (nav.lastList = location.pathname), [teamKey, cycle]);
+  useTitle(`${cycle ? `Cycle ${cycle} · ` : ""}${team?.name ?? (teamKey || "All issues")}`);
+
+  const {
+    data: issues,
+    setData: setIssues,
+    failed,
+    reload,
+    invalidate,
+  } = useFetch(() => api.issues({ ...filter, category: LISTED }), [teamKey, cycle, q, label, assignee, delegate, due]);
+  const cycles = useFetch(cycle && teamKey ? () => api.cycles(teamKey) : null, [teamKey, cycle]).data;
+  const shown = cycles?.find((c) => c.number === cycle);
+
+  useListShortcuts(setIssues, invalidate, reload);
+  const { selection, bar } = useBulk(issues, { setIssues, invalidate, reload }, [teamKey, q, label, assignee, delegate, due]);
+
+  const patch = listPatch(setIssues, invalidate, reload);
+
   const clearFilters = () => {
     setSearch("");
     setLabel("");
@@ -252,9 +253,7 @@ export function IssuesView({ teamKey, cycle }: { teamKey: string | null; cycle?:
         {app.workspace?.role !== "guest" && (
           <button
             className="icon-btn"
-            onClick={() =>
-              app.newView({ filter: { team: teamKey ?? undefined, cycle: cycle?.toString(), q, label, assignee, delegate, due: due || undefined }, display: { layout: view } })
-            }
+            onClick={() => app.newView({ filter, display: { layout: view } })}
             aria-label="Save as view"
             title="Save as view"
           >
@@ -302,10 +301,8 @@ function CycleCard({ cycle: c, link, className }: { cycle: Cycle; link?: boolean
 export function CyclesView({ teamKey }: { teamKey: string }) {
   const app = useApp();
   const team = app.teams?.find((t) => t.key === teamKey);
-  useEffect(() => {
-    nav.lastList = location.pathname;
-    document.title = `${team?.name ?? teamKey} cycles · Docket`;
-  }, [teamKey, team?.name]);
+  useEffect(() => void (nav.lastList = location.pathname), [teamKey]);
+  useTitle(`${team?.name ?? teamKey} cycles`);
   const { data: cycles, failed, reload } = useFetch(() => api.cycles(teamKey), [teamKey]);
   const current = cycles?.find((c) => c.state === "current");
   const upcoming = cycles?.filter((c) => c.state === "upcoming") ?? [];
@@ -391,11 +388,10 @@ export function Filters(props: {
   due: DueFilter | "";
   setDue: (v: DueFilter | "") => void;
 }) {
-  const { labels, loadDirectory } = useApp();
+  const { labels, loadDirectory, teams } = useApp();
   const people = useMembers("person");
   const agents = useMembers("agent");
   const me = getYou();
-  const { teams } = useApp();
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const loadProjects = () => void api.projects().then(setProjects, errorToast);
   useEffect(() => void (props.project && loadProjects()), []); // to name the one chosen
@@ -520,7 +516,7 @@ const DUE_OPTIONS: [DueFilter | "", string][] = [
 // ---------- List ----------
 
 /** How a list or board is grouped and ordered: by status and priority unless a saved view says otherwise. */
-export type Display = { groupBy?: GroupBy; orderBy?: OrderBy };
+type Display = { groupBy?: GroupBy; orderBy?: OrderBy };
 
 /** One group of a list or board: its issues in order, its head, and what a new issue or a dropped card gets there. */
 interface Group {

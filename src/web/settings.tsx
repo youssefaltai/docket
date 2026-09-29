@@ -45,6 +45,7 @@ import {
   PriorityIcon,
   Section,
   StatusIcon,
+  Switch,
   Tabs,
   TagIcon,
   TeamMark,
@@ -53,13 +54,13 @@ import {
   cls,
   copyText,
   errorToast,
-  labelColor,
   statusOf,
   teamStatuses,
   toast,
   useApp,
   useDebounced,
   useFetch,
+  useTitle,
   useRun,
   type StatusLook,
 } from "./ui";
@@ -68,9 +69,7 @@ export function SettingsPage({ section: asked }: { section: "account" | "workspa
   const { workspace } = useApp();
   const guest = workspace?.role === "guest"; // a guest's settings are their account's alone
   const section = guest ? "account" : asked;
-  useEffect(() => {
-    document.title = "Settings · Docket";
-  }, []);
+  useTitle("Settings");
   return (
     <>
       <header className="header">
@@ -179,6 +178,28 @@ function MemberRow({ m, meta, children }: { m: WorkspaceMember; meta: string; ch
   );
 }
 
+const AddButton = ({ onClick, children }: { onClick: () => void; children: ReactNode }) => (
+  <button className="btn btn-sm" onClick={onClick}>
+    <PlusIcon />
+    {children}
+  </button>
+);
+
+const FormError = ({ error }: { error: string }) =>
+  error && (
+    <p className="settings-error" role="alert" dir="auto">
+      {error}
+    </p>
+  );
+
+const SaveButton = ({ disabled }: { disabled: boolean }) => (
+  <div>
+    <button className="btn btn-primary" disabled={disabled}>
+      Save
+    </button>
+  </div>
+);
+
 const meta = (...parts: (string | false | null | undefined)[]) => parts.filter(Boolean).join(" · ");
 
 function Choice<T extends string>({ label, value, options, onChange }: { label: string; value: T; options: [T, string][]; onChange: (v: T) => void }) {
@@ -247,16 +268,8 @@ function Profile({ workspace }: { workspace: Workspace }) {
         <Field label="Username" hint="Used to assign issues and to mention you. Lowercase letters, digits, “.”, “_” and “-”.">
           <input className="input" autoCapitalize="off" spellCheck={false} value={username} onChange={(e) => setUsername(e.target.value.toLowerCase())} />
         </Field>
-        {error && (
-          <p className="settings-error" role="alert" dir="auto">
-            {error}
-          </p>
-        )}
-        <div>
-          <button className="btn btn-primary" disabled={!dirty || busy || !name.trim() || !username.trim()}>
-            Save
-          </button>
-        </div>
+        <FormError error={error} />
+        <SaveButton disabled={!dirty || busy || !name.trim() || !username.trim()} />
       </form>
     </Section>
   );
@@ -287,16 +300,8 @@ function Email() {
         <Field label="Email" hint="Contact info, the same in all your workspaces.">
           <input className="input" type="email" autoCapitalize="off" value={email} onChange={(e) => setEmail(e.target.value)} />
         </Field>
-        {error && (
-          <p className="settings-error" role="alert" dir="auto">
-            {error}
-          </p>
-        )}
-        <div>
-          <button className="btn btn-primary" disabled={!dirty || busy}>
-            Save
-          </button>
-        </div>
+        <FormError error={error} />
+        <SaveButton disabled={!dirty || busy} />
       </form>
     </Section>
   );
@@ -431,14 +436,7 @@ function ApiKeys({ workspace }: { workspace: Workspace }) {
   return (
     <Section
       title="API keys"
-      action={
-        !adding && (
-          <button className="btn btn-sm" onClick={() => setAdding(true)}>
-            <PlusIcon />
-            New API key
-          </button>
-        )
-      }
+      action={!adding && <AddButton onClick={() => setAdding(true)}>New API key</AddButton>}
     >
       <p className="settings-hint" dir="auto">For scripts and MCP clients that act as you in {workspace.name}.</p>
       {secret}
@@ -520,11 +518,7 @@ function WorkspaceName({ workspace }: { workspace: Workspace }) {
         <Field label="Name" hint={`Its key, ${workspace.key}, stays in every link.`}>
           <input className="input" dir="auto" value={name} onChange={(e) => setName(e.target.value)} />
         </Field>
-        <div>
-          <button className="btn btn-primary" disabled={!dirty || busy}>
-            Save
-          </button>
-        </div>
+        <SaveButton disabled={!dirty || busy} />
       </form>
     </Section>
   );
@@ -675,14 +669,7 @@ function Agents({ workspace, agents, reload }: { workspace: string; agents: Work
     <Section
       title="Agents"
       count={agents.length || undefined}
-      action={
-        !adding && (
-          <button className="btn btn-sm" onClick={() => setAdding(true)}>
-            <PlusIcon />
-            Add agent
-          </button>
-        )
-      }
+      action={!adding && <AddButton onClick={() => setAdding(true)}>Add agent</AddButton>}
     >
       <p className="settings-hint">Agents connect over MCP with their own token, and everything they write carries their name.</p>
       {secret}
@@ -814,14 +801,7 @@ function Webhooks({ workspace }: { workspace: string }) {
     <Section
       title="Webhooks"
       count={hooks.data?.length || undefined}
-      action={
-        !editing && (
-          <button className="btn btn-sm" onClick={() => setEditing("new")}>
-            <PlusIcon />
-            Add webhook
-          </button>
-        )
-      }
+      action={!editing && <AddButton onClick={() => setEditing("new")}>Add webhook</AddButton>}
     >
       <p className="settings-hint">
         Docket POSTs changes to your endpoint as they happen: issues, comments, docs, and your agents' notifications, so an agent can start when it's
@@ -999,11 +979,7 @@ function WebhookForm({
           ))}
         </div>
       </div>
-      {error && (
-        <p className="settings-error" role="alert" dir="auto">
-          {error}
-        </p>
-      )}
+      <FormError error={error} />
       <FormButtons label={webhook ? "Save" : "Add webhook"} disabled={!ready} onCancel={onCancel} />
     </form>
   );
@@ -1044,14 +1020,7 @@ function Templates({ team }: { team: Team }) {
     <Section
       title="Templates"
       count={templates.length || undefined}
-      action={
-        !adding && (
-          <button className="btn btn-sm" onClick={() => setAdding(true)}>
-            <PlusIcon />
-            New template
-          </button>
-        )
-      }
+      action={!adding && <AddButton onClick={() => setAdding(true)}>New template</AddButton>}
     >
       <p className="settings-hint">Prefill a new issue's title, description, status, priority and labels; picked from the Template control in the New issue modal.</p>
       {adding && <NewTemplate team={team} onDone={() => (setAdding(false), load())} />}
@@ -1166,12 +1135,6 @@ function Labels({ team }: { team: string | null }) {
   const [adding, setAdding] = useState<"label" | "group" | null>(null);
   const scoped = labels.filter((l) => l.team === team);
   const top = scoped.filter((l) => l.group === null).sort(byName);
-  const add = (kind: "label" | "group", text: string) => (
-    <button className="btn btn-sm" onClick={() => setAdding(kind)}>
-      <PlusIcon />
-      {text}
-    </button>
-  );
   return (
     <Section
       title="Labels"
@@ -1179,8 +1142,8 @@ function Labels({ team }: { team: string | null }) {
       action={
         !adding && (
           <span className="settings-inline">
-            {add("group", "New group")}
-            {add("label", "New label")}
+            <AddButton onClick={() => setAdding("group")}>New group</AddButton>
+            <AddButton onClick={() => setAdding("label")}>New label</AddButton>
           </span>
         )
       }
@@ -1342,9 +1305,7 @@ export function TeamSettingsPage({ teamKey }: { teamKey: string }) {
   const team = teams?.find((t) => t.key === teamKey);
   // Guests set nothing up: they see who's in the team, and manage its own labels.
   const guest = workspace?.role === "guest";
-  useEffect(() => {
-    document.title = `Settings · ${team?.name ?? teamKey} · Docket`;
-  }, [team?.name, teamKey]);
+  useTitle(`Settings · ${team?.name ?? teamKey}`);
   return (
     <>
       <ListHeader team={team} title={teamKey} count={0} view="settings" />
@@ -1394,11 +1355,7 @@ function TeamGeneral({ team }: { team: Team }) {
         <Field label="Description">
           <textarea className="input" dir="auto" rows={2} value={description} onChange={(e) => setDescription(e.target.value)} />
         </Field>
-        <div>
-          <button className="btn btn-primary" disabled={!dirty || busy}>
-            Save
-          </button>
-        </div>
+        <SaveButton disabled={!dirty || busy} />
       </form>
     </Section>
   );
@@ -1423,12 +1380,9 @@ function Workflow({ team }: { team: Team }) {
   return (
     <Section title="Workflow">
       <p className="settings-hint">New issues start in the default status. Renaming a status changes no issue.</p>
-      <label className="workflow-switch">
-        <input type="checkbox" checked={!!triage} onChange={toggleTriage} />
-        <span>
-          <b>Triage</b> <span className="muted">New issues from the Triage tab wait there until someone accepts them.</span>
-        </span>
-      </label>
+      <Switch checked={!!triage} onChange={toggleTriage} title="Triage">
+        New issues from the Triage tab wait there until someone accepts them.
+      </Switch>
       {STATUS_CATEGORIES.filter((c) => c !== "triage" || triage).map((category) => {
         const list = statuses.filter((s) => s.category === category);
         return (
@@ -1470,18 +1424,12 @@ function Automations({ team }: { team: Team }) {
   const toggle = (patch: { autoCloseParent: boolean } | { autoCloseChildren: boolean }) => api.updateTeam(team.key, patch).then(reloadTeams, errorToast);
   return (
     <Section title="Automations">
-      <label className="workflow-switch">
-        <input type="checkbox" checked={team.autoCloseParent} onChange={(e) => toggle({ autoCloseParent: e.target.checked })} />
-        <span>
-          <b>Auto-close parent issues</b> <span className="muted">When all its sub-issues are done or canceled, a parent issue is marked done.</span>
-        </span>
-      </label>
-      <label className="workflow-switch">
-        <input type="checkbox" checked={team.autoCloseChildren} onChange={(e) => toggle({ autoCloseChildren: e.target.checked })} />
-        <span>
-          <b>Auto-close sub-issues</b> <span className="muted">When a parent issue is done or canceled, its open sub-issues follow.</span>
-        </span>
-      </label>
+      <Switch checked={team.autoCloseParent} onChange={(autoCloseParent) => toggle({ autoCloseParent })} title="Auto-close parent issues">
+        When all its sub-issues are done or canceled, a parent issue is marked done.
+      </Switch>
+      <Switch checked={team.autoCloseChildren} onChange={(autoCloseChildren) => toggle({ autoCloseChildren })} title="Auto-close sub-issues">
+        When a parent issue is done or canceled, its open sub-issues follow.
+      </Switch>
       <Field
         label="Auto-archive closed issues"
         hint="Completed and canceled issues are hidden from default views (still searchable, still open by link) once they've stayed closed this long."
@@ -1511,12 +1459,9 @@ function Estimates({ team }: { team: Team }) {
   const set = (estimateScale: EstimateScale | null) => api.updateTeam(team.key, { estimateScale }).then(reloadTeams, errorToast);
   return (
     <Section title="Estimates">
-      <label className="workflow-switch">
-        <input type="checkbox" checked={!!scale} onChange={(e) => set(e.target.checked ? "fibonacci" : null)} />
-        <span>
-          <b>Estimates</b> <span className="muted">Size issues on a scale; lists and boards total them per status. Turning them off hides estimates without deleting them.</span>
-        </span>
-      </label>
+      <Switch checked={!!scale} onChange={(on) => set(on ? "fibonacci" : null)} title="Estimates">
+        Size issues on a scale; lists and boards total them per status. Turning them off hides estimates without deleting them.
+      </Switch>
       {scale && (
         <Field label="Scale">
           <select className="input" value={scale} onChange={(e) => set(e.target.value as EstimateScale)}>
@@ -1566,12 +1511,9 @@ function Cycles({ team }: { team: Team }) {
   );
   return (
     <Section title="Cycles">
-      <label className="workflow-switch">
-        <input type="checkbox" checked={!!team.cycleWeeks || !!draft} onChange={(e) => toggle(e.target.checked)} />
-        <span>
-          <b>Use cycles</b> <span className="muted">Plan work in repeating periods. When one ends, its unfinished issues move to the next.</span>
-        </span>
-      </label>
+      <Switch checked={!!team.cycleWeeks || !!draft} onChange={toggle} title="Use cycles">
+        Plan work in repeating periods. When one ends, its unfinished issues move to the next.
+      </Switch>
       {draft && (
         <>
           <Field label="Starts on" hint="Cycles start at 00:00 UTC, on this date's weekday.">

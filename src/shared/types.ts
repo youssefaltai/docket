@@ -41,25 +41,14 @@ export const DEFAULT_WORKFLOW: WorkflowStatus[] = [
 
 /** A new status's color when none is given. */
 export const CATEGORY_COLORS: Record<StatusCategory, string> = {
-  triage: "#f76b15",
-  backlog: "#a3a3a3",
-  unstarted: "#8f8f8f",
-  started: "#e8a800",
-  completed: "#5e6ad2",
-  canceled: "#b4b4b4",
+  triage: "#f76b15", backlog: "#a3a3a3", unstarted: "#8f8f8f", started: "#e8a800", completed: "#5e6ad2", canceled: "#b4b4b4",
 };
 
 // Linear's convention: 0 none, 1 urgent, 2 high, 3 medium, 4 low.
 export const PRIORITIES = [0, 1, 2, 3, 4] as const;
 export type Priority = (typeof PRIORITIES)[number];
 
-export const PRIORITY_LABELS: Record<Priority, string> = {
-  0: "No priority",
-  1: "Urgent",
-  2: "High",
-  3: "Medium",
-  4: "Low",
-};
+export const PRIORITY_LABELS: Record<Priority, string> = { 0: "No priority", 1: "Urgent", 2: "High", 3: "Medium", 4: "Low" };
 
 /**
  * Estimates (Linear's, opt-in per team): a team picks a scale, and an issue holds a 1–5 position in it, shown as that
@@ -139,13 +128,12 @@ export interface WorkspaceMember {
 
 /** GET /api/me. */
 export interface Me {
-  // id: the account, which never changes, for services that key data by person (docket-chat); ids stay internal
+  // id: the account, which never changes, for API clients that key data by person; ids stay internal
   // everywhere else. username and name: yours in the request's workspace (a key's own, or X-Docket-Workspace);
   // for a session naming none, your default profile (the membership you joined most recently).
   user: User & { id: number };
   workspaces: { key: string; name: string; role: Role; you: UserRef }[]; // you: how you're known there; for a key, only its own workspace
-  credential: "session" | "key" | "chat"; // what this request came with; "chat": a key the chat proxy minted
-  chat: boolean; // the assistant is set up (CHAT_URL): show its panel
+  credential: "session" | "key"; // what this request came with
 }
 
 export interface Session {
@@ -363,29 +351,8 @@ export interface LabelInput {
 export type LabelPatch = { name?: string; color?: string; team?: string | null; group?: string | null };
 
 export const ACTIVITY_KINDS = [
-  "created",
-  "team",
-  "title",
-  "description",
-  "status",
-  "priority",
-  "estimate",
-  "assignee",
-  "delegate",
-  "labels",
-  "parent",
-  "blockedBy",
-  "relatedTo",
-  "duplicateOf",
-  "dueOn",
-  "claimed",
-  "trashed",
-  "restored",
-  "archived",
-  "unarchived",
-  "project",
-  "milestone",
-  "cycle",
+  "created", "team", "title", "description", "status", "priority", "estimate", "assignee", "delegate", "labels", "parent", "blockedBy",
+  "relatedTo", "duplicateOf", "dueOn", "claimed", "trashed", "restored", "archived", "unarchived", "project", "milestone", "cycle",
 ] as const;
 export type ActivityKind = (typeof ACTIVITY_KINDS)[number];
 
@@ -765,12 +732,7 @@ export const attachmentMarkdown = (a: Pick<Attachment, "name" | "url" | "content
 export const PROJECT_STATUSES = ["backlog", "planned", "in_progress", "paused", "completed", "canceled"] as const;
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
 export const PROJECT_STATUS_LABELS: Record<ProjectStatus, string> = {
-  backlog: "Backlog",
-  planned: "Planned",
-  in_progress: "In Progress",
-  paused: "Paused",
-  completed: "Completed",
-  canceled: "Canceled",
+  backlog: "Backlog", planned: "Planned", in_progress: "In Progress", paused: "Paused", completed: "Completed", canceled: "Canceled",
 };
 
 export interface ProjectSummary {

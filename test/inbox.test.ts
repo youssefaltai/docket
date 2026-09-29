@@ -1,7 +1,6 @@
 // The inbox (DKT-11): subscriptions and notifications. You follow what you create, claim, comment on, or are assigned,
 // delegated or mentioned in; its comments, mentions and moves into in_review, done or canceled reach you, never
 // your own. Only you see, mark or delete yours, and only in the workspace they're in.
-import { Database } from "bun:sqlite";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { startServer, type Caller, type TestServer } from "./server.ts";
 
@@ -18,16 +17,8 @@ beforeAll(async () => {
 });
 afterAll(() => s.stop());
 
-const sql = (query: string, ...params: (string | number)[]) => {
-  const db = new Database(s.databasePath);
-  try {
-    return db.query(query).all(...params) as any[];
-  } finally {
-    db.close();
-  }
-};
 /** The newest notification id so far: what a later `since` counts from. */
-const mark = () => sql("SELECT COALESCE(MAX(id), 0) AS id FROM notifications")[0].id as number;
+const mark = () => s.sql("SELECT COALESCE(MAX(id), 0) AS id FROM notifications")[0].id as number;
 /** A caller's notifications after `after`, oldest first, as [kind, actor, issue or doc, status or excerpt]. */
 async function since(c: Caller, after: number) {
   const res = await c.api("GET", "/api/notifications");
@@ -77,7 +68,7 @@ test("comments reach the other subscribers; a mention reaches its person once, a
 
   // Deleting the comment takes its notifications with it.
   expect((await bob.api("DELETE", `/api/issues/${issue.id}/comments/${cid}`)).status).toBe(200);
-  expect(sql("SELECT COUNT(*) AS n FROM notifications WHERE comment_id = ?", cid)[0].n).toBe(0);
+  expect(s.sql("SELECT COUNT(*) AS n FROM notifications WHERE comment_id = ?", cid)[0].n).toBe(0);
 });
 
 test("an excerpt is the comment's text, without its markdown", async () => {
@@ -217,7 +208,7 @@ test("MCP: mark read, unsubscribe, and list what you follow", async () => {
   await expect(claude.tool("subscribe", { issue: issue.id, document: "x" })).rejects.toThrow(/exactly one/);
 
   const rest = (await ana.api("GET", "/api/issues?subscribed=true")).body.map((i: any) => i.id).sort();
-  const expected = sql(
+  const expected = s.sql(
     `SELECT t.key || '-' || i.number AS id FROM subscriptions s JOIN issues i ON i.id = s.issue_id JOIN teams t ON t.id = i.team_id
      JOIN workspace_members m ON m.user_id = s.user_id AND m.workspace = 'acme'
      WHERE m.username = 'ana' AND i.deleted_at IS NULL ORDER BY 1`,
@@ -230,20 +221,19 @@ test("MCP: mark read, unsubscribe, and list what you follow", async () => {
 
 test("each inbox keeps its newest 2,000", async () => {
   const issue = await create("Busy");
-  const [{ user_id: anaId }] = sql("SELECT user_id FROM workspace_members WHERE workspace = 'acme' AND username = 'ana'");
-  const db = new Database(s.databasePath);
-  const insert = db.query("INSERT INTO notifications (user_id, workspace, kind, actor_id, issue_id, created_at) VALUES (?, 'acme', 'assigned', 1, NULL, ?)");
-  db.transaction(() => {
-    for (let i = 0; i < 2000; i++) insert.run(anaId, new Date(0).toISOString());
-  })();
-  db.close();
-  const oldest = sql("SELECT MIN(id) AS id FROM notifications WHERE user_id = ?", anaId)[0].id;
+  const [{ user_id: anaId }] = s.sql("SELECT user_id FROM workspace_members WHERE workspace = 'acme' AND username = 'ana'");
+  s.sql(
+    "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 2000) INSERT INTO notifications (user_id, workspace, kind, actor_id, issue_id, created_at) SELECT ?, 'acme', 'assigned', 1, NULL, ? FROM n",
+    anaId,
+    new Date(0).toISOString(),
+  );
+  const oldest = s.sql("SELECT MIN(id) AS id FROM notifications WHERE user_id = ?", anaId)[0].id;
   await s.api("PATCH", `/api/issues/${issue.id}`, { assignee: "ana" });
-  expect(sql("SELECT COUNT(*) AS n, MIN(id) > ? AS trimmed FROM notifications WHERE user_id = ? AND workspace = 'acme'", oldest, anaId)).toEqual([
+  expect(s.sql("SELECT COUNT(*) AS n, MIN(id) > ? AS trimmed FROM notifications WHERE user_id = ? AND workspace = 'acme'", oldest, anaId)).toEqual([
     { n: 2000, trimmed: 1 },
   ]);
   expect((await ana.api("GET", "/api/notifications")).body.notifications.length).toBe(500);
-  sql("DELETE FROM notifications WHERE issue_id IS NULL AND document_id IS NULL");
+  s.sql("DELETE FROM notifications WHERE issue_id IS NULL AND document_id IS NULL");
 });
 
 test("suspended members get nothing", async () => {
@@ -253,8 +243,8 @@ test("suspended members get nothing", async () => {
   const at = mark();
   await comment(ana, issue.id, "@bob are you there?");
   await s.api("PATCH", `/api/issues/${issue.id}`, { status: "done" });
-  const bobId = sql("SELECT user_id FROM workspace_members WHERE workspace = 'acme' AND username = 'bob'")[0].user_id;
-  expect(sql("SELECT COUNT(*) AS n FROM notifications WHERE user_id = ? AND id > ?", bobId, at)).toEqual([{ n: 0 }]);
+  const bobId = s.sql("SELECT user_id FROM workspace_members WHERE workspace = 'acme' AND username = 'bob'")[0].user_id;
+  expect(s.sql("SELECT COUNT(*) AS n FROM notifications WHERE user_id = ? AND id > ?", bobId, at)).toEqual([{ n: 0 }]);
   expect(await since(s.admin, at)).toEqual([
     ["commented", "ana", issue.id, "@bob are you there?"],
   ]);

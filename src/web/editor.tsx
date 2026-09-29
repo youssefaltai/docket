@@ -15,11 +15,11 @@ import { MOD, cls, pastedFiles } from "./util";
 export const MENTION_TRIGGER = /(?:^|[\s([])@([a-z0-9._-]{0,32})$/i;
 
 /** Where a caret sits on screen. */
-export type CaretBox = { left: number; top: number; height: number };
+type CaretBox = { left: number; top: number; height: number };
 /** What's typed after a trigger character (`@`, `/`), and where the trigger is. */
 export type Typed = { start: number; query: string };
 /** The keys editors look at (React's and the DOM's keyboard events both fit). */
-export type Key = Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "shiftKey" | "preventDefault" | "stopPropagation">;
+type Key = Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "shiftKey" | "preventDefault" | "stopPropagation">;
 
 // What the mirror copies so its text wraps exactly like the textarea's.
 const MIRRORED = [
@@ -173,7 +173,7 @@ export function useCaretMenu<T>({
  * @mention autocomplete for a markdown textarea. Spread `props` on the textarea, render `menu`, and let `onKeyDown`
  * see keys first: it returns true when it used one.
  */
-export function useMentionMenu(ref: RefObject<HTMLTextAreaElement | null>, value: string, setValue: (value: string) => void) {
+function useMentionMenu(ref: RefObject<HTMLTextAreaElement | null>, value: string, setValue: (value: string) => void) {
   const [typed, setTyped] = useState<Typed | null>(null);
   const caret = useRef<number | null>(null); // where to put the caret after an insert
   const users = useMentionable(typed?.query);
