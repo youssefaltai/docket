@@ -258,6 +258,11 @@ export function sessionActor(token: string): Actor | null {
   return actor;
 }
 
+/** Deletes a user's sessions idle for 30 days, and so their push devices, even ones never presented again. */
+export function endIdleSessions(userId: number) {
+  db.query("DELETE FROM sessions WHERE user_id = ? AND last_seen_at < ?").run(userId, new Date(Date.now() - SESSION_IDLE_MS).toISOString());
+}
+
 /**
  * The actor behind an API key (`dk_…`), or null if it's unknown or revoked, or its owner isn't an
  * active member of the key's workspace. A key acts only in its own workspace.

@@ -167,3 +167,15 @@ test("a test push with no device here is 409; an unreachable push service is 502
   expect((await erin.api("POST", "/api/push/test")).status).toBe(502);
   answer = 201;
 });
+
+test("a device goes when its session idles out, even if that session is never used again (DKT-45)", async () => {
+  const dex = await s.user("dex", { name: "Dex" });
+  const phone = device("dex-phone");
+  expect((await dex.api("PUT", "/api/push", phone.json)).status).toBe(200);
+  const idle = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString();
+  s.sql("UPDATE sessions SET last_seen_at = ? WHERE id = (SELECT session_id FROM push_subscriptions WHERE endpoint = ?)", idle, phone.endpoint);
+  await create("After idling", { assignee: "dex" });
+  await settle();
+  expect(phone.pushes()).toEqual([]);
+  expect(s.sql("SELECT COUNT(*) AS n FROM push_subscriptions WHERE endpoint = ?", phone.endpoint)[0].n).toBe(0);
+});

@@ -4,7 +4,7 @@
 // go to webhooks). Endpoints must be a known push service's, so Docket never posts anywhere else.
 import webpush from "web-push";
 import type { Notification } from "../shared/types.ts";
-import { type Actor, requireSession } from "./access.ts";
+import { type Actor, endIdleSessions, requireSession } from "./access.ts";
 import { AppError, db, now } from "./db.ts";
 
 const TEST_ORIGIN = process.env.DOCKET_PUSH_TEST_ORIGIN; // tests only: a local fake push service, e.g. http://127.0.0.1:4000
@@ -126,6 +126,7 @@ export function queuePush(userId: number, load: () => Notification | null) {
 function flush() {
   const devices = db.query<Sub, [number]>("SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?");
   for (const { userId, load } of pending.splice(0)) {
+    endIdleSessions(userId); // a signed-out device gets nothing
     const subs = devices.all(userId);
     const n = subs.length ? load() : null;
     if (n) for (const s of subs) send(s, describe(n)).catch((err) => console.error(`Push to ${new URL(s.endpoint).host} failed:`, err));
