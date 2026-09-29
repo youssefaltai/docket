@@ -915,14 +915,6 @@ function managedTemplate(a: Actor, id: unknown): TemplateRow {
   return row;
 }
 
-/** Replaces a template's labels (see resolveLabels), in the caller's transaction. Returns the labels it created. */
-function setTemplateLabels(templateId: number, workspace: string, team: TeamRef, names: string[], time: string): number[] {
-  const { ids, created } = resolveLabels(workspace, team, names, time);
-  db.query("DELETE FROM issue_template_labels WHERE template_id = ?").run(templateId);
-  for (const id of ids) db.query("INSERT INTO issue_template_labels (template_id, label_id) VALUES (?, ?)").run(templateId, id);
-  return created;
-}
-
 /**
  * A template's status: a key of the team's current workflow, checked when it's set; null leaves it unset (the
  * team's default status at use time). Not a foreign key, so a status deleted later doesn't invalidate the template.
@@ -931,14 +923,14 @@ const checkTemplateStatus = (team: TeamRef, value: unknown): string | null => (v
 
 /** The request's workspace's templates in teams you see, by name; `team`: only that team's own (templates are always one team's). */
 export function listTemplates(a: Actor, filter: { team?: string } = {}): IssueTemplate[] {
-  const workspace = requestWorkspace(a);
-  const params: SQLQueryBindings[] = [workspace];
-  let where = `t.workspace = ? AND ${SEES_TEAM(String(a.id), "t")}`;
-  if (filter.team) {
-    where += " AND t.id = ?";
-    params.push(teamRow(a, filter.team).id);
-  }
-  return db.query<TemplateRow, SQLQueryBindings[]>(`${TEMPLATE_SELECT} WHERE ${where} ORDER BY it.name COLLATE NOCASE, it.id`).all(...params).map(toTemplate);
+  const params: SQLQueryBindings[] = [requestWorkspace(a)];
+  if (filter.team) params.push(teamRow(a, filter.team).id);
+  return db
+    .query<TemplateRow, SQLQueryBindings[]>(
+      `${TEMPLATE_SELECT} WHERE t.workspace = ? AND ${SEES_TEAM(String(a.id), "t")}${filter.team ? " AND t.id = ?" : ""} ORDER BY it.name COLLATE NOCASE, it.id`,
+    )
+    .all(...params)
+    .map(toTemplate);
 }
 
 /** Creates a template in a team (people only): its name labels it in the picker; title/description/status/priority/labels prefill an issue. */
@@ -959,8 +951,7 @@ export function createTemplate(a: Actor, input: IssueTemplateInput): IssueTempla
         "INSERT INTO issue_templates (team_id, name, title, description, status, priority, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
       )
       .get(team.id, name, title, description, status, priority, time, time)!;
-    const created = setTemplateLabels(id, team.workspace, team, labels, time);
-    return { id, created };
+    return { id, created: setLabels("template", id, team.workspace, team, labels, time) };
   })();
   changed("team", team.workspace, team.key);
   for (const labelId of created) changed("label", team.workspace, String(labelId));
@@ -979,7 +970,7 @@ export function updateTemplate(a: Actor, id: unknown, patch: IssueTemplatePatch)
   const time = now();
   const created = db.transaction(() => {
     db.query("UPDATE issue_templates SET name = ?, title = ?, description = ?, status = ?, priority = ?, updated_at = ? WHERE id = ?").run(name, title, description, status, priority, time, row.id);
-    return patch.labels === undefined ? [] : setTemplateLabels(row.id, row.workspace, team, checkLabels(patch.labels), time);
+    return patch.labels === undefined ? [] : setLabels("template", row.id, row.workspace, team, checkLabels(patch.labels), time);
   })();
   changed("team", row.workspace, row.team_key);
   for (const labelId of created) changed("label", row.workspace, String(labelId));
@@ -1166,29 +1157,19 @@ function findIssue(workspace: string, key: string, number: number, seen: Seen = 
  * a team you don't see. An identifier it had before it moved team resolves too; `ref` is always its current one.
  * Trashed and archived issues resolve too (to read, restore or unarchive them); `liveIssue` is for everything that changes one.
  */
-function issueRef(
-  a: Actor,
-  identifier: unknown,
-): { id: number; workspace: string; deleted_at: string | null; archived_at: string | null; ref: string; team: TeamRef } {
+function issueRef(a: Actor, identifier: unknown) {
   const match = typeof identifier === "string" ? /^([a-z]{2,5})-(\d+)$/i.exec(identifier.trim()) : null;
   if (!match) throw new AppError(`Invalid issue identifier "${identifier}" (expected e.g. BRD-12)`);
   const key = match[1]!.toUpperCase();
   const number = Number(match[2]);
   const id = findIssue(requestWorkspace(a), key, number, seenBy(a));
   if (id === null) throw new AppError(`Issue ${key}-${number} not found`, 404);
-  const row = db
-    .query<{ workspace: string; deleted_at: string | null; archived_at: string | null; team_id: number; key: string; number: number }, [number]>(
-      "SELECT t.workspace, i.deleted_at, i.archived_at, i.team_id, t.key, i.number FROM issues i JOIN teams t ON t.id = i.team_id WHERE i.id = ?",
+  const { team_id, team_key, ...row } = db
+    .query<{ workspace: string; deleted_at: string | null; archived_at: string | null; ref: string; team_id: number; team_key: string }, [number]>(
+      `SELECT t.workspace, i.deleted_at, i.archived_at, ${ident("t", "i")} AS ref, i.team_id, t.key AS team_key FROM issues i JOIN teams t ON t.id = i.team_id WHERE i.id = ?`,
     )
     .get(id)!;
-  return {
-    id,
-    workspace: row.workspace,
-    deleted_at: row.deleted_at,
-    archived_at: row.archived_at,
-    ref: `${row.key}-${row.number}`,
-    team: { id: row.team_id, key: row.key },
-  };
+  return { id, ...row, team: { id: team_id, key: team_key } };
 }
 
 /** An issue that isn't in the trash or archived: either one is read-only, nothing else. */
@@ -1836,7 +1817,7 @@ export function createIssue(a: Actor, rawInput: IssueInput): Issue {
       .query<{ id: number }, SQLQueryBindings[]>(`INSERT INTO issues (${names.join(", ")}) VALUES (${names.map(() => "?").join(", ")}) RETURNING id`)
       .get(...Object.values(row))!;
     joinProject(inProject.project_id, team.id);
-    const created = setIssueLabels(id, team.workspace, team, labels, time);
+    const created = setLabels("issue", id, team.workspace, team, labels, time);
     setBlockers(id, blockers, null); // a new issue has none yet
     setRelated(id, related, time, null);
     setDuplicate(id, duplicate, time);
@@ -1949,7 +1930,7 @@ export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Is
     db.query(`UPDATE issues SET ${assignments.join(", ")} WHERE id = ?`).run(...Object.values(cols), time, time, id);
     // A moved issue keeps its project and milestone; its new team joins the project.
     joinProject((cols.project_id ?? before.project_id) as number | null, team.id);
-    const created = labels ? setIssueLabels(id, workspace, team, labels, time) : [];
+    const created = labels ? setLabels("issue", id, workspace, team, labels, time) : [];
     if (blockers) setBlockers(id, blockers, seen);
     if (relatedTo) for (const r of setRelated(id, relatedTo, time, seen)) related.add(r);
     if (duplicate !== undefined) for (const r of setDuplicate(id, duplicate, time)) related.add(r);
@@ -2483,11 +2464,12 @@ function resolveLabels(workspace: string, team: TeamRef, names: string[], time: 
 /** Whose own label this is, for an error: a private team goes unnamed (its key would say it exists). */
 const ownerOf = (l: LabelRow) => (l.team_private ? "another team" : `team ${l.team_key}`);
 
-/** Replaces an issue's labels (see resolveLabels), in the caller's transaction. Returns the labels it created. */
-function setIssueLabels(issueId: number, workspace: string, team: TeamRef, names: string[], time: string): number[] {
+/** Replaces an issue's or template's labels (see resolveLabels), in the caller's transaction. Returns the labels it created. */
+function setLabels(owner: "issue" | "template", ownerId: number, workspace: string, team: TeamRef, names: string[], time: string): number[] {
+  const [table, column] = owner === "issue" ? ["issue_labels", "issue_id"] : ["issue_template_labels", "template_id"];
   const { ids, created } = resolveLabels(workspace, team, names, time);
-  db.query("DELETE FROM issue_labels WHERE issue_id = ?").run(issueId);
-  for (const id of ids) db.query("INSERT INTO issue_labels (issue_id, label_id) VALUES (?, ?)").run(issueId, id);
+  db.query(`DELETE FROM ${table} WHERE ${column} = ?`).run(ownerId);
+  for (const id of ids) db.query(`INSERT INTO ${table} (${column}, label_id) VALUES (?, ?)`).run(ownerId, id);
   return created;
 }
 
