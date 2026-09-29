@@ -951,7 +951,7 @@ export function createTemplate(a: Actor, input: IssueTemplateInput): IssueTempla
         "INSERT INTO issue_templates (team_id, name, title, description, status, priority, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
       )
       .get(team.id, name, title, description, status, priority, time, time)!;
-    return { id, created: setLabels("template", id, team.workspace, team, labels, time) };
+    return { id, created: setLabels(a, "template", id, team.workspace, team, labels, time) };
   })();
   changed("team", team.workspace, team.key);
   for (const labelId of created) changed("label", team.workspace, String(labelId));
@@ -970,7 +970,7 @@ export function updateTemplate(a: Actor, id: unknown, patch: IssueTemplatePatch)
   const time = now();
   const created = db.transaction(() => {
     db.query("UPDATE issue_templates SET name = ?, title = ?, description = ?, status = ?, priority = ?, updated_at = ? WHERE id = ?").run(name, title, description, status, priority, time, row.id);
-    return patch.labels === undefined ? [] : setLabels("template", row.id, row.workspace, team, checkLabels(patch.labels), time);
+    return patch.labels === undefined ? [] : setLabels(a, "template", row.id, row.workspace, team, checkLabels(patch.labels), time);
   })();
   changed("team", row.workspace, row.team_key);
   for (const labelId of created) changed("label", row.workspace, String(labelId));
@@ -1817,7 +1817,7 @@ export function createIssue(a: Actor, rawInput: IssueInput): Issue {
       .query<{ id: number }, SQLQueryBindings[]>(`INSERT INTO issues (${names.join(", ")}) VALUES (${names.map(() => "?").join(", ")}) RETURNING id`)
       .get(...Object.values(row))!;
     joinProject(inProject.project_id, team.id);
-    const created = setLabels("issue", id, team.workspace, team, labels, time);
+    const created = setLabels(a, "issue", id, team.workspace, team, labels, time);
     setBlockers(id, blockers, null); // a new issue has none yet
     setRelated(id, related, time, null);
     setDuplicate(id, duplicate, time);
@@ -1930,7 +1930,7 @@ export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Is
     db.query(`UPDATE issues SET ${assignments.join(", ")} WHERE id = ?`).run(...Object.values(cols), time, time, id);
     // A moved issue keeps its project and milestone; its new team joins the project.
     joinProject((cols.project_id ?? before.project_id) as number | null, team.id);
-    const created = labels ? setLabels("issue", id, workspace, team, labels, time) : [];
+    const created = labels ? setLabels(a, "issue", id, workspace, team, labels, time) : [];
     if (blockers) setBlockers(id, blockers, seen);
     if (relatedTo) for (const r of setRelated(id, relatedTo, time, seen)) related.add(r);
     if (duplicate !== undefined) for (const r of setDuplicate(id, duplicate, time)) related.add(r);
@@ -2407,15 +2407,16 @@ function insertLabel(workspace: string, l: { teamId: number | null; parentId: nu
 /**
  * An issue's labels from names, in its workspace, case-insensitively: a label's path ("Bug", "Type/Bug"), else a bare
  * name of one grouped label usable here ("Bug" for Type/Bug), else a new workspace label (Group/Label: in that group,
- * found or created, in its scope). Never a group, another team's own label, or two labels of one group (400). Returns
- * the label ids, and the ids of the labels it created.
+ * found or created, in its scope). Never a group, another team's own label, or two labels of one group (400), and never
+ * a new workspace label for a guest (403). Returns the label ids, and the ids of the labels it created.
  */
-function resolveLabels(workspace: string, team: TeamRef, names: string[], time: string): { ids: number[]; created: number[] } {
+function resolveLabels(workspace: string, team: TeamRef, names: string[], time: string, guest: boolean): { ids: number[]; created: number[] } {
   const all = workspaceLabels(workspace);
   const created: number[] = [];
   const usable = (l: LabelRow) => l.team_id === null || l.team_id === team.id;
   const byPath = (path: string) => all.find((l) => fold(l.path) === fold(path));
   const create = (name: string, group: LabelRow | null, isGroup = false) => {
+    if (guest && !group?.team_id) throw new AppError("Guests can't create workspace labels", 403);
     const id = insertLabel(workspace, { teamId: group?.team_id ?? null, parentId: group?.id ?? null, name: capLength(name, "label"), isGroup }, time);
     created.push(id);
     const row = db.query<LabelRow, [number]>(`${LABEL_SELECT} WHERE l.id = ?`).get(id)!;
@@ -2458,9 +2459,9 @@ function resolveLabels(workspace: string, team: TeamRef, names: string[], time: 
 const ownerOf = (l: LabelRow) => (l.team_private ? "another team" : `team ${l.team_key}`);
 
 /** Replaces an issue's or template's labels (see resolveLabels), in the caller's transaction. Returns the labels it created. */
-function setLabels(owner: "issue" | "template", ownerId: number, workspace: string, team: TeamRef, names: string[], time: string): number[] {
+function setLabels(a: Actor, owner: "issue" | "template", ownerId: number, workspace: string, team: TeamRef, names: string[], time: string): number[] {
   const [table, column] = owner === "issue" ? ["issue_labels", "issue_id"] : ["issue_template_labels", "template_id"];
-  const { ids, created } = resolveLabels(workspace, team, names, time);
+  const { ids, created } = resolveLabels(workspace, team, names, time, isGuest(a, workspace));
   db.query(`DELETE FROM ${table} WHERE ${column} = ?`).run(ownerId);
   for (const id of ids) db.query(`INSERT INTO ${table} (${column}, label_id) VALUES (?, ?)`).run(ownerId, id);
   return created;

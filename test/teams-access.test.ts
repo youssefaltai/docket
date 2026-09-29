@@ -417,6 +417,23 @@ describe("guests work in their teams but set nothing up", () => {
     expect((await gil.api("DELETE", "/api/teams/WEB/members/gil")).status).toBe(200);
     expect(await ok(gil.api("GET", "/api/teams"))).toEqual([]);
   });
+
+  test("naming an unknown label on an issue doesn't make a workspace label for a guest (DKT-41)", async () => {
+    const labels = () => s.sql("SELECT COUNT(*) AS n FROM labels")[0].n;
+    const before = labels();
+    const made = await gus.api("POST", "/api/issues", { team: "WEB", title: "Guest labelled", labels: ["guest-made"] });
+    expect([made.status, made.body.error]).toEqual([403, "Guests can't create workspace labels"]);
+    expect(s.sql("SELECT COUNT(*) AS n FROM issues WHERE title = 'Guest labelled'")[0].n).toBe(0);
+    expect((await gus.api("POST", "/api/issues", { team: "WEB", title: "Guest grouped", labels: ["Guestgroup/x"] })).status).toBe(403);
+    const issue = await create(gus, { team: "WEB", title: "Guest issue" });
+    expect((await gus.api("PATCH", `/api/issues/${issue.id}`, { labels: ["guest-made"] })).status).toBe(403);
+    await expect(s.as("gus", "bearer").tool("update_issue", { id: issue.id, labels: ["guest-mcp"] })).rejects.toThrow("Guests can't create workspace labels");
+    expect(labels()).toBe(before);
+    // Labels that exist are theirs to use, and naming one in their team's own group makes it there.
+    await ok(s.api("POST", "/api/labels", { name: "known" }), 201);
+    await ok(s.api("POST", "/api/labels", { name: "Area", isGroup: true, team: "WEB" }), 201);
+    expect((await ok(gus.api("PATCH", `/api/issues/${issue.id}`, { labels: ["known", "Area/frontend"] }))).labels.sort()).toEqual(["Area/frontend", "known"]);
+  });
 });
 
 describe("what moves with an issue or doc out of a private team", () => {
