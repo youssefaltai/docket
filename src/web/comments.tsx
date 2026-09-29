@@ -273,11 +273,11 @@ function HistoryLine({ line, team, projects }: { line: Line; team: string; proje
   const { teams } = useApp();
   const statusOf = useStatusOf();
   // A status from before the issue moved team may be one only another team has: look it up there.
-  const has = (key: string) => (t: { key: string; statuses: { key: string }[] }) => t.statuses.some((s) => s.key === key);
   const look = (key: unknown) => {
     const k = String(key);
+    const has = (t: { statuses: { key: string }[] }) => t.statuses.some((s) => s.key === k);
     const own = teams?.find((t) => t.key === team);
-    return statusOf(own && has(k)(own) ? team : (teams?.find(has(k))?.key ?? team), k);
+    return statusOf(own && has(own) ? team : (teams?.find(has)?.key ?? team), k);
   };
   const moved = line.rows.find((r) => r.kind === "status" || r.kind === "claimed");
   const statusName = (key: unknown) => look(key).name;

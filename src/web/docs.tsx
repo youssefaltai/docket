@@ -354,7 +354,7 @@ export function DocPage({ slug }: { slug: string }) {
     }
   };
 
-  const shown = preview ? preview.content : doc.content;
+  const shown = preview?.content ?? doc.content;
 
   return (
     <>

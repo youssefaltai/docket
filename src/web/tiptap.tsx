@@ -4,10 +4,9 @@ import { Editor, Extension } from "@tiptap/core";
 import type { Node as PMNode } from "@tiptap/pm/model";
 import { Plugin, PluginKey, TextSelection, type EditorState } from "@tiptap/pm/state";
 import { Decoration, DecorationSet, type DecorationAttrs } from "@tiptap/pm/view";
-import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useReducer, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
-import { MENTION_PATTERN, mentionOf, type IssueSummary, type UserRef } from "../shared/types";
-import { useApp } from "./context";
+import { MENTION_PATTERN, mentionOf } from "../shared/types";
 import {
   MENTION_TRIGGER,
   MentionOption,
@@ -19,14 +18,13 @@ import {
   type EditorProps,
   type Typed,
 } from "./editor";
-import { useIssueIndex } from "./issueIndex";
+import { useChipSource, type ChipSource } from "./issueIndex";
 import { wsPath } from "./routing";
 import { admits, allowedHref, extensions, toMarkdown } from "./tiptapKit";
 import { cls } from "./util";
 
 // ---------- Chips: issue identifiers and @mentions, as the read view shows them. Decorations, never stored. ----------
 
-type ChipSource = { issue: (id: string) => IssueSummary | undefined; member: (username: string) => UserRef | undefined };
 const chipsKey = new PluginKey<DecorationSet>("chips");
 const IDENT = /\b[A-Z]{2,5}-\d+\b/g;
 const MENTIONS = new RegExp(MENTION_PATTERN, "giu");
@@ -74,18 +72,6 @@ const Chips = Extension.create<{ source: RefObject<ChipSource> }>({
     ];
   },
 });
-
-function useChipSource(): RefObject<ChipSource> {
-  const { teams, members } = useApp();
-  const index = useIssueIndex();
-  const source = useRef<ChipSource>(null!);
-  source.current = useMemo(() => {
-    const keys = new Set(teams?.map((t) => t.key));
-    const active = new Map(members.filter((m) => !m.suspendedAt).map((m) => [m.user.username, m.user]));
-    return { issue: (id) => (keys.has(id.slice(0, id.indexOf("-"))) ? index?.get(id) : undefined), member: (u) => active.get(u) };
-  }, [teams, index, members]);
-  return source;
-}
 
 // ---------- The / menu ----------
 
@@ -185,7 +171,9 @@ export function Rich(props: EditorProps & { onReject: () => void }) {
   latest.current = props;
   const held = useRef(props.value); // the value the editor holds: what it was given, or last handed out
   const given = useRef({ value: props.value, markdown: "" }); // the last value given, and how the editor writes it
-  const source = useChipSource();
+  const chipSource = useChipSource();
+  const source = useRef(chipSource);
+  source.current = chipSource;
   const keys = useRef<(event: KeyboardEvent) => boolean>(() => false);
   const drop = useDropHighlight();
 
@@ -252,7 +240,7 @@ export function Rich(props: EditorProps & { onReject: () => void }) {
   // New issues or members: recompute the chips.
   useEffect(() => {
     editor?.view.dispatch(editor.state.tr.setMeta(chipsKey, true));
-  }, [editor, source.current]);
+  }, [editor, chipSource]);
 
   const focused = !!editor?.isFocused;
   const mentionTyped = editor && focused ? typedAt(editor.state, MENTION_TRIGGER) : null;
