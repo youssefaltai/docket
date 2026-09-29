@@ -34,7 +34,6 @@ export interface Actor {
   scope: ApiKeyScope; // an API key's scope; sessions can write
   sessionId: number | null;
   keyId: number | null;
-  chat?: boolean; // a chat key: the chat proxy's, for one browser session
 }
 
 // --- Secrets ---
@@ -194,8 +193,7 @@ export function me(a: Actor): Me {
     .all(a.id)
     .filter((w) => a.workspaces.has(w.key))
     .map((w) => ({ key: w.key, name: w.name, role: w.role, you: toRef({ ...w, name: w.member_name }) }));
-  const credential = a.sessionId !== null ? "session" : a.chat ? "chat" : "key";
-  return { user: { ...toUser(a.id, activeWorkspace(a)), id: a.id }, workspaces, credential, chat: !!process.env.CHAT_URL };
+  return { user: { ...toUser(a.id, activeWorkspace(a)), id: a.id }, workspaces, credential: a.sessionId !== null ? "session" : "key" };
 }
 
 /** Your account's email; your name and username are per workspace (`updateProfile`). */
@@ -261,24 +259,24 @@ export function sessionActor(token: string): Actor | null {
 }
 
 /**
- * The actor behind an API key (`dk_…`), or null if it's unknown, revoked or expired, or its owner isn't an
+ * The actor behind an API key (`dk_…`), or null if it's unknown or revoked, or its owner isn't an
  * active member of the key's workspace. A key acts only in its own workspace.
  */
 export function keyActor(token: string): Actor | null {
-  type Row = AccountRow & { key_id: number; scope: ApiKeyScope; last_used_at: string | null; session_id: number | null; key_workspace: string };
+  type Row = AccountRow & { key_id: number; scope: ApiKeyScope; last_used_at: string | null; key_workspace: string };
   const row = db
-    .query<Row, [string, string]>(
-      `SELECT u.*, k.id AS key_id, k.scope, k.last_used_at, k.session_id, k.workspace AS key_workspace
+    .query<Row, [string]>(
+      `SELECT u.*, k.id AS key_id, k.scope, k.last_used_at, k.workspace AS key_workspace
        FROM api_keys k JOIN users u ON u.id = k.user_id
        JOIN workspace_members m ON m.user_id = k.user_id AND m.workspace = k.workspace AND m.suspended_at IS NULL
-       WHERE k.token_hash = ? AND k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at > ?)`,
+       WHERE k.token_hash = ? AND k.revoked_at IS NULL`,
     )
-    .get(hash(token), now());
+    .get(hash(token));
   if (!row) return null;
   if (!row.last_used_at || Date.now() - Date.parse(row.last_used_at) > TOUCH_MS) {
     db.query("UPDATE api_keys SET last_used_at = ? WHERE id = ?").run(now(), row.key_id);
   }
-  return { ...actorFor(row, { scope: row.scope, keyId: row.key_id }, row.key_workspace), chat: row.session_id !== null };
+  return actorFor(row, { scope: row.scope, keyId: row.key_id }, row.key_workspace);
 }
 
 // --- Access checks (used by every data module) ---
@@ -514,7 +512,7 @@ export function listApiKeys(a: Actor): ApiKey[] {
   requireSession(a);
   return db
     .query<ApiKeyRow, [number]>(
-      "SELECT id, name, scope, workspace, created_at, last_used_at FROM api_keys WHERE user_id = ? AND revoked_at IS NULL AND session_id IS NULL ORDER BY id",
+      "SELECT id, name, scope, workspace, created_at, last_used_at FROM api_keys WHERE user_id = ? AND revoked_at IS NULL ORDER BY id",
     )
     .all(a.id)
     .map(toApiKey);
@@ -532,76 +530,10 @@ export function createApiKey(a: Actor, input: { name?: unknown; scope?: unknown;
 export function revokeApiKey(a: Actor, id: unknown) {
   requireSession(a);
   const row = db
-    .query("UPDATE api_keys SET revoked_at = ? WHERE id = ? AND user_id = ? AND revoked_at IS NULL AND session_id IS NULL RETURNING id")
+    .query("UPDATE api_keys SET revoked_at = ? WHERE id = ? AND user_id = ? AND revoked_at IS NULL RETURNING id")
     .get(now(), Number(id), a.id);
   if (!row) throw new AppError(`API key ${id} not found`, 404);
   revoked({ userId: a.id, keyId: Number(id) });
-}
-
-// --- Chat keys: what the chat proxy hands the chat service to read Docket as this person ---
-
-const CHAT_KEY_TTL_MS = Number(process.env.DOCKET_CHAT_KEY_TTL_MS) || 30 * 60 * 1000;
-// Tokens are stored only hashed, so the one in use lives here, by `${session}:${workspace}`; a restart just mints another.
-const chatKeys = new Map<string, { token: string; expiresAt: number }>();
-
-/** Deletes keys past their expiry (and forgets chat keys for sessions that are gone). */
-export function purgeExpiredKeys() {
-  db.query("DELETE FROM api_keys WHERE expires_at <= ?").run(now());
-  for (const [slot, held] of chatKeys) if (held.expiresAt <= Date.now()) chatKeys.delete(slot);
-}
-purgeExpiredKeys();
-
-/**
- * A read key for the chat service, bound to this browser session and the request's workspace: reused while
- * it has most of its life left (so a long answer never outlives it), then replaced. It dies with the session
- * (sign-out, revoke) or with suspension from that workspace.
- */
-export function chatKey(a: Actor): string {
-  if (a.sessionId === null) throw new AppError("The assistant works from the web app, not with an API key", 403);
-  const workspace = requestWorkspace(a);
-  const slot = `${a.sessionId}:${workspace}`;
-  const held = chatKeys.get(slot);
-  if (held && held.expiresAt - Date.now() > (CHAT_KEY_TTL_MS * 2) / 3) {
-    // Still ours? Session ids can be reused after a delete, and the key goes with its session.
-    const live = db
-      .query("SELECT 1 FROM api_keys WHERE token_hash = ? AND session_id = ? AND user_id = ? AND workspace = ? AND expires_at > ?")
-      .get(hash(held.token), a.sessionId, a.id, workspace, now());
-    if (live) return held.token;
-  }
-  const { token, expiresAt } = mintChatKey(a, workspace, "read", CHAT_KEY_TTL_MS);
-  chatKeys.set(slot, { token, expiresAt });
-  return token;
-}
-
-const CHAT_WRITE_KEY_TTL_MS = 5 * 60 * 1000;
-
-/**
- * A write key for one change the person just confirmed in the assistant: minted for that request alone, and
- * `drop` deletes it when the answer ends. Its 5 minutes are only a backstop; it never outlives the session.
- */
-export function chatWriteKey(a: Actor): { token: string; drop: () => void } {
-  if (a.sessionId === null) throw new AppError("The assistant works from the web app, not with an API key", 403);
-  const { token, id } = mintChatKey(a, requestWorkspace(a), "write", CHAT_WRITE_KEY_TTL_MS);
-  return {
-    token,
-    drop: () => {
-      db.query("DELETE FROM api_keys WHERE id = ?").run(id);
-      revoked({ userId: a.id, keyId: id }); // and any socket opened with it
-    },
-  };
-}
-
-function mintChatKey(a: Actor, workspace: string, scope: ApiKeyScope, ttl: number) {
-  purgeExpiredKeys();
-  const token = newApiToken();
-  const expiresAt = Date.now() + ttl;
-  const { id } = db
-    .query<{ id: number }, [number, string, ApiKeyScope, string, string, string, number]>(
-      `INSERT INTO api_keys (user_id, workspace, name, scope, token_hash, created_at, expires_at, session_id)
-       VALUES (?, ?, 'Chat (automatic)', ?, ?, ?, ?, ?) RETURNING id`,
-    )
-    .get(a.id, workspace, scope, hash(token), now(), new Date(expiresAt).toISOString(), a.sessionId!)!;
-  return { token, expiresAt, id };
 }
 
 // --- One-time codes: invites and sign-in links ---
@@ -916,7 +848,7 @@ const activeAdmins = (workspace: string) =>
 
 /**
  * Suspends a membership. Access to this workspace ends at once (membership is checked on every request,
- * and their sockets reconnect without it), and their keys here die: API keys, agent token, chat keys.
+ * and their sockets reconnect without it), and their keys here die: API keys and agent token.
  * If it was their last active membership, their sessions and unused sign-in codes go too, so reinstating
  * gives a clean account that signs in again. Other workspaces' keys are never touched, so one workspace's
  * admin can't cut anyone off from the others.

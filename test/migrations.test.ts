@@ -177,7 +177,7 @@ const SCHEMA_V3 = [
 const hash = (secret: string) => createHash("sha256").update(secret).digest("hex");
 const ADMIN_KEY = `dk_${"a".repeat(64)}`;
 const AGENT_KEY = `dk_${"b".repeat(64)}`;
-const CHAT_KEY = `dk_${"c".repeat(64)}`;
+const SESSION_KEY = `dk_${"c".repeat(64)}`;
 const GONE_KEY = `dk_${"d".repeat(64)}`;
 const SESSION = "e".repeat(64);
 
@@ -207,7 +207,7 @@ beforeAll(async () => {
   db.run(`INSERT INTO api_keys (user_id, name, scope, token_hash, created_at, expires_at, session_id) VALUES
     (1, 'laptop', 'write', '${hash(ADMIN_KEY)}', '${t(1)}', NULL, NULL),
     (2, 'agent token', 'write', '${hash(AGENT_KEY)}', '${t(6)}', NULL, NULL),
-    (1, 'Chat (automatic)', 'read', '${hash(CHAT_KEY)}', '${t(9)}', '${later}', 1),
+    (1, 'Session key', 'read', '${hash(SESSION_KEY)}', '${t(9)}', '${later}', 1),
     (3, 'old', 'write', '${hash(GONE_KEY)}', '${t(7)}', NULL, NULL)`);
   db.run(`INSERT INTO teams (key, workspace, name, created_at, updated_at, next_number) VALUES
     ('ZET', 'zeta', 'Zeta team', '${t(0)}', '${t(0)}', 2), ('SID', 'side', 'Side team', '${t(5)}', '${t(5)}', 2)`);
@@ -233,8 +233,8 @@ test("a person's key lands in the workspace they joined first, an agent's in its
   expect((await s.with({ token: AGENT_KEY }).api("GET", "/api/issues/SID-1")).body.title).toBe("Side issue");
 });
 
-test("chat keys are gone, and so are keys whose owner has no active workspace", async () => {
-  expect(await workspacesOf({ token: CHAT_KEY })).toBe(401);
+test("session-bound keys are gone, and so are keys whose owner has no active workspace", async () => {
+  expect(await workspacesOf({ token: SESSION_KEY })).toBe(401);
   expect(await workspacesOf({ token: GONE_KEY })).toBe(401);
 });
 
@@ -7413,10 +7413,9 @@ describe("migration 26", () => {
   });
 });
 
-describe("migration 27", () => {
-  // Migrations 1-26 exactly as they shipped (src/server/db.ts): migration 26's SCHEMA_V25 fixture above (1-25), then
-  // migration 26's SQL (the GitHub integration). Frozen: never edit this fixture.
-  const SCHEMA_V26 = [
+// Migrations 1-26 exactly as they shipped (src/server/db.ts): migration 26's SCHEMA_V25 fixture above (1-25), then
+// migration 26's SQL (the GitHub integration). Frozen: never edit this fixture.
+const SCHEMA_V26 = [
     ...SCHEMA_V3,
     `
   ALTER TABLE api_keys ADD COLUMN workspace TEXT REFERENCES workspaces(key) ON DELETE CASCADE;
@@ -7845,7 +7844,9 @@ describe("migration 27", () => {
     PRIMARY KEY (issue_id, url)
   );
   `,
-  ];
+];
+
+describe("migration 27", () => {
   const t = (minutes: number) => new Date(Date.UTC(2026, 0, 1, 0, minutes)).toISOString();
   const rows = (file: string, sql: string) => {
     const db = new Database(file, { readonly: true });
@@ -7956,5 +7957,90 @@ describe("migration 27", () => {
     const bob = server.as("bob", "cookie", "acme");
     expect((await bob.api("GET", "/api/teams")).body.map((t: { key: string }) => t.key)).toEqual(["PLN"]);
     expect((await bob.api("GET", "/api/issues/PLN-1")).status).toBe(200);
+  });
+});
+
+// Migration 29 (session-bound keys gone) on a database written under schema 28: those keys are deleted and stop
+// working; every other key, and the session they were bound to, still works.
+describe("migration 29", () => {
+  // Migrations 1-28 exactly as they shipped (src/server/db.ts): SCHEMA_V26 above, then 27 (teams) and 28 (push).
+  // Frozen: never edit this fixture.
+  const SCHEMA_V28 = [
+    ...SCHEMA_V26,
+    `
+  CREATE TABLE team_members (
+    team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (team_id, user_id)
+  );
+  CREATE INDEX team_members_user ON team_members(user_id);
+  ALTER TABLE teams ADD COLUMN private INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0, 1));
+  ALTER TABLE codes ADD COLUMN teams TEXT; -- an invite's teams: JSON array of team ids
+  ALTER TABLE attachments ADD COLUMN team_id INTEGER REFERENCES teams(id);
+  INSERT INTO team_members (team_id, user_id, created_at)
+    SELECT t.id, m.user_id, MAX(t.created_at, m.created_at) FROM teams t JOIN workspace_members m ON m.workspace = t.workspace;
+  `,
+    `
+  CREATE TABLE push_subscriptions (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    endpoint TEXT NOT NULL UNIQUE, -- the push service's URL for this device
+    p256dh TEXT NOT NULL,          -- the device's public key (base64url): payloads are encrypted to it
+    auth TEXT NOT NULL,            -- the device's auth secret (base64url)
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX push_subscriptions_user ON push_subscriptions(user_id);
+  CREATE INDEX push_subscriptions_session ON push_subscriptions(session_id);
+  CREATE TABLE vapid_keys (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    public_key TEXT NOT NULL,
+    private_key TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  `,
+  ];
+  const t = (minutes: number) => new Date(Date.UTC(2026, 0, 1, 0, minutes)).toISOString();
+  const later = new Date(Date.now() + 20 * 60 * 1000).toISOString();
+  const KEY = `dk_${"1".repeat(64)}`;
+  const BOUND_READ = `dk_${"2".repeat(64)}`;
+  const BOUND_WRITE = `dk_${"3".repeat(64)}`;
+  const COOKIE = "4".repeat(64);
+
+  let file: string;
+  let server: TestServer;
+  beforeAll(async () => {
+    file = join(dir, "v28", "docket.db");
+    mkdirSync(dirname(file), { recursive: true });
+    const db = new Database(file, { create: true });
+    for (const sql of SCHEMA_V28) db.run(sql);
+    db.run("PRAGMA user_version = 28");
+    db.run(`INSERT INTO users (id, kind, email, created_at, system) VALUES (1, 'person', NULL, '${t(0)}', 0)`);
+    db.run(`INSERT INTO workspaces (key, name, created_at, updated_at) VALUES ('acme', 'Acme', '${t(0)}', '${t(0)}')`);
+    db.run(`INSERT INTO workspace_members (workspace, user_id, username, name, role, created_at) VALUES ('acme', 1, 'alice', 'Alice', 'admin', '${t(0)}')`);
+    db.run(`INSERT INTO sessions (id, user_id, token_hash, created_at, last_seen_at, user_agent, ip)
+      VALUES (1, 1, '${hash(COOKIE)}', '${t(0)}', '${new Date().toISOString()}', 'test', '127.0.0.1')`);
+    db.run(`INSERT INTO api_keys (user_id, workspace, name, scope, token_hash, created_at, expires_at, session_id) VALUES
+      (1, 'acme', 'laptop', 'write', '${hash(KEY)}', '${t(1)}', NULL, NULL),
+      (1, 'acme', 'Bound (automatic)', 'read', '${hash(BOUND_READ)}', '${t(2)}', '${later}', 1),
+      (1, 'acme', 'Bound (automatic)', 'write', '${hash(BOUND_WRITE)}', '${t(3)}', '${later}', 1)`);
+    db.close();
+    server = await startServer({ setup: false, env: { DATABASE_PATH: file } });
+  });
+  afterAll(() => server.stop());
+
+  test("only the plain key is left", () => {
+    const db = new Database(file, { readonly: true });
+    expect(db.query("SELECT name, session_id FROM api_keys").all()).toEqual([{ name: "laptop", session_id: null }]);
+    expect((db.query("PRAGMA user_version").get() as { user_version: number }).user_version).toBeGreaterThanOrEqual(29);
+    db.close();
+  });
+
+  test("session-bound keys stop working; the plain key and the session still work", async () => {
+    for (const token of [BOUND_READ, BOUND_WRITE]) expect((await server.with({ token }).api("GET", "/api/me")).status).toBe(401);
+    expect((await server.with({ token: KEY }).api("GET", "/api/me")).body).toMatchObject({ credential: "key" });
+    const session = server.with({ cookie: `docket_session=${COOKIE}` }, "cookie");
+    expect((await session.api("GET", "/api/api-keys")).body.map((k: { name: string }) => k.name)).toEqual(["laptop"]);
   });
 });

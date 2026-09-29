@@ -139,13 +139,12 @@ export interface WorkspaceMember {
 
 /** GET /api/me. */
 export interface Me {
-  // id: the account, which never changes, for services that key data by person (docket-chat); ids stay internal
+  // id: the account, which never changes, for API clients that key data by person; ids stay internal
   // everywhere else. username and name: yours in the request's workspace (a key's own, or X-Docket-Workspace);
   // for a session naming none, your default profile (the membership you joined most recently).
   user: User & { id: number };
   workspaces: { key: string; name: string; role: Role; you: UserRef }[]; // you: how you're known there; for a key, only its own workspace
-  credential: "session" | "key" | "chat"; // what this request came with; "chat": a key the chat proxy minted
-  chat: boolean; // the assistant is set up (CHAT_URL): show its panel
+  credential: "session" | "key"; // what this request came with
 }
 
 export interface Session {

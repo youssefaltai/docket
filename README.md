@@ -78,28 +78,6 @@ Back up with `./backup.sh`. Run it from a nightly cron: it writes a consistent s
 </details>
 
 <details>
-<summary><b>Add the assistant</b></summary>
-
-The assistant is a separate service, docket-chat, next to Docket on the same host. Docket's compose creates a Docker network, `docket`, and docket-chat joins it. Docket reaches it at `http://docket-chat:7110`, and it reaches Docket at `http://docket:7100`. Both stay published on `127.0.0.1` only.
-
-```sh
-cd /opt/apps/docket
-echo 'CHAT_URL=http://docket-chat:7110' >> .env
-docker compose up -d                       # Docket first: it creates the network
-cd /opt/apps/docket-chat                   # then docket-chat (see its README)
-mkdir -p data && sudo chown -R 1000:1000 data
-docker compose up -d --build
-```
-
-Back up its conversations nightly with Docket's script:
-
-```
-19 3 * * * /opt/apps/docket/backup.sh /opt/apps/docket-chat docket-chat /data/chat.db >> $HOME/docket-backup.log 2>&1
-```
-
-</details>
-
-<details>
 <summary><b>Connect GitHub</b></summary>
 
 Pull requests and commits link to the issues they mention, and move them along: a branch like `ana/dkt-12-fix-login` (copy it from the issue page, or press `⌘/Ctrl+Shift+.` there), the identifier in the PR title, or `Fixes DKT-12` in its description. Opening the PR moves the issue to In Review, and merging it to Done. `Part of DKT-12` links without moving it.
@@ -128,7 +106,7 @@ Docket copies Linear's model: everyone signs in, each workspace has its own memb
 
 - **People** join with an invite link (**Settings → Workspace → Invite**): whoever opens it creates an account, or joins with the one they're signed in to. There are no passwords and no email: to sign in on a new device, open **Settings → Account → Sign in on another device** on one where you're signed in (no one else can sign you in, not even an admin). Links work once and expire after 15 minutes.
 - **Agents** are added by an admin (**Settings → Workspace → Add agent**) and get a token, shown once. They write under their own name, and claiming an issue makes them its delegate while a person stays the assignee.
-- **Scripts** use personal API keys (**Settings → Account → API keys**), read-only or read-write. Each key works in the workspace it was made in, and only there. Keys can't create other keys, workspaces, invites or sign-in links: that takes the web app.
+- **Scripts** use personal API keys (**Settings → Account → API keys**), read-only or read-write. Each key works in the workspace it was made in, and only there. Keys can't create other keys, workspaces, invites or sign-in links: that takes the web app. The optional standalone assistant, docket-chat, is one such client: it talks to Docket only through API keys.
 - **Removing someone** is suspending them: their access to the workspace ends at once, their API keys there stop working, and their history keeps their name. If it was their only workspace, their sessions are deleted too, and reinstating them means they sign in again.
 
 Serve it over HTTPS anywhere but localhost. Give each Docket its own hostname: browsers share cookies across ports, so two Dockets on one host (say `localhost:7100` and `localhost:7200`) sign each other out, and any other app on that host can read the session cookie.
@@ -147,8 +125,6 @@ Serve it over HTTPS anywhere but localhost. Give each Docket its own hostname: b
 | `DOCKET_SETUP_CODE` | random, printed at startup while there are no users; set it to fix the code (tests, automation) |
 | `DOCKET_URL` | `http://localhost:$PORT`; the public address `sign-in-link` puts in links, and push notifications give as their contact (when https) |
 | `DOCKET_HOSTS` | unset — extra hostnames (comma-separated) allowed in the `Host` header, besides `localhost`, e.g. `docket.example.com,vps.tailnet.ts.net`. Needed when serving over Tailscale or another hostname. |
-| `CHAT_URL` | unset — the docket-chat assistant's address: `http://docket-chat:7110` in Docker (see Add the assistant). Set, the web app shows the assistant and proxies `/api/chat/*` to it; unset, both are off. |
-| `DOCKET_NETWORK` | `docket` — the Docker network docket-chat joins. Give a second Docket on the same host (a test instance) its own. |
 | `DOCKET_WEBHOOK_ALLOW_PRIVATE` | unset — `true` lets webhooks (Workspace settings) target private, loopback and link-local addresses and plain `http`, e.g. an agent runner on the same host or tailnet. Otherwise only public `https` endpoints. Set it only if every workspace admin may reach this server's network. |
 
 In Docker, set these in a `.env` file next to `docker-compose.yml` (see `.env.example`). `PORT` there only changes the host-side port mapping; the container always listens on `7100` internally.

@@ -180,15 +180,15 @@ const MIGRATIONS: (string | (() => void))[] = [
     AND id NOT IN (SELECT MIN(id) FROM users WHERE email IS NOT NULL GROUP BY lower(email));
   CREATE UNIQUE INDEX users_email ON users(lower(email)) WHERE email IS NOT NULL;
   `,
-  // Short-lived keys: past expires_at a key is dead, then purged. A chat key belongs to one browser session
-  // and goes with it (sign-out, revoke, suspension), so the chat service never outlives the person's access.
+  // Short-lived keys: past expires_at a key is dead, then purged. A session-bound key belongs to one browser
+  // session and goes with it (sign-out, revoke, suspension). Unused since migration 29.
   `
   ALTER TABLE api_keys ADD COLUMN expires_at TEXT;
   ALTER TABLE api_keys ADD COLUMN session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE;
   CREATE INDEX api_keys_expires ON api_keys(expires_at) WHERE expires_at IS NOT NULL;
   CREATE INDEX api_keys_session ON api_keys(session_id) WHERE session_id IS NOT NULL;
   `,
-  // Keys belong to one workspace, as in Linear: an API key, agent token or chat key acts only there.
+  // Keys belong to one workspace, as in Linear: an API key, agent token or session-bound key acts only there.
   `
   ALTER TABLE api_keys ADD COLUMN workspace TEXT REFERENCES workspaces(key) ON DELETE CASCADE;
   DELETE FROM api_keys WHERE session_id IS NOT NULL; -- chat keys: short-lived, minted again per workspace
@@ -742,6 +742,11 @@ const MIGRATIONS: (string | (() => void))[] = [
     private_key TEXT NOT NULL,
     created_at TEXT NOT NULL
   );
+  `,
+  // Docket no longer mints session-bound keys (migration 3's): delete any left. api_keys keeps the expires_at and
+  // session_id columns, unused (dropping a foreign-key column means rebuilding the table).
+  `
+  DELETE FROM api_keys WHERE session_id IS NOT NULL;
   `,
 ];
 

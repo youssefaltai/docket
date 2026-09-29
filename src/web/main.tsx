@@ -5,7 +5,6 @@ import type { CustomView, CustomViewInput, Inbox, IssueInput, Label, Team, Works
 import { api, connectionStore, setCurrentWorkspace, setOnAccessLost, setOnUnauthorized, store, subscribe } from "./api";
 import { auth, getMe, getYou, loadMe } from "./auth";
 import { syncPush } from "./push";
-import { ChatDock, ChatNavItem } from "./chat";
 import { CommandMenu, openCommandMenu } from "./commandmenu";
 import { DocPage, DocsView } from "./docs";
 import { InboxView } from "./inbox";
@@ -415,7 +414,6 @@ function App() {
             )}
             <Fragment key={currentKey}>{page}</Fragment>
           </main>
-          {getMe().chat && <ChatDock />}
         </div>
         {modal?.kind === "issue" && <NewIssueModal defaults={modal.defaults} onClose={() => setModal(null)} />}
         {modal?.kind === "doc" && <NewDocModal team={modal.team} project={modal.project} onClose={() => setModal(null)} />}
@@ -521,7 +519,6 @@ function Sidebar({ route, active, onSwitch }: { route: Route; active: string | n
             <span className="nav-label">Views</span>
           </Link>
         )}
-        {getMe().chat && <ChatNavItem />}
         {favorites.length > 0 && (
           <div className="nav-section">
             <span>Favorites</span>
