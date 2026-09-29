@@ -803,7 +803,7 @@ export const BUMPED_AT = "updated_at = CASE WHEN updated_at >= ? THEN strftime('
 export const exists = (table: string, column: string, value: string) => db.query(`SELECT 1 FROM ${table} WHERE ${column} = ?`).get(value) !== null;
 
 /** The longest text a field takes, in characters (a huge comment would freeze every viewer's page). */
-const MAX_LENGTH: Record<string, number> = { title: 500, name: 200, label: 200, body: 100_000, description: 100_000, content: 500_000 };
+const MAX_LENGTH: Record<string, number> = { title: 500, name: 200, "workspace name": 200, label: 200, body: 100_000, description: 100_000, content: 500_000 };
 
 export function capLength(text: string, field: string): string {
   const max = MAX_LENGTH[field];

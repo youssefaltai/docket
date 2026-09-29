@@ -99,6 +99,14 @@ test("each credential has its own rate limit: a burst, then 429 with Retry-After
   expect((await quiet.api("GET", "/api/me")).status).toBe(200);
 });
 
+test("a workspace name is capped at creation, as on rename (DKT-43)", async () => {
+  const wes = await s.user("wes");
+  const long = await wes.api("POST", "/api/workspaces", { name: "w".repeat(201), key: "wes" });
+  expect([long.status, long.body.error]).toEqual([400, "workspace name is too long: at most 200 characters"]);
+  expect((await wes.api("POST", "/api/workspaces", { name: "w".repeat(200), key: "wes" })).status).toBe(201);
+  expect((await wes.api("PATCH", "/api/workspaces/wes", { name: "w".repeat(201) })).status).toBe(400);
+});
+
 // Each on its own server: the limit is in memory, and draining the IP's bucket would slow the other tests.
 for (const via of ["bearer", "cookie"] as const) {
   test(`made-up ${via} credentials share the client IP's limit, not a bucket each (DKT-40)`, async () => {
