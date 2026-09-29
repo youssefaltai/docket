@@ -653,7 +653,7 @@ export interface Notification {
   actor: UserRef;
   issue: { id: string; title: string; status: string } | null; // id: identifier; status: a key of its team's workflow
   document: { slug: string; title: string } | null;
-  comment: { id: number; excerpt: string } | null; // first 200 characters, newlines as spaces; null once deleted
+  comment: { id: number; excerpt: string } | null; // first 200 characters as plain text, newlines as spaces; null once deleted
   status: string | null; // kind "status": the status key it moved to
   createdAt: string;
   readAt: string | null;

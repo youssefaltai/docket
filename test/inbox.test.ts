@@ -80,6 +80,25 @@ test("comments reach the other subscribers; a mention reaches its person once, a
   expect(sql("SELECT COUNT(*) AS n FROM notifications WHERE comment_id = ?", cid)[0].n).toBe(0);
 });
 
+test("an excerpt is the comment's text, without its markdown", async () => {
+  const issue = await create("Markdown", { assignee: "ana" });
+  const at = mark();
+  const body = [
+    "## Done",
+    "**Fixed** in [the PR](https://github.com/x/y/pull/1), see `auth.ts` ![shot](/api/attachments/1/a.png)",
+    "- one\n- [x] two",
+    "```ts\nconst a = 1 < 2;\n```",
+    "| a | b |\n|---|---|\n| 1 | 2 |",
+    "> quoted <b>bold</b><br>next\n\n<details><summary>Log</summary>\n\nboom\n</details>",
+  ].join("\n\n");
+  await comment(bob, issue.id, body);
+  const excerpt = "Done Fixed in the PR, see auth.ts shot one two const a = 1 < 2; a b 1 2 quoted bold next Log boom";
+  expect(await since(ana, at)).toEqual([["commented", "bob", issue.id, excerpt]]);
+  // Cut at 200 characters of text, not of markdown.
+  await comment(bob, issue.id, `[${"word ".repeat(50)}](https://example.com/${"x".repeat(300)})`);
+  expect((await since(ana, at))[1]![3]).toBe("word ".repeat(40).trim());
+});
+
 test("in_review, done and canceled tell the subscribers; other changes don't", async () => {
   const issue = await create("Ship", { delegate: "claude", assignee: "ana" });
   await comment(bob, issue.id, "Following");
