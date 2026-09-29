@@ -127,9 +127,7 @@ test("GET /api/locate finds which of your workspaces an old link meant: the olde
   await hidden.api("POST", "/api/teams", { key: "HID", name: "Hidden" });
   await hidden.api("POST", "/api/documents", { team: "HID", title: "Secret" });
   await hidden.api("POST", "/api/issues", { team: "HID", title: "Secret" });
-  for (const query of ["team=HID", "doc=secret", "issue=HID-1", "issue=BRD-99", "doc=nope", "issue=garbage"]) {
-    expect(await locate(query)).toBe(404);
-  }
+  for (const query of ["team=HID", "doc=secret", "issue=HID-1", "issue=BRD-99", "doc=nope", "issue=garbage"]) expect(await locate(query)).toBe(404);
   // A key searches only its own workspace.
   expect(await locate("team=BRD", s.as("ana", "bearer", "side"))).toBe("side");
   // Exactly one of issue, doc or team.

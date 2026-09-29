@@ -7,7 +7,6 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { startServer, type Caller, type TestServer } from "./server.ts";
 
 let s: TestServer;
-let ana: Caller;
 let bot: Caller;
 beforeAll(async () => {
   s = await startServer();
@@ -15,7 +14,7 @@ beforeAll(async () => {
   expect((await s.api("POST", "/api/teams", { key: "API", name: "Api" })).status).toBe(201);
   expect((await s.api("POST", "/api/workspaces", { name: "Side", key: "side" })).status).toBe(201);
   expect((await s.as("admin", "cookie", "side").api("POST", "/api/teams", { key: "SID", name: "Side" })).status).toBe(201);
-  ana = await s.user("ana");
+  await s.user("ana");
   bot = await s.agent("bot");
 });
 afterAll(() => s.stop());

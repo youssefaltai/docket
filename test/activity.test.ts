@@ -16,8 +16,7 @@ afterAll(() => s.stop());
 const create = async (title: string, extra: object = {}) => (await s.api("POST", "/api/issues", { team: "ACT", title, ...extra })).body;
 const activity = async (id: string) => (await s.api("GET", `/api/issues/${id}`)).body.activity as any[];
 /** The rows added since `before`, as [kind, actor, from, to]. */
-const added = async (id: string, before: any[]) =>
-  (await activity(id)).slice(before.length).map((r) => [r.kind, r.actor.username, r.from, r.to]);
+const added = async (id: string, before: any[]) => (await activity(id)).slice(before.length).map((r) => [r.kind, r.actor.username, r.from, r.to]);
 
 test("creating with an assignee and a delegate logs created, assignee and delegate by the creator", async () => {
   const issue = await create("Staffed", { assignee: "ana", delegate: "claude" });

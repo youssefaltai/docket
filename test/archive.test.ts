@@ -50,9 +50,7 @@ test("PATCH /api/teams/:key { autoArchiveDays } round-trips through GET /api/tea
   expect((await s.api("GET", "/api/teams")).body.find((t: any) => t.key === "ARC").autoArchiveDays).toBe(90);
 
   expect((await s.api("PATCH", "/api/teams/ARC", { autoArchiveDays: null })).body.autoArchiveDays).toBeNull();
-  for (const bad of [0, -5, 1.5, "30"]) {
-    expect((await s.api("PATCH", "/api/teams/ARC", { autoArchiveDays: bad })).status).toBe(400);
-  }
+  for (const bad of [0, -5, 1.5, "30"]) expect((await s.api("PATCH", "/api/teams/ARC", { autoArchiveDays: bad })).status).toBe(400);
   // No dedicated MCP tool for archiving/unarchiving by hand (REST-only): only update_team's autoArchiveDays.
   expect(await s.as("claude").tools()).not.toContain("archive_issue");
 });
