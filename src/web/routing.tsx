@@ -4,6 +4,7 @@ import type { AnchorHTMLAttributes, MouseEvent as ReactMouseEvent } from "react"
 import { useSyncExternalStore } from "react";
 import { RESERVED_WORKSPACE_KEYS } from "../shared/types";
 import { getCurrentWorkspace } from "./api";
+import { createStore } from "./util";
 
 export const MY_TABS = ["assigned", "created", "delegated", "subscribed"] as const;
 export type MyTab = (typeof MY_TABS)[number];
@@ -67,9 +68,8 @@ function parsePage(path: string): Page {
   return { view: team?.[2] || /^\/docs\/?$/.test(path) ? "docs" : "issues", team: key };
 }
 
-const routeListeners = new Set<() => void>();
-const emitRoute = () => routeListeners.forEach((l) => l());
-window.addEventListener("popstate", emitRoute);
+const pathname = createStore(location.pathname);
+window.addEventListener("popstate", () => pathname.set(location.pathname));
 
 /** Where Esc / breadcrumbs go back to from an issue, doc or project page; a new doc opens in edit mode. */
 export const nav = { lastList: "/", lastDocs: "/docs", lastProjects: "/projects", editDoc: "" };
@@ -87,18 +87,10 @@ export function wsPath(path: string): string {
 export function navigate(path: string, replace = false) {
   const to = wsPath(path);
   if (to !== location.pathname + location.search) history[replace ? "replaceState" : "pushState"](null, "", to);
-  emitRoute();
+  pathname.set(location.pathname);
 }
 
-export function usePath() {
-  return useSyncExternalStore(
-    (cb) => {
-      routeListeners.add(cb);
-      return () => void routeListeners.delete(cb);
-    },
-    () => location.pathname,
-  );
-}
+export const usePath = () => useSyncExternalStore(pathname.subscribe, pathname.get);
 
 /** A left click with no modifier keys, which should route client-side (others open tabs, windows…). */
 export const isPlainClick = (e: ReactMouseEvent) =>

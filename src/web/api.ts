@@ -48,6 +48,7 @@ import type {
   WorkspaceMember,
   WorkspacePatch,
 } from "../shared/types";
+import { createStore } from "./util";
 
 export class HttpError extends Error {
   status: number;
@@ -69,17 +70,8 @@ export const setOnAccessLost = (fn: () => void) => (onAccessLost = fn);
 
 /** "reconnecting": the live connection dropped and the retry hasn't landed yet. */
 export type Connection = "online" | "offline" | "reconnecting";
-let connection: Connection = navigator.onLine ? "online" : "offline";
-const connectionListeners = new Set<() => void>();
-function setConnection(c: Connection) {
-  if (c === connection) return;
-  connection = c;
-  connectionListeners.forEach((l) => l());
-}
-export const connectionStore = {
-  subscribe: (l: () => void) => (connectionListeners.add(l), () => void connectionListeners.delete(l)),
-  get: () => connection,
-};
+export const connectionStore = createStore<Connection>(navigator.onLine ? "online" : "offline");
+const setConnection = connectionStore.set;
 
 /** A network failure says so in words, instead of the browser's "Failed to fetch". */
 const unreachable = () =>

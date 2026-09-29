@@ -1,5 +1,5 @@
 // A team's trash: deleted issues and docs, restorable for 30 days (see SPEC.md, Trash).
-import { useEffect, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import type { DocumentSummary, IssueSummary } from "../shared/types";
 import { api } from "./api";
 import {
@@ -17,6 +17,7 @@ import {
   toast,
   useApp,
   useFetch,
+  useTitle,
 } from "./ui";
 
 export function TrashView({ teamKey }: { teamKey: string }) {
@@ -24,9 +25,7 @@ export function TrashView({ teamKey }: { teamKey: string }) {
   const team = app.teams?.find((t) => t.key === teamKey);
   const { data: trash, failed, reload } = useFetch(() => api.trash(teamKey), [teamKey]);
 
-  useEffect(() => {
-    document.title = `Trash · ${team?.name ?? teamKey} · Docket`;
-  }, [team?.name, teamKey]);
+  useTitle(`Trash · ${team?.name ?? teamKey}`);
 
   const restore = (label: string, call: () => Promise<unknown>, href: string) =>
     call().then(() => {

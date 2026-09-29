@@ -1,6 +1,5 @@
 // Team membership (Linear's): the Browse teams page (/<ws>/teams), where you join and leave teams, and a team's Members
 // and access in its settings. A private team is seen only by its members; admins join one with a warning first.
-import { useEffect } from "react";
 import type { Team } from "../shared/types";
 import { api } from "./api";
 import { getYou } from "./auth";
@@ -21,6 +20,7 @@ import {
   TeamsIcon,
   useApp,
   useFetch,
+  useTitle,
 } from "./ui";
 
 /** Every team you see, to join or leave; for admins also the private teams they aren't in, to join (with a warning). */
@@ -28,7 +28,7 @@ export function TeamsPage() {
   const { teams, workspace, reloadTeams } = useApp();
   const admin = workspace?.role === "admin";
   const guest = workspace?.role === "guest";
-  useEffect(() => void (document.title = "Teams · Docket"), []);
+  useTitle("Teams");
   const { data: listing } = useFetch(admin && workspace ? () => api.teamListings(workspace.key) : null, [workspace?.key, admin]);
   const hidden = (listing ?? []).filter((t) => !teams?.some((v) => v.key === t.key));
   const join = async (key: string, name: string, secret: boolean) => {

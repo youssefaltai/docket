@@ -20,6 +20,7 @@ import {
   useApp,
   useKeydown,
   useLive,
+  useTitle,
   useStatusOf,
 } from "./ui";
 
@@ -49,9 +50,7 @@ export function InboxView() {
   const { inbox, setInbox, reloadInbox } = useApp();
   const live = useLive();
   useEffect(reloadInbox, [live, reloadInbox]); // titles and statuses stay current
-  useEffect(() => {
-    document.title = "Inbox · Docket";
-  }, []);
+  useTitle("Inbox");
 
   const rows = inbox ? groups(inbox.notifications) : [];
   const apply = (call: Promise<Inbox>, then?: () => void) =>
