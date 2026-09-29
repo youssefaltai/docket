@@ -1,5 +1,5 @@
 // The HTTP layer every response goes through: security headers, a request body cap, and a rate limit
-// per signed-in credential. The web app is bundled here at startup (in production) so its files get the headers too.
+// per signed-in credential, else per client IP. The web app is bundled here at startup (in production) so its files get the headers too.
 import { basename, join } from "node:path";
 import { MAX_UPLOAD_BYTES } from "../shared/types.ts";
 
@@ -50,54 +50,71 @@ export function secure(req: Request, res: Response, { api = false } = {}): Respo
   return res;
 }
 
-// --- Rate limit: a token bucket per credential that signed in (API key or session cookie), else per client IP ---
+// --- Rate limit: a token bucket per API key or session that signs in, else per client IP ---
 
 const BURST = 600; // requests at once
 const PER_SECOND = 20; // sustained
-const buckets = new Map<string, { tokens: number; at: number }>();
-const signedIn = new WeakSet<Request>();
 
-/** Called by the auth guard once a request's credential signs in: from then on it has a bucket of its own. */
-export const authenticated = (req: Request) => void signedIn.add(req);
-
-/** Takes a token for this caller; returns the seconds to wait if there's none left. */
-function take(key: string, time = Date.now()): number {
-  const b = buckets.get(key) ?? { tokens: BURST, at: time };
-  b.tokens = Math.min(BURST, b.tokens + ((time - b.at) / 1000) * PER_SECOND);
-  b.at = time;
-  if (buckets.size > 10_000) for (const [k, v] of buckets) if (v.tokens >= BURST) buckets.delete(k); // forget idle callers
-  buckets.set(key, b);
-  if (b.tokens < 1) return Math.ceil((1 - b.tokens) / PER_SECOND);
-  b.tokens -= 1;
-  return 0;
+/** Token buckets by key, at most `max`: past it, those refilled since last used go (they'd start full anyway), then the oldest. */
+export function tokenBuckets(max = 10_000) {
+  const buckets = new Map<string, { tokens: number; at: number }>();
+  const refilled = (b: { tokens: number; at: number }, time: number) => Math.min(BURST, b.tokens + ((time - b.at) / 1000) * PER_SECOND);
+  return {
+    get size() {
+      return buckets.size;
+    },
+    /** Takes a token; returns the seconds to wait if there's none left. */
+    take(key: string, time = Date.now()): number {
+      let b = buckets.get(key);
+      if (!b) {
+        if (buckets.size >= max) {
+          for (const [k, v] of buckets) if (refilled(v, time) >= BURST) buckets.delete(k);
+          for (const k of buckets.keys()) {
+            if (buckets.size < max / 2) break;
+            buckets.delete(k);
+          }
+        }
+        b = { tokens: BURST, at: time };
+        buckets.set(key, b);
+      }
+      b.tokens = refilled(b, time);
+      b.at = time;
+      if (b.tokens < 1) return Math.ceil((1 - b.tokens) / PER_SECOND);
+      b.tokens -= 1;
+      return 0;
+    },
+  };
 }
 
-const credentialOf = (req: Request) => {
-  const sent = req.headers.get("authorization") ?? req.headers.get("cookie")?.match(/(?:^|;\s*)docket_session=([^;]+)/)?.[1];
-  return sent === undefined ? undefined : `credential:${sent}`;
-};
+const buckets = tokenBuckets();
+const ips = new WeakMap<Request, string>();
+
+/**
+ * Takes a token for a request: from `key`'s bucket (the API key or session it signed in with), else from its client IP's.
+ * A 429 if there's none left. The auth guard calls it once it knows whether the credential signs in, so guesses (however
+ * the header is written) all share the IP's bucket, and a real credential never waits on it.
+ */
+export function rateLimit(req: Request, key?: string): Response | undefined {
+  const wait = buckets.take(key ?? `ip:${ips.get(req) ?? ""}`);
+  return wait ? Response.json({ error: "Too many requests, slow down" }, { status: 429, headers: { "Retry-After": String(wait) } }) : undefined;
+}
 
 type Handler = (req: Request, server: Bun.Server<any>) => Response | undefined | Promise<Response | undefined>;
 
 /**
- * Wraps a route (a handler or a method map) with the body cap (`maxBody`), the rate limit and the headers. `perIp`: the
- * limit is per client IP only, for a public route that takes no credential.
+ * Wraps a route (a handler or a method map) with the body cap (`maxBody`), the rate limit and the headers. The limit is
+ * per client IP, unless the route is `guarded`: then the auth guard applies it (see rateLimit).
  */
-export function http<T>(route: T, { api = true, maxBody = MAX_BODY, perIp = false } = {}): T {
+export function http<T>(route: T, { api = true, maxBody = MAX_BODY, guarded = false } = {}): T {
   const wrap =
     (fn: Handler): Handler =>
     async (req, server) => {
-      const json = (error: string, status: number, headers: Record<string, string> = {}) =>
-        secure(req, Response.json({ error }, { status, headers }), { api });
+      const json = (error: string, status: number) => secure(req, Response.json({ error }, { status }), { api });
       if (Number(req.headers.get("content-length") ?? 0) > maxBody) return json(`Request body too large (at most ${maxBody / MAX_BODY} MB)`, 413);
-      const ip = server.requestIP(req)?.address ?? "";
-      // Only a credential that has signed in has its own bucket, so made-up ones (guesses) share the client IP's.
-      const credential = perIp ? undefined : credentialOf(req);
-      const own = credential !== undefined && buckets.has(credential);
-      const wait = take(own ? credential : `ip:${ip}`);
-      if (wait) return json("Too many requests, slow down", 429, { "Retry-After": String(wait) });
+      ips.set(req, server.requestIP(req)?.address ?? "");
+      const limited = guarded ? undefined : rateLimit(req);
+      if (limited) return secure(req, limited, { api });
       const res = await fn(req, server);
-      if (credential !== undefined && !own && signedIn.has(req)) buckets.set(credential, { tokens: BURST, at: Date.now() });
       return res && secure(req, res, { api }); // undefined: upgraded to a WebSocket
     };
   if (typeof route === "function") return wrap(route as Handler) as T;

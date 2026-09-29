@@ -77,19 +77,20 @@ const server = Bun.serve({
     ),
     "/icons/*": (req: Request) => secure(req, new Response("Not found", { status: 404 })), // not the app shell of a workspace "icons"
     ...(Object.fromEntries(Object.entries(authRoutes).map(([path, route]) => [path, http(route)])) as typeof authRoutes),
-    ...(Object.fromEntries(Object.entries(apiRoutes).map(([path, route]) => [path, http(guard(route))])) as typeof apiRoutes),
+    ...(Object.fromEntries(Object.entries(apiRoutes).map(([path, route]) => [path, http(guard(route), { guarded: true })])) as typeof apiRoutes),
     ...(Object.fromEntries(
-      Object.entries(attachmentRoutes).map(([path, route]) => [path, http(guard(route), { maxBody: MAX_UPLOAD_BYTES })]),
+      Object.entries(attachmentRoutes).map(([path, route]) => [path, http(guard(route), { guarded: true, maxBody: MAX_UPLOAD_BYTES })]),
     ) as typeof attachmentRoutes),
-    // GitHub's webhook: public, signed with the workspace's secret; rate-limited per IP, since it takes no credential.
-    "/api/github/:workspace": http({ POST: receiveGitHub }, { perIp: true }),
-    "/mcp": http(guard(handleMcp, { mcp: true })),
+    // GitHub's webhook: public, signed with the workspace's secret; rate-limited per IP, as every unguarded route.
+    "/api/github/:workspace": http({ POST: receiveGitHub }),
+    "/mcp": http(guard(handleMcp, { mcp: true }), { guarded: true }),
     "/ws": http(
       guard((req: Request, server: Bun.Server<SocketData>) => {
         const a = actorOf(req);
         const data = { userId: a.id, sessionId: a.sessionId, keyId: a.keyId, topics: topicsOf(a) };
         return server.upgrade(req, { data }) ? undefined : new Response("Expected a WebSocket", { status: 400 });
       }),
+      { guarded: true },
     ),
   },
   // Anything unmatched: a plain 404, with the headers too.
