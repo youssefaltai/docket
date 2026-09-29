@@ -113,6 +113,19 @@ type Draft = Required<
   cycle: number | null;
 };
 
+/** The create request for a draft. Nothing chosen is left out, not sent as null: `estimate: null` is 400 on a team with estimates off. */
+export function newIssueInput(draft: Draft): IssueInput {
+  return {
+    ...draft,
+    estimate: draft.estimate ?? undefined,
+    project: draft.project ?? undefined, // none named: a sub-issue joins its parent's
+    cycle: draft.cycle ?? undefined, // likewise
+    assignee: draft.assignee?.username ?? null,
+    title: draft.title.trim(),
+    description: draft.description.trim() || undefined,
+  };
+}
+
 export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueInput>; onClose: () => void }) {
   const { teams, labels: allLabels } = useApp();
   // The team's default status, unless the page asked for another (a list group's +, the Triage tab).
@@ -153,14 +166,7 @@ export function NewIssueModal({ defaults, onClose }: { defaults: Partial<IssueIn
   const submit = () => {
     if (!title.trim() || !team) return;
     run(async () => {
-      const issue = await api.createIssue({
-        ...draft,
-        project: project ?? undefined, // none named: a sub-issue joins its parent's
-        cycle: cycle ?? undefined, // likewise
-        assignee: assignee?.username ?? null,
-        title: title.trim(),
-        description: description.trim() || undefined,
-      });
+      const issue = await api.createIssue(newIssueInput(draft));
       toast(`Created ${issue.id}`, `/issue/${issue.id}`);
       onClose();
     });
