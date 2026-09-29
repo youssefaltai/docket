@@ -98,3 +98,27 @@ test("each credential has its own rate limit: a burst, then 429 with Retry-After
   // Someone else isn't slowed down.
   expect((await quiet.api("GET", "/api/me")).status).toBe(200);
 });
+
+// Each on its own server: the limit is in memory, and draining the IP's bucket would slow the other tests.
+for (const via of ["bearer", "cookie"] as const) {
+  test(`made-up ${via} credentials share the client IP's limit, not a bucket each (DKT-40)`, async () => {
+    const t = await startServer();
+    try {
+      const known = await t.agent("known");
+      expect((await known.api("GET", "/api/me")).status).toBe(200); // it signed in: its own bucket from now on
+      const guess = () => {
+        const secret = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("hex");
+        return t.with(via === "bearer" ? { token: `dk_${secret}` } : { cookie: `docket_session=${secret}` }, via).api("GET", "/api/me");
+      };
+      const statuses: number[] = [];
+      for (let round = 0; round < 60 && !statuses.includes(429); round++) {
+        statuses.push(...(await Promise.all(Array.from({ length: 20 }, guess))).map((r) => r.status));
+      }
+      expect(statuses).toContain(429);
+      expect(statuses.every((x) => x === 401 || x === 429)).toBeTrue();
+      expect((await known.api("GET", "/api/me")).status).toBe(200); // guesses don't slow down a credential that signs in
+    } finally {
+      await t.stop();
+    }
+  });
+}

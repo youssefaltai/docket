@@ -5,7 +5,7 @@ import type { SetupInput } from "../shared/types.ts";
 import * as access from "./access.ts";
 import { SESSION_IDLE_MS, type Actor, type Client } from "./access.ts";
 import { AppError } from "./db.ts";
-import { https } from "./http.ts";
+import { authenticated, https } from "./http.ts";
 
 const COOKIE = "docket_session";
 
@@ -90,6 +90,7 @@ export function guard<T>(route: T, { mcp = false } = {}): T {
     const { actor, stale, crossSite } = identify(req, mcp);
     if (crossSite) return json({ error: "Cross-origin request refused" }, 403);
     if (!actor) return json({ error: "Unauthorized" }, 401, stale ? signedOut(req) : undefined);
+    authenticated(req);
     if (!mcp && actor.scope === "read" && req.method !== "GET") return json({ error: "This API key is read-only" }, 403);
     // The web app says which account it thinks is signed in (its id). Tabs share one cookie, so after signing
     // in as someone else in another tab, a stale tab would silently act as the new account: refuse, and it reloads.

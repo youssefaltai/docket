@@ -1,5 +1,5 @@
 // The HTTP layer every response goes through: security headers, a request body cap, and a rate limit
-// per credential. The web app is bundled here at startup (in production) so its files get the headers too.
+// per signed-in credential. The web app is bundled here at startup (in production) so its files get the headers too.
 import { basename, join } from "node:path";
 import { MAX_UPLOAD_BYTES } from "../shared/types.ts";
 
@@ -50,11 +50,15 @@ export function secure(req: Request, res: Response, { api = false } = {}): Respo
   return res;
 }
 
-// --- Rate limit: a token bucket per credential (API key or session cookie), else per client IP ---
+// --- Rate limit: a token bucket per credential that signed in (API key or session cookie), else per client IP ---
 
 const BURST = 600; // requests at once
 const PER_SECOND = 20; // sustained
 const buckets = new Map<string, { tokens: number; at: number }>();
+const signedIn = new WeakSet<Request>();
+
+/** Called by the auth guard once a request's credential signs in: from then on it has a bucket of its own. */
+export const authenticated = (req: Request) => void signedIn.add(req);
 
 /** Takes a token for this caller; returns the seconds to wait if there's none left. */
 function take(key: string, time = Date.now()): number {
@@ -68,14 +72,16 @@ function take(key: string, time = Date.now()): number {
   return 0;
 }
 
-const credentialOf = (req: Request, ip: string) =>
-  req.headers.get("authorization") ?? req.headers.get("cookie")?.match(/(?:^|;\s*)docket_session=([^;]+)/)?.[1] ?? `ip:${ip}`;
+const credentialOf = (req: Request) => {
+  const sent = req.headers.get("authorization") ?? req.headers.get("cookie")?.match(/(?:^|;\s*)docket_session=([^;]+)/)?.[1];
+  return sent === undefined ? undefined : `credential:${sent}`;
+};
 
 type Handler = (req: Request, server: Bun.Server<any>) => Response | undefined | Promise<Response | undefined>;
 
 /**
  * Wraps a route (a handler or a method map) with the body cap (`maxBody`), the rate limit and the headers. `perIp`: the
- * limit is per client IP only, for a public route that takes no credential (else any made-up header is a fresh bucket).
+ * limit is per client IP only, for a public route that takes no credential.
  */
 export function http<T>(route: T, { api = true, maxBody = MAX_BODY, perIp = false } = {}): T {
   const wrap =
@@ -85,9 +91,13 @@ export function http<T>(route: T, { api = true, maxBody = MAX_BODY, perIp = fals
         secure(req, Response.json({ error }, { status, headers }), { api });
       if (Number(req.headers.get("content-length") ?? 0) > maxBody) return json(`Request body too large (at most ${maxBody / MAX_BODY} MB)`, 413);
       const ip = server.requestIP(req)?.address ?? "";
-      const wait = take(perIp ? `ip:${ip}` : credentialOf(req, ip));
+      // Only a credential that has signed in has its own bucket, so made-up ones (guesses) share the client IP's.
+      const credential = perIp ? undefined : credentialOf(req);
+      const own = credential !== undefined && buckets.has(credential);
+      const wait = take(own ? credential : `ip:${ip}`);
       if (wait) return json("Too many requests, slow down", 429, { "Retry-After": String(wait) });
       const res = await fn(req, server);
+      if (credential !== undefined && !own && signedIn.has(req)) buckets.set(credential, { tokens: BURST, at: Date.now() });
       return res && secure(req, res, { api }); // undefined: upgraded to a WebSocket
     };
   if (typeof route === "function") return wrap(route as Handler) as T;
