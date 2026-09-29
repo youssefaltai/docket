@@ -10,8 +10,8 @@ import { https } from "./http.ts";
 const COOKIE = "docket_session";
 
 /** Exact media type check: "text/plain;charset=application/json" is a CORS-simple request, so it must not pass. */
-export const isJson = (req: Request) =>
-  req.headers.get("content-type")?.split(";")[0]!.trim().toLowerCase() === "application/json";
+export const mediaType = (req: Request) => req.headers.get("content-type")?.split(";")[0]!.trim().toLowerCase();
+export const isJson = (req: Request) => mediaType(req) === "application/json";
 
 const json = (data: unknown, status = 200, headers?: HeadersInit) => Response.json(data, { status, headers });
 const notJson = () => json({ error: "Expected Content-Type: application/json" }, 415);

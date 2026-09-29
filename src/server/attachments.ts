@@ -8,7 +8,7 @@ import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ATTACHMENT_URL, INLINE_IMAGE_TYPES, MAX_UPLOAD_BYTES, type Attachment, type UserKind } from "../shared/types.ts";
 import { type Actor, requestWorkspace, SEES_TEAM, seesTeam } from "./access.ts";
-import { actorOf } from "./auth.ts";
+import { actorOf, mediaType } from "./auth.ts";
 import { AppError, db, now } from "./db.ts";
 import { attachmentsDir } from "./paths.ts";
 
@@ -146,7 +146,7 @@ export const attachmentRoutes = {
   "/api/attachments": {
     POST: async (req: Request) => {
       try {
-        if (req.headers.get("content-type")?.split(";")[0]!.trim().toLowerCase() !== "application/octet-stream") {
+        if (mediaType(req) !== "application/octet-stream") {
           throw new AppError("Expected Content-Type: application/octet-stream", 415);
         }
         const bytes = new Uint8Array(await req.arrayBuffer());
