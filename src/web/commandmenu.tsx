@@ -41,6 +41,8 @@ interface Item {
   run: () => void;
 }
 
+const action = (key: string, label: string, icon: ReactNode, run: () => void): Item => ({ key, label, icon, group: "Actions", run });
+
 const MY_TAB_LABEL: Record<MyTab, string> = { assigned: "Assigned", created: "Created", delegated: "Delegated", subscribed: "Subscribed" };
 
 /** Property pickers on the issue page, opened by the menu's context-aware actions (see `[data-cmd]` in issue.tsx). */
@@ -141,43 +143,31 @@ export function CommandMenu() {
     if (!open) return [];
     const q = query.trim().toLowerCase();
     const all: Item[] = [
-      { key: "new-issue", label: "New issue", icon: <ComposeIcon />, group: "Actions", run: act(() => app.newIssue()) },
-      { key: "new-doc", label: "New doc", icon: <DocIcon />, group: "Actions", run: act(() => app.newDoc()) },
-      { key: "new-project", label: "New project", icon: <ProjectIcon />, group: "Actions", run: act(() => app.newProject()) },
-      { key: "new-team", label: "New team", icon: <PlusIcon />, group: "Actions", run: act(app.newTeam) },
-      { key: "new-workspace", label: "New workspace", icon: <PlusIcon />, group: "Actions", run: act(app.newWorkspace) },
-      { key: "new-view", label: "New view", icon: <ViewsIcon />, group: "Actions", run: act(() => app.newView()) },
-      { key: "go-inbox", label: "Go to Inbox", icon: <InboxIcon />, group: "Actions", run: go("/inbox") },
-      { key: "go-my", label: "Go to My Issues", icon: <IssuesIcon />, group: "Actions", run: go("/my") },
-      ...MY_TABS.map((t): Item => ({
-        key: `go-my-${t}`,
-        label: `Go to My Issues: ${MY_TAB_LABEL[t]}`,
-        icon: <IssuesIcon />,
-        group: "Actions",
-        run: go(`/my/${t}`),
-      })),
-      { key: "go-issues", label: "Go to All issues", icon: <IssuesIcon />, group: "Actions", run: go("/") },
-      { key: "go-docs", label: "Go to All docs", icon: <DocIcon />, group: "Actions", run: go("/docs") },
-      { key: "go-projects", label: "Go to Projects", icon: <ProjectIcon />, group: "Actions", run: go("/projects") },
-      { key: "go-views", label: "Go to Views", icon: <ViewsIcon />, group: "Actions", run: go("/views") },
-      { key: "go-teams", label: "Go to Teams", icon: <TeamsIcon />, group: "Actions", run: go("/teams") },
-      { key: "go-settings", label: "Go to Settings", icon: <SettingsIcon />, group: "Actions", run: go("/settings/account") },
+      action("new-issue", "New issue", <ComposeIcon />, act(() => app.newIssue())),
+      action("new-doc", "New doc", <DocIcon />, act(() => app.newDoc())),
+      action("new-project", "New project", <ProjectIcon />, act(() => app.newProject())),
+      action("new-team", "New team", <PlusIcon />, act(app.newTeam)),
+      action("new-workspace", "New workspace", <PlusIcon />, act(app.newWorkspace)),
+      action("new-view", "New view", <ViewsIcon />, act(() => app.newView())),
+      action("go-inbox", "Go to Inbox", <InboxIcon />, go("/inbox")),
+      action("go-my", "Go to My Issues", <IssuesIcon />, go("/my")),
+      ...MY_TABS.map((t) => action(`go-my-${t}`, `Go to My Issues: ${MY_TAB_LABEL[t]}`, <IssuesIcon />, go(`/my/${t}`))),
+      action("go-issues", "Go to All issues", <IssuesIcon />, go("/")),
+      action("go-docs", "Go to All docs", <DocIcon />, go("/docs")),
+      action("go-projects", "Go to Projects", <ProjectIcon />, go("/projects")),
+      action("go-views", "Go to Views", <ViewsIcon />, go("/views")),
+      action("go-teams", "Go to Teams", <TeamsIcon />, go("/teams")),
+      action("go-settings", "Go to Settings", <SettingsIcon />, go("/settings/account")),
     ];
     // Guests see only their teams: no new teams, no workspace views.
     const actions = app.workspace?.role === "guest" ? all.filter((a) => !["new-team", "new-view", "go-views"].includes(a.key)) : all;
     for (const t of app.teams ?? [])
-      if (t.cycleWeeks) actions.push({ key: `go-cycles-${t.key}`, label: `Go to Cycles: ${t.name}`, icon: <CycleIcon />, group: "Actions", run: go(`/t/${t.key}/cycles`) });
+      if (t.cycleWeeks) actions.push(action(`go-cycles-${t.key}`, `Go to Cycles: ${t.name}`, <CycleIcon />, go(`/t/${t.key}/cycles`)));
     if (app.workspace?.role === "admin")
-      actions.push({ key: "go-workspace-settings", label: "Go to Workspace settings", icon: <SettingsIcon />, group: "Actions", run: go("/settings/workspace") });
+      actions.push(action("go-workspace-settings", "Go to Workspace settings", <SettingsIcon />, go("/settings/workspace")));
     for (const w of app.workspaces ?? [])
       if (w.key !== app.workspace?.key)
-        actions.push({
-          key: `switch-${w.key}`,
-          label: `Switch workspace: ${w.name}`,
-          icon: <TeamMark id={w.name.toUpperCase()} />,
-          group: "Actions",
-          run: act(() => app.switchWorkspace(w.key)),
-        });
+        actions.push(action(`switch-${w.key}`, `Switch workspace: ${w.name}`, <TeamMark id={w.name.toUpperCase()} />, act(() => app.switchWorkspace(w.key))));
     // Toggle List/Board: only where that segmented control is on screen and enabled (issues, My Issues and view pages).
     if (route.view === "issues" || route.view === "my" || route.view === "customview") {
       const seg = document.querySelector<HTMLElement>('.segmented[aria-label="Layout"]');
@@ -185,13 +175,7 @@ export function CommandMenu() {
       const other = seg?.querySelector<HTMLButtonElement>("button:not(.on):not(:disabled)");
       if (current && other) {
         const toBoard = current.title === "List";
-        actions.push({
-          key: "toggle-view",
-          label: toBoard ? "Switch to Board view" : "Switch to List view",
-          icon: toBoard ? <BoardIcon /> : <ListIcon />,
-          group: "Actions",
-          run: act(() => other.click()),
-        });
+        actions.push(action("toggle-view", toBoard ? "Switch to Board view" : "Switch to List view", toBoard ? <BoardIcon /> : <ListIcon />, act(() => other.click())));
       }
     }
     // Context-aware: on an issue page, open its existing property pickers, or run a one-off action, rather than
@@ -203,15 +187,12 @@ export function CommandMenu() {
           return el instanceof HTMLButtonElement ? el : (el?.querySelector<HTMLButtonElement>("button") ?? null);
         };
         if (button())
-          actions.push({
-            key: `set-${prop}`,
-            label,
-            group: "Actions",
-            run: () => {
+          actions.push(
+            action(`set-${prop}`, label, undefined, () => {
               close(false);
               setTimeout(() => button()?.click());
-            },
-          });
+            }),
+          );
       }
 
     const issues: IssueSummary[] = index ? [...new Set(index.values())].filter((i) => !i.deletedAt) : []; // once each, not per old identifier

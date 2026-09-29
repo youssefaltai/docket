@@ -74,6 +74,9 @@ type ModalState =
   | { kind: "view"; defaults: Omit<CustomViewInput, "name"> }
   | null;
 
+// Switching workspaces keeps you on the same kind of page.
+const SAME_PAGE: Partial<Record<Route["view"], string>> = { docs: "/docs", doc: "/docs", projects: "/projects", project: "/projects", inbox: "/inbox", views: "/views", customview: "/views" };
+
 function App() {
   const path = usePath();
   const route = parseRoute(path);
@@ -216,21 +219,7 @@ function App() {
   }, [currentKey]);
   useEffect(loadDirectory, [loadDirectory, live]);
 
-  // Switching keeps you on the same kind of page: settings, docs, the inbox, my issues, or issues.
-  const same =
-    route.view === "settings"
-      ? `/settings/${route.section}`
-      : route.view === "docs" || route.view === "doc"
-        ? "/docs"
-        : route.view === "projects" || route.view === "project"
-          ? "/projects"
-        : route.view === "inbox"
-          ? "/inbox"
-          : route.view === "my"
-            ? `/my/${route.tab}`
-            : route.view === "views" || route.view === "customview"
-              ? "/views"
-              : "";
+  const same = route.view === "settings" ? `/settings/${route.section}` : route.view === "my" ? `/my/${route.tab}` : (SAME_PAGE[route.view] ?? "");
   const switchWorkspace = (key: string) => navigate(`/${key}${same}`);
 
   // Access changed under us (the socket closed with 4401): ask who we are now. A 401 goes to the sign-in
