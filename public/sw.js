@@ -86,3 +86,26 @@ self.addEventListener("fetch", (event) => {
     event.respondWith(staleWhileRevalidate(request));
   }
 });
+
+// Push notifications (server/push.ts): { title, body, url }, shown as they come. Tapping one opens its issue or doc,
+// in a Docket window already open if there is one.
+self.addEventListener("push", (event) => {
+  let data = {};
+  try {
+    data = event.data?.json() ?? {};
+  } catch {}
+  const title = data.title || "Docket";
+  event.waitUntil(self.registration.showNotification(title, { body: data.body, icon: "/icons/icon-192.png", data: { url: data.url || "/inbox" } }));
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const url = new URL(event.notification.data?.url || "/inbox", self.location.origin);
+  if (url.origin !== self.location.origin) return;
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((windows) => {
+      const open = windows.find((w) => "focus" in w && "navigate" in w);
+      return open ? open.focus().then((w) => w.navigate(url.href)) : self.clients.openWindow(url.href);
+    }),
+  );
+});

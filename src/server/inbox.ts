@@ -6,6 +6,7 @@ import { marked, type Token } from "marked";
 import type { Inbox, Notification, NotificationKind, UserKind } from "../shared/types.ts";
 import { type Actor, requestWorkspace, SEES_TEAM, usernameOf } from "./access.ts";
 import { AppError, changed, db, knownAs, now } from "./db.ts";
+import { queuePush } from "./push.ts";
 import { enqueue } from "./webhooks.ts";
 
 /** An issue or a doc, by row id. */
@@ -55,7 +56,7 @@ export interface Event {
 
 /**
  * One notification for each recipient who is an active member of the workspace, never the actor, and a live
- * `inbox` event to each; an agent's also goes to the workspace's webhooks (what starts an agent). Runs in the mutation's transaction (bun:sqlite is synchronous: the event leaves in the
+ * `inbox` event to each; an agent's also goes to the workspace's webhooks (what starts an agent), a person's to their devices (push.ts). Runs in the mutation's transaction (bun:sqlite is synchronous: the event leaves in the
  * same tick as the commit; after a rollback it only costs a refetch).
  */
 export function notify(recipients: Iterable<number>, e: Event, time: string) {
@@ -79,9 +80,16 @@ export function notify(recipients: Iterable<number>, e: Event, time: string) {
     const id = Number(insert.run(m.user_id, e.workspace, e.kind, e.actorId, idOf(e.target), e.commentId ?? null, e.status ?? null, time).lastInsertRowid);
     trim.run(m.user_id, e.workspace);
     changed("inbox", e.workspace, m.username, m.user_id);
-    if (m.kind !== "agent") continue;
+    const row = () => db.query<Record<string, any>, [number, string, number]>(`${SELECT} AND n.id = ?`).get(m.user_id, e.workspace, id);
+    if (m.kind !== "agent") {
+      queuePush(m.user_id, () => {
+        const r = row();
+        return r && toNotification(r);
+      });
+      continue;
+    }
     const user = { username: m.username, name: m.name, kind: m.kind };
-    const data = () => ({ ...toNotification(db.query<Record<string, any>, [number, string, number]>(`${SELECT} AND n.id = ?`).get(m.user_id, e.workspace, id)!), user });
+    const data = () => ({ ...toNotification(row()!), user });
     enqueue({ workspace: e.workspace, type: "Notification", action: "create", entity: String(id), actorId: e.actorId, time, data });
   }
 }

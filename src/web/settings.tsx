@@ -28,6 +28,7 @@ import {
 } from "../shared/types";
 import { api } from "./api";
 import { auth, getMe, getYou } from "./auth";
+import { disablePush, enablePush, pushState, testPush, type PushState } from "./push";
 import { TeamMembers } from "./teams";
 import { LabelsPicker, Picker, PriorityPicker, RowMenu, StatusPicker, statusOptions } from "./pickers";
 import {
@@ -201,6 +202,7 @@ function AccountSettings() {
       {workspace && <Profile key={workspace.key} workspace={workspace} />}
       <Email />
       <SignInLink />
+      <PushNotifications />
       <Sessions />
       {workspace && <ApiKeys key={workspace.key} workspace={workspace} />}
     </>
@@ -311,6 +313,44 @@ function SignInLink() {
         <button className="btn" disabled={busy} onClick={create}>
           Get a sign-in link
         </button>
+      )}
+    </Section>
+  );
+}
+
+const PUSH_HINTS: Record<PushState, string> = {
+  unsupported: "This browser can't get push notifications.",
+  install: "On iPhone and iPad, add Docket to your Home Screen (Share, then Add to Home Screen) and open it from there to turn them on.",
+  blocked: "Notifications are blocked for Docket: allow them in this browser's or device's settings.",
+  off: "Get a notification on this device for everything that reaches your inbox.",
+  on: "This device gets a notification for everything that reaches your inbox.",
+};
+
+/** Push notifications on this device: your inbox, on its lock screen. */
+function PushNotifications() {
+  const [state, setState] = useState<PushState | null>(null);
+  const { busy, run } = useRun();
+  useEffect(() => {
+    pushState().then(setState, () => setState("unsupported"));
+  }, []);
+  if (!state) return null;
+  return (
+    <Section title="Notifications">
+      <p className="settings-hint">{PUSH_HINTS[state]}</p>
+      {state === "off" && (
+        <button className="btn" disabled={busy} onClick={() => run(async () => setState(await enablePush()))}>
+          Turn on for this device
+        </button>
+      )}
+      {state === "on" && (
+        <div className="settings-inline">
+          <button className="btn" disabled={busy} onClick={() => run(() => testPush().then(() => toast("Test notification sent")))}>
+            Send a test
+          </button>
+          <button className="btn btn-ghost" disabled={busy} onClick={() => run(async () => setState(await disablePush()))}>
+            Turn off
+          </button>
+        </div>
       )}
     </Section>
   );

@@ -6,6 +6,7 @@ import { AppError } from "./db.ts";
 import * as github from "./github.ts";
 import { originOf } from "./http.ts";
 import * as inbox from "./inbox.ts";
+import * as push from "./push.ts";
 import * as tracker from "./tracker.ts";
 import * as webhooks from "./webhooks.ts";
 
@@ -377,6 +378,15 @@ export const apiRoutes = {
     DELETE: handle((req) =>
       inbox.deleteNotifications(actorOf(req), { ids: param(req, "ids")?.split(",").map(Number), read: param(req, "read") === "true" }),
     ),
+  },
+
+  "/api/push": {
+    GET: handle((req) => push.pushKey(actorOf(req))),
+    PUT: handle(async (req) => push.addDevice(actorOf(req), await patch(req, "push", ["endpoint", "keys", "expirationTime"]))),
+    DELETE: handle(async (req) => push.removeDevice(actorOf(req), (await body(req)).endpoint)),
+  },
+  "/api/push/test": {
+    POST: handle((req) => push.testPush(actorOf(req))),
   },
 
   // --- Documents ---

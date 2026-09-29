@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import type { CustomView, CustomViewInput, Inbox, IssueInput, Label, Team, Workspace, WorkspaceMember } from "../shared/types";
 import { api, connectionStore, setCurrentWorkspace, setOnAccessLost, setOnUnauthorized, store, subscribe } from "./api";
 import { auth, getMe, getYou, loadMe } from "./auth";
+import { syncPush } from "./push";
 import { ChatDock, ChatNavItem } from "./chat";
 import { CommandMenu, openCommandMenu } from "./commandmenu";
 import { DocPage, DocsView } from "./docs";
@@ -622,7 +623,10 @@ function Root() {
       location.replace("/login");
     });
     loadMe().then(
-      () => setState("ready"),
+      () => {
+        setState("ready");
+        syncPush().catch(() => {});
+      },
       () => setState((s) => (s === "loading" ? "offline" : s)),
     );
   }, []);
