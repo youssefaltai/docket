@@ -1,6 +1,5 @@
 // Webhooks (DKT-12): admins (browser session) manage them; issue, comment and doc changes and agents' notifications are
 // POSTed signed to a receiver, retried on failure, logged, and never sent to private addresses unless allowed.
-import { Database } from "bun:sqlite";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
 import { startServer, type Caller, type TestServer } from "./server.ts";
@@ -77,14 +76,6 @@ const createIssue = async (extra: object = {}, c: Caller = s.admin) => {
   const res = await c.api("POST", "/api/issues", { team: "WHK", title: "Hooked", ...extra });
   expect(res.status).toBe(201);
   return res.body.id as string;
-};
-const sql = (query: string, ...params: (string | number)[]) => {
-  const db = new Database(s.databasePath);
-  try {
-    return db.query(query).all(...params) as any[];
-  } finally {
-    db.close();
-  }
 };
 
 describe("managing", () => {
@@ -448,17 +439,13 @@ describe("targets without DOCKET_WEBHOOK_ALLOW_PRIVATE", () => {
     const res = await strict.api("POST", "/api/workspaces/acme/webhooks", { url: "https://93.184.215.14/", resourceTypes: ["Issue"] });
     const id = res.body.webhook.id;
     // As if its DNS now answered with a private address (the database is the only way to get one past the save check).
-    const db = new Database(strict.databasePath);
-    db.run("UPDATE webhooks SET url = ? WHERE id = ?", [`${base}/h/rebound`, id]);
-    db.close();
+    strict.sql("UPDATE webhooks SET url = ? WHERE id = ?", `${base}/h/rebound`, id);
     await strict.api("POST", "/api/teams", { key: "STR", name: "Strict" });
     await strict.api("POST", "/api/issues", { team: "STR", title: "Blocked" });
     const log = async () => (await strict.api("GET", `/api/workspaces/acme/webhooks/${id}/deliveries`)).body;
     const [d] = await until(async () => ((await log())[0]?.status === "failed" ? log() : null));
     expect(d).toMatchObject({ status: "failed", attempts: 4, responseStatus: null, error: "blocked: only https URLs are allowed" });
-    const db2 = new Database(strict.databasePath);
-    db2.run("UPDATE webhooks SET url = ? WHERE id = ?", ["https://127.0.0.1:1/", id]);
-    db2.close();
+    strict.sql("UPDATE webhooks SET url = ? WHERE id = ?", "https://127.0.0.1:1/", id);
     await strict.api("POST", "/api/issues", { team: "STR", title: "Blocked again" });
     const [e] = await until(async () => ((await log())[0]?.status === "failed" && (await log()).length === 2 ? log() : null));
     expect(e.error).toBe("blocked: 127.0.0.1 is private");
@@ -470,14 +457,12 @@ test("the delivery log keeps 7 days: older deliveries are purged at startup (and
   const h = await hook("kept", { resourceTypes: ["Issue"] });
   await createIssue();
   await nth(h, 1);
-  const db = new Database(s.databasePath);
-  db.run("UPDATE webhook_deliveries SET created_at = ? WHERE webhook_id = ?", [new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString(), h.id]);
-  db.close();
+  s.sql("UPDATE webhook_deliveries SET created_at = ? WHERE webhook_id = ?", new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString(), h.id);
   await createIssue();
   await nth(h, 2);
   const restarted = await startServer({ sharing: s });
   await restarted.stop();
   expect((await h.log()).length).toBe(1);
   // Every delivery went to a webhook of the change's own workspace.
-  expect(sql("SELECT COUNT(*) AS n FROM webhook_deliveries d JOIN webhooks w ON w.id = d.webhook_id WHERE json_extract(d.payload, '$.workspace') != w.workspace")[0].n).toBe(0);
+  expect(s.sql("SELECT COUNT(*) AS n FROM webhook_deliveries d JOIN webhooks w ON w.id = d.webhook_id WHERE json_extract(d.payload, '$.workspace') != w.workspace")[0].n).toBe(0);
 });

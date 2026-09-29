@@ -7,7 +7,7 @@ function absoluteEnv(name: string): string | undefined {
   return value && isAbsolute(value) ? value : undefined;
 }
 
-export function xdgDataHome(): string {
+function xdgDataHome(): string {
   return absoluteEnv("XDG_DATA_HOME") ?? join(homedir(), ".local", "share");
 }
 

@@ -282,7 +282,7 @@ export function keyActor(token: string): Actor | null {
 // --- Access checks (used by every data module) ---
 
 /** The workspace key if the actor is an active member; otherwise 404, so its existence doesn't leak. */
-export function requireMember(a: Actor, workspace: unknown): string {
+function requireMember(a: Actor, workspace: unknown): string {
   const key = typeof workspace === "string" ? workspace.trim().toLowerCase() : "";
   if (!a.workspaces.has(key)) throw new AppError(`Workspace ${workspace} not found`, 404);
   return key;
