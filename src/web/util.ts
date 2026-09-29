@@ -2,6 +2,21 @@
 import type { CSSProperties } from "react";
 
 export const cls = (...xs: (string | false | null | undefined)[]) => xs.filter(Boolean).join(" ");
+
+/** A value outside React that components read with `useSyncExternalStore(store.subscribe, store.get)`. */
+export function createStore<T>(value: T) {
+  const listeners = new Set<() => void>();
+  return {
+    get: () => value,
+    set(next: T) {
+      if (Object.is(next, value)) return;
+      value = next;
+      listeners.forEach((l) => l());
+    },
+    subscribe: (l: () => void) => (listeners.add(l), () => void listeners.delete(l)),
+  };
+}
+
 export const MOD = /Mac|iPhone|iPad/.test(navigator.userAgent) ? "⌘" : "Ctrl";
 
 export function timeAgo(iso: string): string {

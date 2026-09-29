@@ -30,7 +30,7 @@ function AuthForm({
   ready,
   onSubmit,
   children,
-  after,
+  cancel,
 }: {
   title: string;
   intro: string;
@@ -39,7 +39,7 @@ function AuthForm({
   ready: boolean;
   onSubmit: () => void;
   children?: ReactNode;
-  after?: ReactNode; // below the main button, e.g. Cancel
+  cancel?: boolean; // a Cancel button below the main one
 }) {
   return (
     <form
@@ -57,7 +57,11 @@ function AuthForm({
       <button className="btn btn-primary" disabled={!ready}>
         {action}
       </button>
-      {after}
+      {cancel && (
+        <button type="button" className="btn btn-ghost" onClick={enter}>
+          Cancel
+        </button>
+      )}
     </form>
   );
 }
@@ -237,11 +241,7 @@ function Switch({ code, info, you, onError }: { code: string; info: CodeInfo; yo
         setBusy(true);
         auth.redeem(code).then(enter, onError);
       }}
-      after={
-        <button type="button" className="btn btn-ghost" onClick={enter}>
-          Cancel
-        </button>
-      }
+      cancel
     />
   );
 }
@@ -260,11 +260,7 @@ function Accept({ code, info, you, onError }: { code: string; info: CodeInfo; yo
       action={join.busy ? "Joining…" : "Join"}
       ready={join.ready}
       onSubmit={join.submit}
-      after={
-        <button type="button" className="btn btn-ghost" onClick={enter}>
-          Cancel
-        </button>
-      }
+      cancel
     >
       {join.fields}
     </AuthForm>
