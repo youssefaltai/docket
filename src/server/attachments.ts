@@ -8,6 +8,7 @@ import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ATTACHMENT_URL, INLINE_IMAGE_TYPES, MAX_UPLOAD_BYTES, type Attachment, type UserKind } from "../shared/types.ts";
 import { type Actor, requestWorkspace, SEES_TEAM, seesTeam } from "./access.ts";
+import { errorResponse } from "./api.ts";
 import { actorOf, mediaType } from "./auth.ts";
 import { AppError, db, now } from "./db.ts";
 import { attachmentsDir } from "./paths.ts";
@@ -134,12 +135,6 @@ export function getAttachment(a: Actor, idOrUrl: string): { attachment: Attachme
 const disposition = (kind: string, name: string) =>
   `${kind}; filename="${name.replace(/[^\x20-\x7e]|["\\]/g, "_")}"; filename*=UTF-8''${encodeName(name)}`;
 
-const error = (err: unknown) => {
-  if (err instanceof AppError) return Response.json({ error: err.message }, { status: err.status });
-  console.error(err);
-  return Response.json({ error: "Internal server error" }, { status: 500 });
-};
-
 export const attachmentRoutes = {
   // Raw bytes, `Content-Type: application/octet-stream` exactly: like JSON, a browser can't send that cross-site
   // without a CORS preflight, which Docket never allows (and a cookie write still needs our Origin).
@@ -153,7 +148,7 @@ export const attachmentRoutes = {
         const query = new URL(req.url).searchParams;
         return Response.json(saveAttachment(actorOf(req), query.get("name"), bytes, query.get("team")), { status: 201 });
       } catch (err) {
-        return error(err);
+        return errorResponse(err);
       }
     },
   },
@@ -176,7 +171,7 @@ export const attachmentRoutes = {
           },
         });
       } catch (err) {
-        return error(err);
+        return errorResponse(err);
       }
     },
   },

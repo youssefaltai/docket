@@ -10,6 +10,13 @@ import * as push from "./push.ts";
 import * as tracker from "./tracker.ts";
 import * as webhooks from "./webhooks.ts";
 
+/** A thrown error as the REST response: an AppError's message and status, anything else a logged 500. */
+export function errorResponse(err: unknown): Response {
+  if (err instanceof AppError) return Response.json({ error: err.message }, { status: err.status });
+  console.error(err);
+  return Response.json({ error: "Internal server error" }, { status: 500 });
+}
+
 /** Wraps a handler, given the request's actor: its return value becomes the JSON body (unless it's a Response); errors become `{ error }`. */
 function handle<Path extends string>(fn: (req: BunRequest<Path>, a: access.Actor) => unknown, status = 200) {
   return async (req: BunRequest<Path>) => {
@@ -17,9 +24,7 @@ function handle<Path extends string>(fn: (req: BunRequest<Path>, a: access.Actor
       const data = await fn(req, actorOf(req));
       return data instanceof Response ? data : Response.json(data ?? { ok: true }, { status });
     } catch (err) {
-      if (err instanceof AppError) return Response.json({ error: err.message }, { status: err.status });
-      console.error(err);
-      return Response.json({ error: "Internal server error" }, { status: 500 });
+      return errorResponse(err);
     }
   };
 }
