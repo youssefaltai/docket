@@ -79,6 +79,7 @@ import {
   useResolved,
   useKeydown,
   TrashBanner,
+  useTitle,
 } from "./ui";
 import { deleteToTrash } from "./trashActions";
 
@@ -86,9 +87,7 @@ export function IssuePage({ id }: { id: string }) {
   const app = useApp();
   const { data: issue, setData: setIssue, missing, failed, reload, invalidate, isLatest } = useFetch(() => api.issue(id), [id]);
 
-  useEffect(() => {
-    document.title = `${issue ? `${issue.id} ${issue.title}` : id} · Docket`;
-  }, [id, issue?.title]);
+  useTitle(issue ? `${issue.id} ${issue.title}` : id);
 
   // Opened by an identifier it had before it moved team, or just moved: show its current one in the address bar.
   useEffect(() => {

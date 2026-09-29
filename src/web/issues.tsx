@@ -67,6 +67,7 @@ import {
   useFetch,
   useIssueShortcuts,
   useResolved,
+  useTitle,
 } from "./ui";
 
 type Patch = (id: string, change: IssueChange) => void;
@@ -139,10 +140,8 @@ export function IssuesView({ teamKey, cycle }: { teamKey: string | null; cycle?:
   const filtered = !!(q || label || assignee || delegate || due);
   const filter = { team: teamKey ?? undefined, cycle: cycle?.toString(), q, label, assignee, delegate, due: due || undefined };
 
-  useEffect(() => {
-    nav.lastList = location.pathname;
-    document.title = `${cycle ? `Cycle ${cycle} · ` : ""}${team?.name ?? (teamKey || "All issues")} · Docket`;
-  }, [teamKey, team?.name, cycle]);
+  useEffect(() => void (nav.lastList = location.pathname), [teamKey, cycle]);
+  useTitle(`${cycle ? `Cycle ${cycle} · ` : ""}${team?.name ?? (teamKey || "All issues")}`);
 
   const {
     data: issues,
@@ -302,10 +301,8 @@ function CycleCard({ cycle: c, link, className }: { cycle: Cycle; link?: boolean
 export function CyclesView({ teamKey }: { teamKey: string }) {
   const app = useApp();
   const team = app.teams?.find((t) => t.key === teamKey);
-  useEffect(() => {
-    nav.lastList = location.pathname;
-    document.title = `${team?.name ?? teamKey} cycles · Docket`;
-  }, [teamKey, team?.name]);
+  useEffect(() => void (nav.lastList = location.pathname), [teamKey]);
+  useTitle(`${team?.name ?? teamKey} cycles`);
   const { data: cycles, failed, reload } = useFetch(() => api.cycles(teamKey), [teamKey]);
   const current = cycles?.find((c) => c.state === "current");
   const upcoming = cycles?.filter((c) => c.state === "upcoming") ?? [];

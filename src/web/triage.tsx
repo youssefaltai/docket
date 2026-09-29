@@ -1,5 +1,4 @@
 // A team's Triage (Linear's): issues waiting to be accepted into the workflow. Shown while the team has a triage status.
-import { useEffect } from "react";
 import { DUPLICATE_STATUS, type IssueSummary } from "../shared/types";
 import { api } from "./api";
 import {
@@ -17,6 +16,7 @@ import {
   toast,
   useApp,
   useFetch,
+  useTitle,
 } from "./ui";
 
 export function TriageView({ teamKey }: { teamKey: string }) {
@@ -25,9 +25,7 @@ export function TriageView({ teamKey }: { teamKey: string }) {
   const triage = team?.statuses.find((s) => s.category === "triage");
   const { data: issues, setData, failed, reload, invalidate } = useFetch(() => api.issues({ team: teamKey, category: ["triage"] }), [teamKey]);
 
-  useEffect(() => {
-    document.title = `Triage · ${team?.name ?? teamKey} · Docket`;
-  }, [team?.name, teamKey]);
+  useTitle(`Triage · ${team?.name ?? teamKey}`);
 
   // Accept: into the team's default status. Decline: its first canceled status that isn't Duplicate.
   const decline = team?.statuses.find((s) => s.category === "canceled" && s.key !== DUPLICATE_STATUS);

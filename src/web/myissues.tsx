@@ -14,6 +14,7 @@ import {
   cls,
   nav,
   useFetch,
+  useTitle,
 } from "./ui";
 
 const TAB_LABEL: Record<MyTab, string> = {
@@ -44,10 +45,8 @@ function filterFor(tab: MyTab): IssueFilter {
 export function MyIssuesView({ tab }: { tab: MyTab }) {
   const [view, changeView] = useLayout();
 
-  useEffect(() => {
-    nav.lastList = location.pathname;
-    document.title = "My Issues · Docket";
-  }, []);
+  useEffect(() => void (nav.lastList = location.pathname), []);
+  useTitle("My Issues");
 
   const { data: issues, setData: setIssues, failed, reload, invalidate } = useFetch(() => api.issues({ ...filterFor(tab), category: LISTED }), [tab]);
   const shown = tab === "delegated" ? issues?.filter((i) => i.delegate) : issues;

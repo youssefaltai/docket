@@ -35,6 +35,7 @@ import {
   useApp,
   useDebounced,
   useFetch,
+  useTitle,
 } from "./ui";
 
 const GROUP_LABELS: Record<GroupBy, string> = { status: "Status", assignee: "Assignee", priority: "Priority", label: "Label" };
@@ -68,7 +69,7 @@ function Star({ view, onChange }: { view: CustomView; onChange?: (view: CustomVi
 export function ViewsPage() {
   const app = useApp();
   const views = app.views;
-  useEffect(() => void (document.title = "Views · Docket"), []);
+  useTitle("Views");
 
   let body;
   if (!views) body = null;
@@ -169,7 +170,7 @@ export function CustomViewPage({ id }: { id: number }) {
   const q = useDebounced((search ?? "").trim(), 300);
 
   useEffect(() => void (nav.lastList = location.pathname), []);
-  useEffect(() => void (document.title = `${view?.name ?? "View"} · Docket`), [view?.name]);
+  useTitle(view?.name ?? "View");
 
   // Shown at once, saved in order; a refused change toasts and reloads the view.
   const change = (patch: CustomViewPatch) => {
