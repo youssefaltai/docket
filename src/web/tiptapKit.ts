@@ -199,7 +199,7 @@ const ImageParagraph = Paragraph.extend({
 });
 
 /** Files to upload, and where they go: a drop's position, or null for the selection (a paste). */
-export type OnFiles = (files: File[], at: number | null) => void;
+type OnFiles = (files: File[], at: number | null) => void;
 
 /**
  * Nothing pasted or dropped loads anything remote: HTML loses its images and media before it's parsed (the image node

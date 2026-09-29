@@ -519,7 +519,7 @@ const DUE_OPTIONS: [DueFilter | "", string][] = [
 // ---------- List ----------
 
 /** How a list or board is grouped and ordered: by status and priority unless a saved view says otherwise. */
-export type Display = { groupBy?: GroupBy; orderBy?: OrderBy };
+type Display = { groupBy?: GroupBy; orderBy?: OrderBy };
 
 /** One group of a list or board: its issues in order, its head, and what a new issue or a dropped card gets there. */
 interface Group {

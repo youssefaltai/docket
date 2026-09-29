@@ -26,13 +26,9 @@ const corpus = readdirSync(dir).map((name) => ({ name, markdown: readFileSync(jo
 const mount = (markdown: string) =>
   new Editor({ element: document.createElement("div"), extensions: extensions(), content: markdown, contentType: "markdown", textDirection: "auto" });
 
-// What the guard sends to markdown source mode. None of the corpus since DKT-37 fixed list soft breaks, text after a
-// block in a list item, and ``double backtick`` code.
-const REJECTED: string[] = [];
-
-test("the guard admits the corpus except the known lossy cases", () => {
+test("the guard admits the whole corpus", () => {
   expect(corpus.length).toBe(38);
-  expect(corpus.filter((f) => !admits(f.markdown)).map((f) => f.name).sort()).toEqual(REJECTED.sort());
+  expect(corpus.filter((f) => !admits(f.markdown)).map((f) => f.name)).toEqual([]);
 });
 
 test("what the guard admits survives a one-character edit: nothing lost, and stable on the next load", () => {
