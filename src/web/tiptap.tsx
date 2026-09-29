@@ -20,8 +20,8 @@ import {
 } from "./editor";
 import { useChipSource, type ChipSource } from "./issueIndex";
 import { wsPath } from "./routing";
-import { admits, allowedHref, extensions, toMarkdown } from "./tiptapKit";
-import { cls } from "./util";
+import { admits, extensions, toMarkdown } from "./tiptapKit";
+import { cls, safeUrl } from "./util";
 
 // ---------- Chips: issue identifiers and @mentions, as the read view shows them. Decorations, never stored. ----------
 
@@ -199,7 +199,7 @@ export function Rich(props: EditorProps & { onReject: () => void }) {
         handleClick: (_view, _pos, event) => {
           // ⌘/Ctrl-click follows a link or chip, in a new tab (a click just places the caret).
           const href = (event.target as Element).closest("a[href]")?.getAttribute("href");
-          if (!href || !(event.metaKey || event.ctrlKey) || !allowedHref(href)) return false;
+          if (!href || !(event.metaKey || event.ctrlKey) || safeUrl(href) === null) return false;
           window.open(wsPath(href), "_blank", "noopener,noreferrer");
           return true;
         },
@@ -352,7 +352,7 @@ function Toolbar({ editor, linking, setLinking }: { editor: Editor; linking: boo
     const url = href.trim();
     const full = !url || /^([a-z][a-z0-9+.-]*:|\/|#)/i.test(url) ? url : `https://${url}`;
     if (!full) editor.chain().focus().extendMarkRange("link").unsetLink().run();
-    else if (allowedHref(full)) editor.chain().focus().extendMarkRange("link").setLink({ href: full }).run();
+    else if (safeUrl(full) !== null) editor.chain().focus().extendMarkRange("link").setLink({ href: full }).run();
     setLinking(false);
   };
 

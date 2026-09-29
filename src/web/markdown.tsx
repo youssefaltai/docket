@@ -6,17 +6,10 @@ import { useApp } from "./context";
 import { statusSvg } from "./icons";
 import { isPlainClick, navigate, wsPath } from "./routing";
 import { useChipSource, type ChipSource } from "./issueIndex";
-import { cls } from "./util";
+import { cls, safeUrl } from "./util";
 
 const escapeHtml = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
-
-/** Browsers strip whitespace/control chars when parsing URLs, so check the cleaned form. */
-function safeUrl(href: string): string | null {
-  const url = href.replace(/[\u0000- ]/g, "");
-  const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(url)?.[1];
-  return !scheme || /^(https?|mailto)$/i.test(scheme) ? url : null;
-}
 
 /** App paths and in-page anchors stay in the tab (and route client-side); everything else opens a new one. */
 const isInternal = (url: string) => /^(\/(?!\/)|#)/.test(url);

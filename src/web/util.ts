@@ -17,7 +17,17 @@ export function createStore<T>(value: T) {
   };
 }
 
-export const MOD = /Mac|iPhone|iPad/.test(navigator.userAgent) ? "⌘" : "Ctrl";
+/**
+ * The URL if it's a web or mail link, or a path in the app; null for anything else (javascript:, data:). Browsers strip
+ * whitespace/control chars when parsing URLs, so this checks, and returns, the cleaned form.
+ */
+export function safeUrl(href: string): string | null {
+  const url = href.replace(/[\u0000- ]/g, "");
+  const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(url)?.[1];
+  return !scheme || /^(https?|mailto)$/i.test(scheme) ? url : null;
+}
+
+export const MOD =/Mac|iPhone|iPad/.test(navigator.userAgent) ? "⌘" : "Ctrl";
 
 export function timeAgo(iso: string): string {
   const date = new Date(iso);
