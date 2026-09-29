@@ -108,13 +108,13 @@ export const store = {
  */
 let signedInAs: string | null = null;
 export const setSignedInAs = (id: number) => (signedInAs = String(id));
-const signedInHeader =(): Record<string, string> => (signedInAs ? { "x-docket-user": signedInAs } : {});
+const signedInHeader = ():Record<string, string> => (signedInAs ? { "x-docket-user": signedInAs } : {});
 
 /** The workspace this tab shows (the URL's), sent as X-Docket-Workspace: every data request acts there. */
 let currentWorkspace: string | null = null;
 export const setCurrentWorkspace = (key: string | null) => (currentWorkspace = key);
 export const getCurrentWorkspace = () => currentWorkspace;
-const workspaceHeader =(): Record<string, string> => (currentWorkspace ? { "x-docket-workspace": currentWorkspace } : {});
+const workspaceHeader = ():Record<string, string> => (currentWorkspace ? { "x-docket-workspace": currentWorkspace } : {});
 
 export const request = <T>(method: string, path: string, body?: unknown): Promise<T> =>
   body === undefined ? send<T>(method, path) : send<T>(method, path, JSON.stringify(body), "application/json");
