@@ -2,6 +2,7 @@
 // (notifications). tracker.ts calls the fan-out helpers inside each mutation's transaction; the rest acts for the
 // caller alone, in the request's workspace: nobody sees, marks or deletes anyone else's notifications.
 import type { SQLQueryBindings } from "bun:sqlite";
+import { marked, type Token } from "marked";
 import type { Inbox, Notification, NotificationKind, UserKind } from "../shared/types.ts";
 import { type Actor, requestWorkspace, SEES_TEAM, usernameOf } from "./access.ts";
 import { AppError, changed, db, knownAs, now } from "./db.ts";
@@ -122,7 +123,33 @@ const SELECT = `
   LEFT JOIN documents d ON d.id = n.document_id
   WHERE n.user_id = ?1 AND n.workspace = ?2 AND ${aboutVisible("?1")}`;
 
-const excerpt = (body: string) => body.replace(/\s+/g, " ").trim().slice(0, 200);
+/** Markdown's text as it reads: link text without its URL, code without backticks, an image as its alt text, no tags. */
+function plain(tokens: Token[]): string {
+  return tokens.map((t) => inline(t) + (BLOCKS.has(t.type) ? " " : "")).join("");
+}
+const BLOCKS = new Set(["heading", "paragraph", "code", "blockquote", "list", "list_item", "table", "hr"]);
+function inline(t: Token): string {
+  switch (t.type) {
+    case "codespan":
+    case "code":
+    case "escape":
+    case "image":
+      return t.text;
+    case "html":
+      return t.raw.replace(t.block ? /<[^>]*>/g : /<br\s*\/?>/gi, " ").replace(/<[^>]*>/g, ""); // a block tag sets text apart
+    case "br":
+      return " ";
+    case "list":
+      return plain(t.items);
+    case "table":
+      return [t.header, ...t.rows].flat().map((cell: { tokens: Token[] }) => plain(cell.tokens) + " ").join("");
+    default: // text, emphasis, links, headings, paragraphs, quotes, list items: their children
+      return "tokens" in t && t.tokens ? plain(t.tokens) : t.type === "text" ? t.text : "";
+  }
+}
+
+/** A comment's first 200 characters as plain text on one line. */
+const excerpt = (body: string) => plain(marked.lexer(body)).replace(/\s+/g, " ").trim().slice(0, 200).trimEnd();
 
 function toNotification(r: Record<string, any>): Notification {
   return {
