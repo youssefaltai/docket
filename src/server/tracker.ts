@@ -3543,8 +3543,8 @@ export function listCycles(a: Actor, key: string): Cycle[] {
 
 /**
  * The teams a change event is about, so /ws sends it only to sockets that see one: an issue's (by its identifier's
- * key), a doc's, a team, a team's own label, a project's teams. null: not about a team (the workspace, its members,
- * views, the workspace's own labels), so everyone in the workspace hears it.
+ * key), a doc's, a team, a team's own label, a project's teams, a member's teams (see topicsFor in index.ts). null:
+ * not about a team (the workspace, views, the workspace's own labels), so everyone in the workspace hears it.
  */
 export function eventTeams(event: ServerEvent): { id: number; private: boolean }[] | null {
   const { entity, workspace, id } = event;
@@ -3562,6 +3562,13 @@ export function eventTeams(event: ServerEvent): { id: number; private: boolean }
   if (entity === "label") {
     const own = teams("FROM labels l JOIN teams t ON t.id = l.team_id WHERE l.workspace = ? AND l.id = ?", Number(id));
     return own.length ? own : null;
+  }
+  if (entity === "member") {
+    return teams(
+      `FROM workspace_members m JOIN team_members x ON x.user_id = m.user_id JOIN teams t ON t.id = x.team_id AND t.workspace = m.workspace
+       WHERE m.workspace = ? AND m.username = ?`,
+      id,
+    );
   }
   return null;
 }

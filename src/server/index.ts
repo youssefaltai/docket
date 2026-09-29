@@ -22,7 +22,7 @@ interface SocketData {
   topics: string[];
 }
 const sockets = new Map<number, Set<Bun.ServerWebSocket<SocketData>>>();
-// What isn't about a team (the workspace, members, views, workspace labels): everyone in the workspace.
+// What isn't about a team (the workspace, views, workspace labels): everyone in the workspace.
 const topic = (workspace: string) => `workspace:${workspace}`;
 // Public teams' events: everyone in the workspace but guests, who hear only their teams.
 const publicTopic = (workspace: string) => `public:${workspace}`;
@@ -44,6 +44,8 @@ const topicsOf = (a: Actor) =>
 function topicsFor(event: ServerEvent): string[] {
   const teams = eventTeams(event);
   if (teams === null) return [topic(event.workspace)];
+  // A member: everyone but guests, who hear only of those sharing a team with them (their member list shows no one else).
+  if (event.entity === "member") return [publicTopic(event.workspace), ...teams.map((t) => teamTopic(t.id))];
   return [...new Set(teams.flatMap((t) => (t.private ? [teamTopic(t.id)] : [publicTopic(event.workspace), teamTopic(t.id)])))];
 }
 

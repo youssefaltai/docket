@@ -346,6 +346,22 @@ describe("mentions, the inbox and live events", () => {
     expect(bobSocket.events.some((e) => e.id === ops.id)).toBeTrue();
     for (const socket of [anaSocket, bobSocket, gusSocket]) socket.close();
   });
+
+  test("/ws: a guest hears about members who share a team with them, not the rest (DKT-42)", async () => {
+    const bobSocket = bob.ws();
+    const gusSocket = gus.ws();
+    expect([await bobSocket.opened, await gusSocket.opened]).toEqual([true, true]);
+    const member = (username: string) => (e: any) => e.entity === "member" && e.id === username;
+    await ok(bob.api("PATCH", "/api/workspaces/acme/profile", { name: "Bob B" })); // shares no team with gus
+    await ok(s.api("PATCH", "/api/workspaces/acme/profile", { name: "Admin A" })); // in WEB, with gus
+    await gusSocket.until(member("admin"));
+    await bobSocket.until(member("admin"));
+    expect(bobSocket.events.some(member("bob"))).toBeTrue();
+    expect(gusSocket.events.some(member("bob"))).toBeFalse();
+    for (const socket of [bobSocket, gusSocket]) socket.close();
+    await ok(bob.api("PATCH", "/api/workspaces/acme/profile", { name: "bob" }));
+    await ok(s.api("PATCH", "/api/workspaces/acme/profile", { name: "Admin" }));
+  });
 });
 
 describe("joining, leaving and making a team private", () => {
