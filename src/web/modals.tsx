@@ -53,6 +53,7 @@ import {
   TemplateIcon,
   StatusIcon,
   statusOf,
+  Switch,
   TagIcon,
   nav,
   navigate,
@@ -477,6 +478,17 @@ function FormModal({
   );
 }
 
+const InWorkspace = () => {
+  const { workspace } = useApp();
+  return (
+    workspace && (
+      <span className="muted" dir="auto">
+        in {workspace.name}
+      </span>
+    )
+  );
+};
+
 function deriveKey(name: string): string {
   const words = name.toUpperCase().match(/[A-Z]+/g) ?? [];
   const key = words.length > 1 ? words.map((w) => w[0]).join("") : (words[0] ?? "").slice(0, 3);
@@ -495,13 +507,7 @@ export function NewTeamModal({ onClose }: { onClose: () => void }) {
   return (
     <FormModal
       title="New team"
-      aside={
-        workspace && (
-          <span className="muted" dir="auto">
-            in {workspace.name}
-          </span>
-        )
-      }
+      aside={<InWorkspace />}
       action="Create team"
       ready={!!name.trim() && /^[A-Z]{2,5}$/.test(key) && !!workspace}
       onSubmit={async () => {
@@ -537,12 +543,9 @@ export function NewTeamModal({ onClose }: { onClose: () => void }) {
       >
         <textarea className="input" dir="auto" rows={2} value={description} onChange={(e) => setDescription(e.target.value)} />
       </Field>
-      <label className="workflow-switch">
-        <input type="checkbox" checked={isPrivate} onChange={(e) => setPrivate(e.target.checked)} />
-        <span>
-          <b>Private</b> <span className="muted">Only people you add see it, its issues and docs.</span>
-        </span>
-      </label>
+      <Switch checked={isPrivate} onChange={setPrivate} title="Private">
+        Only people you add see it, its issues and docs.
+      </Switch>
     </FormModal>
   );
 }
@@ -574,13 +577,7 @@ export function NewViewModal({ defaults, onClose }: { defaults: Omit<CustomViewI
   return (
     <FormModal
       title="New view"
-      aside={
-        app.workspace && (
-          <span className="muted" dir="auto">
-            in {app.workspace.name}
-          </span>
-        )
-      }
+      aside={<InWorkspace />}
       action="Create view"
       ready={!!name.trim()}
       onSubmit={async () => {

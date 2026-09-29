@@ -40,6 +40,7 @@ import {
   type IssueChange,
   useApp,
   useFetch,
+  useTitle,
 } from "./ui";
 
 const issues = (n: number) => `${n} ${n === 1 ? "issue" : "issues"}`;
@@ -51,10 +52,8 @@ export function ProjectsView({ teamKey }: { teamKey: string | null }) {
   const team = teamKey ? app.teams?.find((t) => t.key === teamKey) : undefined;
   const [search, setSearch] = useState("");
 
-  useEffect(() => {
-    nav.lastProjects = location.pathname;
-    document.title = `${team ? `${team.name} projects` : teamKey || "Projects"} · Docket`;
-  }, [teamKey, team?.name]);
+  useEffect(() => void (nav.lastProjects = location.pathname), [teamKey]);
+  useTitle(team ? `${team.name} projects` : teamKey || "Projects");
 
   const { data: projects, failed, reload } = useFetch(() => api.projects({ team: teamKey ?? undefined }), [teamKey]);
   const q = search.trim().toLowerCase();
@@ -159,9 +158,7 @@ export function ProjectPage({ slug }: { slug: string }) {
   useListShortcuts(list.setData, list.invalidate, list.reload);
   const { selection, bar } = useBulk(shown, { setIssues: list.setData, invalidate: list.invalidate, reload: list.reload }, [slug, milestone]);
 
-  useEffect(() => {
-    document.title = `${project?.name ?? slug} · Docket`;
-  }, [slug, project?.name]);
+  useTitle(project?.name ?? slug);
 
   const header = (
     <header className="header">

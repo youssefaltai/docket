@@ -45,6 +45,7 @@ import {
   PriorityIcon,
   Section,
   StatusIcon,
+  Switch,
   Tabs,
   TagIcon,
   TeamMark,
@@ -59,6 +60,7 @@ import {
   useApp,
   useDebounced,
   useFetch,
+  useTitle,
   useRun,
   type StatusLook,
 } from "./ui";
@@ -67,9 +69,7 @@ export function SettingsPage({ section: asked }: { section: "account" | "workspa
   const { workspace } = useApp();
   const guest = workspace?.role === "guest"; // a guest's settings are their account's alone
   const section = guest ? "account" : asked;
-  useEffect(() => {
-    document.title = "Settings · Docket";
-  }, []);
+  useTitle("Settings");
   return (
     <>
       <header className="header">
@@ -198,16 +198,6 @@ const SaveButton = ({ disabled }: { disabled: boolean }) => (
       Save
     </button>
   </div>
-);
-
-/** A settings switch: bold title, muted explanation. */
-const Switch = ({ checked, onChange, title, children }: { checked: boolean; onChange: (on: boolean) => void; title: string; children: ReactNode }) => (
-  <label className="workflow-switch">
-    <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
-    <span>
-      <b>{title}</b> <span className="muted">{children}</span>
-    </span>
-  </label>
 );
 
 const meta = (...parts: (string | false | null | undefined)[]) => parts.filter(Boolean).join(" · ");
@@ -1315,9 +1305,7 @@ export function TeamSettingsPage({ teamKey }: { teamKey: string }) {
   const team = teams?.find((t) => t.key === teamKey);
   // Guests set nothing up: they see who's in the team, and manage its own labels.
   const guest = workspace?.role === "guest";
-  useEffect(() => {
-    document.title = `Settings · ${team?.name ?? teamKey} · Docket`;
-  }, [team?.name, teamKey]);
+  useTitle(`Settings · ${team?.name ?? teamKey}`);
   return (
     <>
       <ListHeader team={team} title={teamKey} count={0} view="settings" />

@@ -266,6 +266,16 @@ export function EmptyState({
   );
 }
 
+/** A checkbox switch: bold title, muted explanation. */
+export const Switch = ({ checked, onChange, title, children }: { checked: boolean; onChange: (on: boolean) => void; title: string; children: ReactNode }) => (
+  <label className="workflow-switch">
+    <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+    <span>
+      <b>{title}</b> <span className="muted">{children}</span>
+    </span>
+  </label>
+);
+
 /** A labeled form field, with an optional hint below. */
 export function Field({ label, hint, children }: { label: ReactNode; hint?: ReactNode; children: ReactNode }) {
   return (

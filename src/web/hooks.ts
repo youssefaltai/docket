@@ -27,6 +27,12 @@ export function useDebounced<T>(value: T, ms: number): T {
   return v;
 }
 
+/** The tab's title: "<title> · Docket". */
+export const useTitle = (title: string) =>
+  useEffect(() => {
+    document.title = `${title} · Docket`;
+  }, [title]);
+
 /**
  * Loads data on mount, when `deps` change and on every live update; a `null` loader waits.
  * Only the latest request lands: `invalidate()` also drops any in flight (call it before

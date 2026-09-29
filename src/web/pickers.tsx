@@ -241,7 +241,6 @@ export function Picker({ label, options, selected, onPick, multi, create, onOpen
 }
 
 type Trigger = { className?: string; children?: ReactNode; align?: "start" | "end"; cmd?: string };
-const uniq = (xs: string[]) => [...new Set(xs)];
 
 /** A user as a picker option (value: username), marking the viewer. */
 export const userOption = (user: UserRef): Option => ({
@@ -372,7 +371,7 @@ export function LabelsPicker({
 }: Trigger & { team: string; value: string[]; onChange: (labels: string[]) => void; children: ReactNode }) {
   const { labels, loadDirectory } = useApp();
   const usable = labels.filter((l) => !l.isGroup && (l.team === null || l.team === team)).map((l) => l.path);
-  const options = uniq([...usable, ...value.filter((p) => !findLabel(labels, p))]).map((p) => ({ value: p, label: p, icon: <LabelDot color={labelColor(labels, p)} /> }));
+  const options = [...new Set([...usable, ...value.filter((p) => !findLabel(labels, p))])].map((p) => ({ value: p, label: p, icon: <LabelDot color={labelColor(labels, p)} /> }));
   const pick = (v: string) => {
     if (value.includes(v)) return onChange(value.filter((p) => p !== v));
     const group = labelGroupOf(labels, v);
