@@ -722,6 +722,27 @@ const MIGRATIONS: (string | (() => void))[] = [
   INSERT INTO team_members (team_id, user_id, created_at)
     SELECT t.id, m.user_id, MAX(t.created_at, m.created_at) FROM teams t JOIN workspace_members m ON m.workspace = t.workspace;
   `,
+  // Push notifications (Web Push): a device's browser subscription, made in a signed-in session and gone with it
+  // (sign-out, revoke), and the server's VAPID key pair, made on first use. Changes no row.
+  `
+  CREATE TABLE push_subscriptions (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    endpoint TEXT NOT NULL UNIQUE, -- the push service's URL for this device
+    p256dh TEXT NOT NULL,          -- the device's public key (base64url): payloads are encrypted to it
+    auth TEXT NOT NULL,            -- the device's auth secret (base64url)
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX push_subscriptions_user ON push_subscriptions(user_id);
+  CREATE INDEX push_subscriptions_session ON push_subscriptions(session_id);
+  CREATE TABLE vapid_keys (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    public_key TEXT NOT NULL,
+    private_key TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  `,
 ];
 
 db.run("PRAGMA foreign_keys = OFF"); // a migration may rebuild a table (SQLite's 12-step ALTER); checked before each commit

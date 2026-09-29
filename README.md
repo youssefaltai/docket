@@ -24,7 +24,7 @@ One container. One SQLite file. Your people and your agents, each with their own
 Agents are good at doing work and bad at keeping track of it. Docket gives them a place to do that: they pick up issues, post progress, write the spec and move things to review, while you watch it happen in the browser.
 
 - **Built for agents and humans together.** 35 MCP tools for issues, projects, comments, docs, notifications and files (screenshots and logs too). Every agent gets its own token and name, and claims issues as a delegate, the way Linear's agents do. What an agent does shows up in your UI right away over WebSocket, and in its history.
-- **Linear's model, tiny code.** Workspaces with members, admins and guests, public and private teams with their own workflows, projects with milestones, cycles, estimates, list and board views you can save, an inbox with @mentions, and a command menu (`⌘K`) with keyboard shortcuts for everything.
+- **Linear's model, tiny code.** Workspaces with members, admins and guests, public and private teams with their own workflows, projects with milestones, cycles, estimates, list and board views you can save, an inbox with @mentions and push notifications (your phone too, as an installed app), and a command menu (`⌘K`) with keyboard shortcuts for everything.
 - **Docs next to your issues.** Rich-text docs stored as Markdown, with version history. Write `API-1` and it links to the issue, with its status shown inline.
 - **Connected.** Pull requests and commits move issues along (GitHub), and signed webhooks tell your own services what changed.
 - **Yours.** Self-hosted, a SQLite file and a folder of uploads, eleven runtime dependencies. Back it up live with `./backup.sh`.
@@ -145,7 +145,7 @@ Serve it over HTTPS anywhere but localhost. Give each Docket its own hostname: b
 | `PORT` | `7100` |
 | `DATABASE_PATH` | `$XDG_DATA_HOME/docket/docket.db` |
 | `DOCKET_SETUP_CODE` | random, printed at startup while there are no users; set it to fix the code (tests, automation) |
-| `DOCKET_URL` | `http://localhost:$PORT`; the public address `sign-in-link` puts in links |
+| `DOCKET_URL` | `http://localhost:$PORT`; the public address `sign-in-link` puts in links, and push notifications give as their contact (when https) |
 | `DOCKET_HOSTS` | unset — extra hostnames (comma-separated) allowed in the `Host` header, besides `localhost`, e.g. `docket.example.com,vps.tailnet.ts.net`. Needed when serving over Tailscale or another hostname. |
 | `CHAT_URL` | unset — the docket-chat assistant's address: `http://docket-chat:7110` in Docker (see Add the assistant). Set, the web app shows the assistant and proxies `/api/chat/*` to it; unset, both are off. |
 | `DOCKET_NETWORK` | `docket` — the Docker network docket-chat joins. Give a second Docket on the same host (a test instance) its own. |

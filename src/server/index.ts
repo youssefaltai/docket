@@ -11,6 +11,7 @@ import { receive as receiveGitHub } from "./github.ts";
 import { onChange } from "./db.ts";
 import { HARD_MAX_BODY, http, publicFile, secure, webApp } from "./http.ts";
 import { handleMcp } from "./mcp.ts";
+import { startPush } from "./push.ts";
 import { autoArchive, eventTeams, syncCycles } from "./tracker.ts";
 import { startWebhooks } from "./webhooks.ts";
 
@@ -128,5 +129,6 @@ onRevoke(({ userId, sessionId, keyId }) => {
 // Behind a proxy the listening address isn't where people open Docket; DOCKET_URL is (as for sign-in-link).
 const publicUrl = (process.env.DOCKET_URL || server.url.href).replace(/\/+$/, "");
 startWebhooks(publicUrl); // payload URLs point there too
+startPush(publicUrl);
 console.log(`Docket running at ${server.url}`);
 if (needsSetup()) console.log(`Setup code: ${formatCode(setupCode)} (open ${publicUrl}/setup to create the first account)`);
