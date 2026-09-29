@@ -5,7 +5,7 @@ import { GROUP_BYS, ORDER_BYS, type CustomView, type CustomViewPatch, type Group
 import { api } from "./api";
 import { getYou } from "./auth";
 import { useBulk } from "./bulk";
-import { Board, Filters, IssueList, LayoutToggle, LISTED, useListShortcuts } from "./issues";
+import { Board, Filters, IssueList, LayoutToggle, LISTED, listPatch, useListShortcuts } from "./issues";
 import { Picker } from "./pickers";
 import {
   Avatar,
@@ -32,8 +32,6 @@ import {
   nav,
   navigate,
   timeAgo,
-  toPatch,
-  type IssueChange,
   useApp,
   useDebounced,
   useFetch,
@@ -213,15 +211,7 @@ export function CustomViewPage({ id }: { id: number }) {
   useListShortcuts(setIssues, invalidate, reloadIssues);
   const { selection, bar } = useBulk(issues, { setIssues, invalidate, reload: reloadIssues }, [key]);
 
-  const patch = (issueId: string, p: IssueChange) => {
-    invalidate();
-    const now = new Date().toISOString();
-    setIssues((list) => list?.map((i) => (i.id === issueId ? { ...i, ...p, updatedAt: now } : i)) ?? null);
-    api.updateIssue(issueId, toPatch(p)).catch((e) => {
-      errorToast(e);
-      reloadIssues();
-    });
-  };
+  const patch = listPatch(setIssues, invalidate, reloadIssues);
 
   const remove = async () => {
     if (!view || !(await ask(`Delete “${view.name}”? It’s gone for everyone in the workspace.`, "Delete"))) return;
