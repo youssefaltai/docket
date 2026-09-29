@@ -5,7 +5,7 @@ import { PROJECT_STATUS_LABELS, type Milestone, type Project, type ProjectPatch,
 import { HttpError, api } from "./api";
 import { useBulk } from "./bulk";
 import { Description, type Edit } from "./issue";
-import { IssueList, LISTED, useListShortcuts } from "./issues";
+import { IssueList, LISTED, listPatch, useListShortcuts } from "./issues";
 import { LeadPicker, ProjectStatusPicker, RowMenu, TeamsPicker } from "./pickers";
 import {
   Avatar,
@@ -36,8 +36,6 @@ import {
   nav,
   percent,
   Progress,
-  toPatch,
-  type IssueChange,
   useApp,
   useFetch,
   useTitle,
@@ -232,14 +230,7 @@ export function ProjectPage({ slug }: { slug: string }) {
     throw new HttpError("Project changed since you read it", 409);
   };
 
-  const patchIssue = (id: string, p: IssueChange) => {
-    list.invalidate();
-    list.setData((issues) => issues?.map((i) => (i.id === id ? { ...i, ...p, updatedAt: new Date().toISOString() } : i)) ?? null);
-    api.updateIssue(id, toPatch(p)).catch((e) => {
-      errorToast(e);
-      list.reload();
-    });
-  };
+  const patchIssue = listPatch(list.setData, list.invalidate, list.reload);
 
   const teamName = (key: string) => app.teams?.find((t) => t.key === key)?.name ?? key;
   const team = project.teams[0];
