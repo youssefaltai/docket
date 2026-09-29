@@ -258,8 +258,8 @@ export const apiRoutes = {
     DELETE: handle<"/api/issues/:id/reactions/:emoji">((req, a) => tracker.reactToIssue(a, req.params.id, req.params.emoji, false)),
   },
   "/api/issues/:id/comments/:cid/reactions/:emoji": {
-    PUT: handle<"/api/issues/:id/comments/:cid/reactions/:emoji">((req, a) => tracker.reactToIssueComment(a, req.params.id, req.params.cid, req.params.emoji, true)),
-    DELETE: handle<"/api/issues/:id/comments/:cid/reactions/:emoji">((req, a) => tracker.reactToIssueComment(a, req.params.id, req.params.cid, req.params.emoji, false)),
+    PUT: handle<"/api/issues/:id/comments/:cid/reactions/:emoji">((req, a) => tracker.reactToIssue(a, req.params.id, req.params.emoji, true, req.params.cid)),
+    DELETE: handle<"/api/issues/:id/comments/:cid/reactions/:emoji">((req, a) => tracker.reactToIssue(a, req.params.id, req.params.emoji, false, req.params.cid)),
   },
   "/api/issues/:id/subscription": {
     PUT: handle<"/api/issues/:id/subscription">((req, a) => tracker.subscribeIssue(a, req.params.id, true)),

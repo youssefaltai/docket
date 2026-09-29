@@ -2321,20 +2321,14 @@ export const deleteIssueComment = (a: Actor, identifier: string, commentId: unkn
 export const resolveIssueThread = (a: Actor, identifier: string, commentId: unknown, resolved: boolean) =>
   changeIssueComments(a, identifier, (id, time, workspace) => resolveThread(a, "issue", id, workspace, commentId, resolved, time));
 
-/** Adds or removes your reaction on an issue's description. Doesn't bump updated_at or notify anyone. */
-export function reactToIssue(a: Actor, identifier: string, emoji: unknown, on: boolean): Issue {
+/**
+ * Adds or removes your reaction on an issue's description, or with `commentId` on one of its comments (404 if it isn't
+ * one). Doesn't bump updated_at or notify anyone.
+ */
+export function reactToIssue(a: Actor, identifier: string, emoji: unknown, on: boolean, commentId?: unknown): Issue {
   const { id, workspace } = liveIssue(a, identifier);
-  setReaction(a, `issue:${id}`, { issueId: id }, emoji, on, now());
-  const issue = getIssue(a, identifier);
-  changed("issue", workspace, issue.id);
-  return issue;
-}
-
-/** Adds or removes your reaction on a comment of this issue (404 if `commentId` isn't one). Doesn't bump updated_at. */
-export function reactToIssueComment(a: Actor, identifier: string, commentId: unknown, emoji: unknown, on: boolean): Issue {
-  const { id, workspace } = liveIssue(a, identifier);
-  const { id: cid } = commentRow("issue", id, workspace, commentId);
-  setReaction(a, `${COMMENTS.issue.source}:${cid}`, { issueId: id }, emoji, on, now());
+  const target = commentId === undefined ? `issue:${id}` : `${COMMENTS.issue.source}:${commentRow("issue", id, workspace, commentId).id}`;
+  setReaction(a, target, { issueId: id }, emoji, on, now());
   const issue = getIssue(a, identifier);
   changed("issue", workspace, issue.id);
   return issue;

@@ -979,7 +979,7 @@ function createServer(a: Actor, origin: string): McpServer {
       return commentOn(
         target,
         (id) => {
-          const issue = comment === undefined ? tracker.reactToIssue(a, id, emoji, on) : tracker.reactToIssueComment(a, id, comment, emoji, on);
+          const issue = tracker.reactToIssue(a, id, emoji, on, comment);
           return result(done(comment === undefined ? issue.id : `#${comment} on ${issue.id}`), { issue });
         },
         (slug) => {

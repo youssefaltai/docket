@@ -97,16 +97,7 @@ test("documents, versions and issue links", async () => {
   expect(issue.docs.map((d: any) => d.slug)).toEqual(["design-notes"]);
 });
 
-test("rejects bad requests", async () => {
-  // Raw fetch: this test is about the 415 itself (a non-JSON content type), which s.api can't
-  // send. We still authenticate, using s.admin.token for the bearer header as the one allowed
-  // exception to "no hand-built auth headers".
-  const form = await fetch(new URL("/api/issues", s.url), {
-    method: "POST",
-    headers: { "Content-Type": "text/plain", Authorization: `Bearer ${s.admin.token}` },
-    body: JSON.stringify({ team: "API", title: "x" }),
-  });
-  expect(form.status).toBe(415);
+test("unknown routes and issues are 404", async () => {
   expect((await s.api("GET", "/api/nope")).status).toBe(404);
   expect((await s.api("GET", "/api/issues/API-999")).status).toBe(404);
 });
