@@ -56,21 +56,8 @@ test("agents can't create or change teams", async () => {
 test("tools/list shows each caller only what it can use", async () => {
   const ana = await s.user("ana");
   const ro = s.with({ token: (await ana.api("POST", "/api/api-keys", { name: "ro", scope: "read" })).body.token });
-  const reads = [
-    "get_attachment",
-    "get_document",
-    "get_issue",
-    "get_project",
-    "list_cycles",
-    "list_documents",
-    "list_issues",
-    "list_labels",
-    "list_members",
-    "list_notifications",
-    "list_projects",
-    "list_teams",
-    "list_templates",
-  ];
+  const reads = ["get_attachment", "get_document", "get_issue", "get_project", "list_cycles", "list_documents", "list_issues", "list_labels", "list_members"];
+  reads.push("list_notifications", "list_projects", "list_teams", "list_templates");
   const writes = ["attach_file", "claim_issue", "comment_document", "comment_issue", "create_document", "create_issue", "create_milestone", "create_project"];
   writes.push("delete_comment", "delete_document", "mark_notifications_read", "react", "resolve_thread", "subscribe", "update_comment", "update_document", "update_issue", "update_milestone", "update_project");
   const agent = [...reads, ...writes].sort();
