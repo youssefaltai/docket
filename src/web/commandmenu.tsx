@@ -28,7 +28,6 @@ import {
   useIssueIndex,
   useKeydown,
   usePath,
-  visibleCmd,
   type MyTab,
 } from "./ui";
 
@@ -183,7 +182,7 @@ export function CommandMenu() {
     if (route.view === "issue")
       for (const [prop, label] of [...PROPS, ...ISSUE_ACTIONS]) {
         const button = () => {
-          const el = visibleCmd(document, prop);
+          const el = document.querySelector<HTMLElement>(`[data-cmd="${prop}"]`);
           return el instanceof HTMLButtonElement ? el : (el?.querySelector<HTMLButtonElement>("button") ?? null);
         };
         if (button())
