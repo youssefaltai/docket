@@ -26,3 +26,12 @@ test("many clients at once can't grow it past the cap", () => {
     if (buckets.size > 1000) throw new Error(`${buckets.size} buckets after ${i + 1} clients`);
   }
 });
+
+test("past the cap, a drained bucket in use survives a flood of new clients", () => {
+  const buckets = tokenBuckets(1000);
+  for (let i = 0; i < 601; i++) buckets.take("ip:a", 0); // drained, and the first in
+  for (let i = 0; i < 999; i++) buckets.take(`ip:${i}`, 0);
+  expect(buckets.take("ip:a", 1)).toBeGreaterThan(0); // used last
+  buckets.take("ip:new", 1); // over the cap: evicts the least used
+  expect(buckets.take("ip:a", 1)).toBeGreaterThan(0); // still drained, not reset
+});

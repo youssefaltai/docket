@@ -55,7 +55,7 @@ export function secure(req: Request, res: Response, { api = false } = {}): Respo
 const BURST = 600; // requests at once
 const PER_SECOND = 20; // sustained
 
-/** Token buckets by key, at most `max`: past it, those refilled since last used go (they'd start full anyway), then the oldest. */
+/** Token buckets by key, at most `max`: past it, those refilled since last used go (they'd start full anyway), then the least recently used. */
 export function tokenBuckets(max = 10_000) {
   const buckets = new Map<string, { tokens: number; at: number }>();
   const refilled = (b: { tokens: number; at: number }, time: number) => Math.min(BURST, b.tokens + ((time - b.at) / 1000) * PER_SECOND);
@@ -69,7 +69,7 @@ export function tokenBuckets(max = 10_000) {
       if (!b) {
         if (buckets.size >= max) {
           for (const [k, v] of buckets) if (refilled(v, time) >= BURST) buckets.delete(k);
-          for (const k of buckets.keys()) {
+          for (const [k] of [...buckets].sort(([, x], [, y]) => x.at - y.at)) {
             if (buckets.size < max / 2) break;
             buckets.delete(k);
           }
