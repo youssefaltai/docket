@@ -28,11 +28,11 @@ scripts/              seed (demo data over REST) and sign-in-link (recovery CLI)
 
 ## Tests
 
-Tests start a real server in a subprocess against a temp database, set it up with an admin, then talk to it over REST, MCP and `/ws` (`test/server.ts`). They (almost) never import `src/`, so refactors don't break them. Only behaviour changes do. The exceptions: `test/rate-limit.test.ts` calls the limiter in `src/server/http.ts` directly, and these run under happy-dom: `test/editor.test.ts` checks the rich editor's markdown round-trip (`src/web/tiptapKit.ts`) on a real corpus (`test/fixtures/editor`), `test/markdown.test.ts` what the read view renders (`src/web/markdown.tsx`: which images load), `test/chord.test.ts` the G-chord's key handling (`src/web/hooks.ts`) and `test/new-issue.test.ts` the new-issue modal (`src/web/modals.tsx`).
+Tests start a real server in a subprocess against a temp database, set it up with an admin, then talk to it over REST, MCP and `/ws` (`test/server.ts`). They (almost) never import `src/`, so refactors don't break them. Only behaviour changes do. The exceptions: `test/rate-limit.test.ts` calls the limiter in `src/server/http.ts` directly, `test/migrations.test.ts` the schema runner in `src/server/schema.ts`, and these run under happy-dom: `test/editor.test.ts` checks the rich editor's markdown round-trip (`src/web/tiptapKit.ts`) on a real corpus (`test/fixtures/editor`), `test/markdown.test.ts` what the read view renders (`src/web/markdown.tsx`: which images load), `test/chord.test.ts` the G-chord's key handling (`src/web/hooks.ts`) and `test/new-issue.test.ts` the new-issue modal (`src/web/modals.tsx`).
 
 - A behaviour change or a bug fix comes with a test.
 - Tests sign in only through the harness: `s.api` (the admin), `s.user(name)`, `s.agent(name)`, `s.as(name)` and `s.anon`. A change to how auth works then touches `test/server.ts` alone.
-- A new migration comes with a test that data written under the previous schema survives it. Freeze that schema in the test as a fixture; never edit it later.
+- Migrations go at the end of `MIGRATIONS` in `src/server/schema.ts`; the baseline never changes. A migration that rewrites data needs a test; an additive one doesn't.
 
 ## What makes a PR easy to merge
 
