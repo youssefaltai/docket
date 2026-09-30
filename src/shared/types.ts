@@ -395,7 +395,7 @@ export interface IssueLink {
   kind: "pull_request" | "commit";
   title: string; // the PR's title, or the commit message's first line
   number: number | null; // the PR's number
-  state: "draft" | "open" | "merged" | "closed" | null; // PRs only
+  state: "draft" | "open" | "merged" | "closed" | null; // PRs; commits: merged once pushed to the default branch
   closes: boolean; // a closing link (branch, title or closing word) moves the issue along; a contributing one only links
   createdAt: string;
   updatedAt: string;

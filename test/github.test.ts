@@ -242,6 +242,9 @@ describe("pull requests", () => {
     await s.api("PATCH", `/api/issues/${id}`, { status: "in_progress" });
     expect((await deliver("pull_request", pr(1, { action: "synchronize", branch: `ana/${id.toLowerCase()}-fix-login`, title: "Fix the login" }))).body).toEqual({ linked: [id], moved: {} });
     expect((await get(id)).status).toBe("in_progress");
+    // A title edit changes the link but is no state change either.
+    expect((await deliver("pull_request", pr(1, { action: "edited", branch: `ana/${id.toLowerCase()}-fix-login`, title: "Fix the login page" }))).body).toEqual({ linked: [id], moved: {} });
+    expect(await get(id)).toMatchObject({ status: "in_progress", links: [{ title: "Fix the login page" }] });
 
     expect((await deliver("pull_request", merged(1, { branch: `ana/${id.toLowerCase()}-fix-login`, title: "Fix the login" }))).body).toEqual({ linked: [id], moved: { [id]: "done" } });
     expect(await get(id)).toMatchObject({ status: "done", links: [{ state: "merged" }] });
@@ -339,11 +342,24 @@ describe("pushes", () => {
     const [onMain, onBranch, plain, part] = [await issue("Main"), await issue("Branch"), await issue("Plain"), await issue("Part")];
     const res = await deliver("push", push("refs/heads/main", `fix ${onMain}\n\nDetails`, `${plain} tidy`, `Refs ${part}`));
     expect(res.body).toEqual({ linked: [onMain, part], moved: { [onMain]: "done" } });
-    expect(await get(onMain)).toMatchObject({ status: "done", links: [{ kind: "commit", title: `fix ${onMain}`, number: null, state: null, closes: true }] });
+    expect(await get(onMain)).toMatchObject({ status: "done", links: [{ kind: "commit", title: `fix ${onMain}`, number: null, state: "merged", closes: true }] });
     expect(await get(part)).toMatchObject({ status: "backlog", links: [{ closes: false }] });
     expect((await get(plain)).links).toEqual([]);
     expect((await deliver("push", push("refs/heads/feature", `Fixes ${onBranch}`))).body).toEqual({ linked: [onBranch], moved: {} });
     expect((await get(onBranch)).status).toBe("backlog");
+  });
+
+  test("a replayed push doesn't close an issue again after it was reopened; a commit first pushed elsewhere still closes on main", async () => {
+    const [id, later] = [await issue("Replayed"), await issue("Merged later")];
+    const closing = push("refs/heads/main", `fixes ${id}`);
+    expect((await deliver("push", closing)).body).toEqual({ linked: [id], moved: { [id]: "done" } });
+    await s.api("PATCH", `/api/issues/${id}`, { status: "in_progress" });
+    expect((await deliver("push", closing)).body).toEqual({ linked: [id], moved: {} });
+    expect((await get(id)).status).toBe("in_progress");
+
+    const commit = push("refs/heads/feature", `fixes ${later}`); // the same commit, then merged to main
+    await deliver("push", commit);
+    expect((await deliver("push", { ...commit, ref: "refs/heads/main" })).body).toEqual({ linked: [later], moved: { [later]: "done" } });
   });
 
   test("a closing commit on main doesn't close an issue whose other closing PR is still open", async () => {

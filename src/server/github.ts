@@ -97,19 +97,20 @@ const record = (value: unknown): Record<string, unknown> => (typeof value === "o
 
 type Result = { linked: string[]; moved: Record<string, string> };
 
-/** Links each referenced live issue; closing links move theirs along on `event` when the link is new or changed (`always`: even if not). */
-function apply(a: Actor, refs: Map<string, boolean>, link: Omit<tracker.LinkInput, "closes">, event: "draft" | "open" | "merged" | null, always: boolean, result: Result) {
+/** Links each referenced live issue; closing links move theirs along on `event` when the link is new or changed. */
+function apply(a: Actor, refs: Map<string, boolean>, link: Omit<tracker.LinkInput, "closes">, event: "draft" | "open" | "merged" | null, result: Result) {
   for (const [identifier, closes] of refs) {
     const linked = tracker.linkIssue(a, identifier, { ...link, closes });
     if (!linked) continue;
     if (!result.linked.includes(linked.id)) result.linked.push(linked.id);
-    if (!closes || !event || !(linked.changed || always)) continue;
+    if (!closes || !event || !linked.changed) continue;
     const to = tracker.advanceIssue(a, linked.id, event, link.url);
     if (to) result.moved[linked.id] = to;
   }
 }
 
 const PR_ACTIONS = ["opened", "reopened", "edited", "ready_for_review", "converted_to_draft", "closed", "synchronize"];
+const PR_MOVES = ["opened", "reopened", "ready_for_review", "converted_to_draft", "closed"]; // edited and synchronize only refresh the link
 
 function pullRequest(a: Actor, payload: Record<string, unknown>): Result | { ignored: string } {
   const pr = record(payload.pull_request);
@@ -120,11 +121,12 @@ function pullRequest(a: Actor, payload: Record<string, unknown>): Result | { ign
   const refs = references({ branch: text(record(pr.head).ref), title, text: text(pr.body) });
   const number = Number.isSafeInteger(pr.number) ? (pr.number as number) : null;
   const result: Result = { linked: [], moved: {} };
-  apply(a, refs, { url, kind: "pull_request", title, number, state }, state === "closed" ? null : state, false, result);
+  const event = state === "closed" || !PR_MOVES.includes(text(payload.action)) ? null : state;
+  apply(a, refs, { url, kind: "pull_request", title, number, state }, event, result);
   return result;
 }
 
-/** Commits with a magic word link; on the default branch, closing ones close their issues. */
+/** Commits with a magic word link; on the default branch, closing ones close their issues, once: they're then `merged`, so a replay changes nothing. */
 function push(a: Actor, payload: Record<string, unknown>): Result {
   const branch = text(record(payload.repository).default_branch);
   const onDefault = !!branch && payload.ref === `refs/heads/${branch}`;
@@ -135,7 +137,7 @@ function push(a: Actor, payload: Record<string, unknown>): Result {
     const message = text(commit.message);
     if (!url) continue;
     const refs = references({ text: message });
-    apply(a, refs, { url, kind: "commit", title: oneLine(message.split("\n")[0]!), number: null, state: null }, onDefault ? "merged" : null, true, result);
+    apply(a, refs, { url, kind: "commit", title: oneLine(message.split("\n")[0]!), number: null, state: onDefault ? "merged" : null }, onDefault ? "merged" : null, result);
   }
   return result;
 }
