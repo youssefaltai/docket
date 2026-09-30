@@ -22,7 +22,7 @@ src/server/http.ts    security headers, body cap, rate limit per credential, the
 src/server/attachments.ts uploads: stored next to the database, sniffed, served to the workspace's members
 src/server/api.ts     REST handlers
 src/server/mcp.ts     MCP server + tools
-scripts/              seed (dev data), sign-in-link (recovery)
+scripts/              sign-in-link (recovery)
 src/web/index.html    HTML entry (Bun HTML import, bundled by Bun)
 src/web/*.tsx, *.ts, *.css  React UI
 public/               manifest, service worker (sw.js), icons
