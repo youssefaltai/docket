@@ -360,7 +360,7 @@ function createServer(a: Actor, origin: string): McpServer {
   register(
     "list_members",
     {
-      description: "List a workspace's people and agents, one line each: @username · name · role · status, marking you. Assignees are people; delegates are agents.",
+      description: "List a workspace's people and agents, one line each: @username · name · role, then `integration` (GitHub's account), `suspended` and `you` where they apply. Assignees are people; delegates are agents.",
       annotations: { readOnlyHint: true },
     },
     () => {
