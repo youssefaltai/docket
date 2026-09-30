@@ -719,10 +719,11 @@ export function removeTeamMember(a: Actor, key: string, username: unknown): Team
     throw new AppError(`${who.username} isn't in ${team.key}`, 404);
   }
   if (team.private && members.length === 1 && members[0] === who.id) throw new AppError("Add someone else first", 409);
+  changed("member", team.workspace, who.username); // while still on the team, so its guests hear it
   db.query("DELETE FROM team_members WHERE team_id = ? AND user_id = ?").run(team.id, who.id);
   revokeAccess([who.id]);
   changed("team", team.workspace, team.key);
-  changed("member", team.workspace, who.username);
+  changed("member", team.workspace, who.username); // the teams left, and a guest left in none
   return toTeam(readTeam(a, team.id));
 }
 
