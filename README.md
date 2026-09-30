@@ -116,7 +116,7 @@ An admin connects it in **Settings → Workspace → GitHub** and gets a payload
 | `PORT` | `7100` |
 | `DATABASE_PATH` | `$XDG_DATA_HOME/docket/docket.db` (`~/.local/share` if unset); `/app/data/docket.db` in Docker |
 | `DOCKET_SETUP_CODE` | random, printed at startup while there are no users; set it to fix the code |
-| `DOCKET_URL` | unset. The public address: used in `sign-in-link` links (default `http://localhost:$PORT`), the setup-code line and, when `https`, as the contact push services see |
+| `DOCKET_URL` | unset. The public address: used in `sign-in-link` links (default `http://localhost:$PORT`), the setup-code line, the webhook payload URLs and, when `https`, as the contact push services see |
 | `DOCKET_HOSTS` | unset. Extra hostnames (comma-separated) allowed in the `Host` header, besides `localhost`, `127.0.0.1` and `[::1]`, e.g. `docket.example.com,vps.tailnet.ts.net` |
 | `DOCKET_WEBHOOK_ALLOW_PRIVATE` | unset. `true` lets webhooks target private, loopback and link-local addresses and plain `http`; otherwise only public `https`. Set it only if every workspace admin may reach this server's network. |
 
