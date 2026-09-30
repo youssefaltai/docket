@@ -19,8 +19,8 @@ export class AppError extends Error {
 const path = databasePath();
 mkdirSync(dirname(path), { recursive: true });
 export const db = new Database(path, { create: true });
+db.run("PRAGMA busy_timeout = 5000"); // first, so switching to WAL waits for another process instead of failing
 db.run("PRAGMA journal_mode = WAL");
-db.run("PRAGMA busy_timeout = 5000");
 
 migrate(db);
 

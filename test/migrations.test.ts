@@ -2,6 +2,7 @@
 // migrations after it apply in order, each rolled back whole if it fails or breaks a foreign key.
 import { Database } from "bun:sqlite";
 import { afterAll, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,6 +32,18 @@ test("a new database gets the baseline at version 29, with foreign keys on", () 
   expect(foreignKeys(db)).toBe(1);
 });
 
+test("the baseline never changes: a schema change is a new migration", () => {
+  const db = new Database(":memory:");
+  migrate(db, []);
+  const rows = db.query("SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name").all();
+  const hash = createHash("sha256").update(JSON.stringify(rows)).digest("hex");
+  // The sqlite_master that migrations 1-29 leave, which databases already at 29 have. They never run the baseline
+  // again, so an edit to it would reach new databases only.
+  if (hash !== "3d49dc601d05d214817fbafb1f8065f91bbb614133446b53ab2edf55a8d202fc") {
+    throw new Error("BASELINE changed: undo that and add a migration to MIGRATIONS in src/server/schema.ts instead");
+  }
+});
+
 test("a database at version 29 opens unchanged", () => {
   const file = join(dir, "v29.db");
   const first = new Database(file, { create: true });
@@ -50,6 +63,13 @@ test("a database older than the baseline is refused and left as it was", () => {
   const before = schema(db);
   expect(() => migrate(db)).toThrow("Upgrade through the release tagged migrations-v29 first");
   expect([version(db), schema(db)]).toEqual([28, before]);
+});
+
+test("a database with a negative version is refused and left as it was", () => {
+  const db = new Database(":memory:");
+  db.run("PRAGMA user_version = -1");
+  expect(() => migrate(db)).toThrow("schema version is -1");
+  expect([version(db), schema(db)]).toEqual([-1, []]);
 });
 
 test("migrations after the baseline apply in order, each once", () => {

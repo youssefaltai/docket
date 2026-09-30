@@ -439,6 +439,7 @@ const MIGRATIONS: Migration[] = [];
  */
 export function migrate(db: Database, migrations = MIGRATIONS) {
   const { user_version } = db.query("PRAGMA user_version").get() as { user_version: number };
+  if (user_version < 0) throw new Error(`This database's schema version is ${user_version}: not one Docket wrote. Refusing to start.`);
   if (user_version > 0 && user_version < BASELINE_VERSION) {
     throw new Error(
       `This database is at schema version ${user_version}; this Docket starts from ${BASELINE_VERSION}. ` +

@@ -28,7 +28,7 @@ export interface WorkflowStatusInput {
 
 export type WorkflowStatusPatch = { name?: string; color?: string; position?: number }; // key and category never change
 
-/** Every new team's workflow (every existing team's since migration 16): the six statuses teams always had, plus Duplicate. */
+/** Every new team's workflow: the six statuses teams always had, plus Duplicate. */
 export const DEFAULT_WORKFLOW: WorkflowStatus[] = [
   { key: "backlog", name: "Backlog", category: "backlog", color: "#a3a3a3", position: 1 },
   { key: "todo", name: "Todo", category: "unstarted", color: "#8f8f8f", position: 2 },
