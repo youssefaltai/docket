@@ -10,7 +10,8 @@ Rules: Docket copies Linear's features; "nano" is about the implementation. Mini
 src/shared/types.ts   the contract (do not change without updating both sides)
 src/server/index.ts   Bun.serve: routes, /api, /mcp, /ws, serves the web app, prints the setup code
 src/server/paths.ts   XDG Base Directory resolution
-src/server/db.ts      bun:sqlite connection, schema, change events, shared validation
+src/server/db.ts      bun:sqlite connection, change events, shared validation
+src/server/schema.ts  the schema: the baseline, migrations since, their runner
 src/server/access.ts  accounts, sessions, API keys, one-time codes, workspaces and members; the Actor; the team visibility rule
 src/server/tracker.ts teams and their members, issues, comments, labels, views, documents, projects, cycles; Docket's sweeps
 src/server/inbox.ts   subscriptions and notifications (the inbox), fanned out from tracker.ts
@@ -130,7 +131,7 @@ Team membership and privacy are managed from a browser session only (an API key 
 
 ## Data
 
-The schema lives in `db.ts` as append-only migrations, numbered by `PRAGMA user_version`. Each is SQL or a function (for backfills and checks), run in its own transaction with foreign keys off; `PRAGMA foreign_key_check` must pass before it commits, else it rolls back and the server doesn't start. Foreign keys are on afterwards; WAL mode.
+The schema lives in `schema.ts`, versioned by `PRAGMA user_version`: a baseline at 29 (what migrations 1-29 left), then append-only migrations. A new database gets the baseline; one at 1-28 is refused at startup, to be upgraded through the release tagged `migrations-v29` first. Each migration is SQL or a function (for backfills and checks), run in its own transaction with foreign keys off; `PRAGMA foreign_key_check` must pass before it commits, else it rolls back and the server doesn't start. Foreign keys are on afterwards; WAL mode.
 
 - **users**, **workspaces**, **workspace_members**, **sessions**, **api_keys**, **codes**: see Access.
 - **teams**: id (internal; the API names teams by key), workspace, key (2–5 uppercase letters, unique within the workspace: `UNIQUE (workspace, key)`), name, description, next_number, default_status (where new issues start: a backlog or unstarted key; `defaultStatus` in the API), auto_close_parent and auto_close_children (0 or 1; `autoCloseParent`, `autoCloseChildren`: see Auto-close), auto_archive_days (`autoArchiveDays`: see Auto-archive), estimate_scale (`estimateScale`: see Estimates), cycle_weeks and upcoming_cycles (`cycleWeeks`, `upcomingCycles`: see Cycles), private (0 or 1; `private`: see Teams and guests), created_at, updated_at. `Team` also carries `member`: you're in it.

@@ -1030,7 +1030,7 @@ type IssueRow = Record<string, unknown> & {
   priority: Priority;
   estimate: number | null; // its stored position, kept while its team has estimates off
   estimate_scale: string | null; // its team's
-  label_paths: string; // JSON array of its labels' paths (issues.labels is legacy: migration 17 moved it to issue_labels)
+  label_paths: string; // JSON array of its labels' paths (from issue_labels; the issues.labels column is legacy, unused)
   parent: string | null; // identifier
   blocked_by: string; // JSON array of identifiers
   related_to: string; // JSON array of identifiers

@@ -83,7 +83,7 @@ git pull
 docker compose up -d --build
 ```
 
-Schema changes apply on startup. Keep the backup until you know the new version works.
+Schema changes apply on startup. Keep the backup until you know the new version works. If it refuses to start because the database is older than schema version 29, upgrade through the release tagged `migrations-v29` first: check it out, build and start it once, then come back to the latest.
 
 </details>
 
