@@ -127,6 +127,28 @@ export function moveFocus(delta: number): boolean {
 export const isEditable = (t: EventTarget | null) =>
   t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
 
+const GO: Record<string, string> = { i: "/inbox", m: "/my", d: "/docs", v: "/views", s: "/settings/account" };
+
+/**
+ * G-chords (G I / G M / G D / G V / G S). `G` arms a 900ms window for the second key, which is consumed whether or
+ * not it's bound, so a stray "GP" never reaches P's own binding. It listens in the capture phase: a page's
+ * handlers (registered by child effects) would otherwise see the key first. Escape only cancels the chord; it
+ * still runs its own action.
+ */
+export function useGoChord(go: (path: string) => void) {
+  const armed = useRef<number | null>(null);
+  useKeydown((e) => {
+    if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey || isEditable(e.target)) return;
+    if (document.querySelector(".pop, .backdrop")) return;
+    const wasArmed = armed.current !== null && Date.now() - armed.current < 900;
+    armed.current = !wasArmed && e.key.toLowerCase() === "g" ? Date.now() : null;
+    if (!wasArmed || e.key === "Escape") return;
+    e.preventDefault();
+    const to = GO[e.key.toLowerCase()];
+    if (to) go(to);
+  }, true);
+}
+
 /** The first `[data-cmd="cmd"]` under `root` that's actually on screen — some pages render more than one
  * (e.g. issue.tsx's desktop sidebar and its phone-width inline copy) and only one is visible at a time. */
 export function visibleCmd(root: ParentNode, cmd: string): HTMLElement | null {
