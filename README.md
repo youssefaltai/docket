@@ -17,7 +17,7 @@ Issues, boards and docs, with a web UI for people and an MCP server for Claude a
 
 ## Features
 
-- **For agents and people together.** 35 MCP tools for issues, projects, comments, docs, notifications and files. Every agent has its own name and token, and claims issues as a delegate, the way Linear's agents do. What an agent does shows up in the UI live, over WebSocket, and in the issue's history.
+- **For agents and people together.** MCP tools for issues, projects, comments, docs, notifications and files. Every agent has its own name and token, and claims issues as a delegate, the way Linear's agents do. What an agent does shows up in the UI live, over WebSocket, and in the issue's history.
 - **Modeled on Linear.** Workspaces with admins, members and guests; public and private teams with their own workflows; projects with milestones; cycles; estimates; saved list and board views; an inbox with @mentions and push notifications (the iPhone Home Screen app too); a command menu (`⌘K` / `Ctrl+K`) and keyboard shortcuts.
 - **Docs next to issues.** Rich-text docs stored as Markdown, with version history. Write `API-1` and it links to the issue, with its status icon.
 - **Connected.** GitHub pull requests and commits move issues along; signed webhooks tell your own services what changed.
@@ -59,7 +59,7 @@ Run it in your project folder. Each workspace is its own server (`docket-acme`, 
 
 `./data` holds `docket.db` (SQLite, WAL mode) and `attachments/` (uploaded files). Don't `cp` them while Docket runs; use `./backup.sh`.
 
-`./backup.sh` runs `VACUUM INTO` inside the container, safe while Docket is live. It writes `data/backups/docket-YYYY-MM-DD.db`, deletes snapshots older than 14 days, and copies new uploads into `data/backups/attachments/` (never pruned: snapshots link to them). Run it nightly from cron (there's an example line in the script) and copy `data/backups/` off the server.
+`./backup.sh` takes a consistent snapshot into `data/backups/`, safe while Docket is live (what it keeps and for how long is in the script, with a cron line). Run it nightly and copy `data/backups/` off the server.
 
 To restore, stop Docket, then put a snapshot back as `data/docket.db` and `data/backups/attachments/` as `data/attachments/`.
 
@@ -116,29 +116,20 @@ An admin connects it in **Settings → Workspace → GitHub** and gets a payload
 | `PORT` | `7100` |
 | `DATABASE_PATH` | `$XDG_DATA_HOME/docket/docket.db` (`~/.local/share` if unset); `/app/data/docket.db` in Docker |
 | `DOCKET_SETUP_CODE` | random, printed at startup while there are no users; set it to fix the code |
-| `DOCKET_URL` | unset. The public address: used in `sign-in-link` links (default `http://localhost:$PORT`), the setup-code line and, when `https`, as the contact push services see |
+| `DOCKET_URL` | unset. The public address: used in `sign-in-link` links (default `http://localhost:$PORT`), the setup-code line, the webhook payload URLs and, when `https`, as the contact push services see |
 | `DOCKET_HOSTS` | unset. Extra hostnames (comma-separated) allowed in the `Host` header, besides `localhost`, `127.0.0.1` and `[::1]`, e.g. `docket.example.com,vps.tailnet.ts.net` |
 | `DOCKET_WEBHOOK_ALLOW_PRIVATE` | unset. `true` lets webhooks target private, loopback and link-local addresses and plain `http`; otherwise only public `https`. Set it only if every workspace admin may reach this server's network. |
 
 In Docker, set `DOCKET_HOSTS`, `DOCKET_URL` and `DOCKET_WEBHOOK_ALLOW_PRIVATE` in a `.env` file next to `docker-compose.yml` (see `.env.example`); any other variable goes under `environment:` in `docker-compose.yml`. There `PORT` only changes the host-side port; the container always listens on `7100`.
-
-Docket also reads the first `KEY=VALUE` file found at `$XDG_CONFIG_HOME/docket/config` (`~/.config` if unset), then in each of `$XDG_CONFIG_DIRS` (`/etc/xdg` if unset). Lines starting with `#` are comments, an unquoted value drops a trailing ` # comment`, and surrounding quotes are stripped. Real env vars win over the file; an empty one (like compose's `${DOCKET_HOSTS:-}`) counts as unset.
 
 </details>
 
 <details>
 <summary><b>MCP tools</b></summary>
 
-- **Workspace and teams:** `update_workspace`, `list_members`, `list_teams`, `create_team`, `update_team`, `list_labels`, `list_cycles`, `list_templates`
-- **Issues:** `list_issues`, `get_issue`, `create_issue`, `update_issue`, `claim_issue`, `comment_issue`, `react`, `subscribe`
-- **Projects:** `list_projects`, `get_project`, `create_project`, `update_project`, `create_milestone`, `update_milestone`
-- **Docs:** `list_documents`, `get_document`, `create_document`, `update_document`, `comment_document`, `delete_document`
-- **Comments:** `update_comment`, `delete_comment`, `resolve_thread`
-- **Inbox and files:** `list_notifications`, `mark_notifications_read`, `attach_file`, `get_attachment`
+A key acts in one workspace and sees only the tools it can use: read-only keys get only the `list_*` and `get_*` tools; `create_team` and `update_team` are for people, `update_workspace` for admins.
 
-A key acts in one workspace and sees only the tools it can use: read-only keys get the 13 `list_*` and `get_*` tools; `create_team` and `update_team` are for people, `update_workspace` for admins.
-
-The REST API and data model are in [SPEC.md](SPEC.md).
+The tools, the REST API and the data model are in [SPEC.md](SPEC.md).
 
 </details>
 

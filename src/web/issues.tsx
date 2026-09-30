@@ -91,7 +91,7 @@ export function useListShortcuts(setIssues: SetIssues, invalidate: () => number,
     invalidate();
     api.deleteIssue(id).then(() => {
       setIssues((list) => list?.filter((i) => i.id !== id) ?? null);
-      trashToast(id, () => api.restoreIssue(id).then(reload, errorToast), `/issue/${id}`);
+      trashToast(id, () => api.restoreIssue(id).then(reload), `/issue/${id}`);
       requestAnimationFrame(() => {
         const items = document.querySelectorAll<HTMLElement>("[data-nav]");
         items[Math.min(at, items.length - 1)]?.focus();

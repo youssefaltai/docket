@@ -6,7 +6,6 @@ import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import {
   WEBHOOK_RESOURCES,
-  type UserKind,
   type UserRef,
   type Webhook,
   type WebhookAction,
@@ -304,13 +303,9 @@ interface WebhookRow {
   failures: number;
   created_at: string;
   updated_at: string;
-  username: string;
-  name: string;
-  kind: UserKind;
 }
 
-const SELECT = `SELECT w.*, m.username, m.name, u.kind FROM webhooks w JOIN users u ON u.id = w.created_by
-  JOIN workspace_members m ON m.user_id = w.created_by AND m.workspace = w.workspace`;
+const SELECT = "SELECT w.* FROM webhooks w";
 
 const toWebhook = (r: WebhookRow): Webhook => ({
   id: r.id,
@@ -319,7 +314,6 @@ const toWebhook = (r: WebhookRow): Webhook => ({
   resourceTypes: JSON.parse(r.resource_types),
   enabled: r.enabled === 1,
   failures: r.failures,
-  createdBy: { username: r.username, name: r.name, kind: r.kind },
   createdAt: r.created_at,
   updatedAt: r.updated_at,
 });

@@ -2,13 +2,12 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ESTIMATE_VALUES, PRIORITY_LABELS, type Activity, type Comment, type Priority, type ProjectSummary, type Reaction, type UserRef } from "../shared/types";
-import { api } from "./api";
 import { Avatar, isMe, Kbd, Section } from "./components";
 import { RichEditor } from "./editor";
 import { CheckIcon, PencilIcon, ReplyIcon, SmileIcon, StatusIcon, TrashIcon } from "./icons";
 import { Link } from "./routing";
 import { useApp } from "./context";
-import { useFetch, useRun, useStatusOf } from "./hooks";
+import { useRun, useStatusOf } from "./hooks";
 import { Markdown } from "./markdown";
 import { ask, errorToast } from "./toast";
 import { ago, cls, dayLabel, fullDate, MOD } from "./util";
@@ -190,18 +189,18 @@ export function Comments({
   comments,
   activity = [],
   team = "",
+  projects,
   actions,
 }: {
   title?: string;
   comments: Comment[];
   activity?: Activity[];
   team?: string; // the issue's team: its history names statuses by key, shown by that team's names and icons
+  projects?: ProjectSummary[]; // names its history's project changes by slug
   actions: CommentActions;
 }) {
   const replies = new Map<number, Comment[]>();
   for (const c of comments) if (c.parent !== null) replies.set(c.parent, [...(replies.get(c.parent) ?? []), c]);
-  // Only issues log a "project" change; fetch names to show instead of slugs, once, for the whole history.
-  const projects = useFetch(activity.length ? () => api.projects() : null, []).data;
   return (
     <Section title={title}>
       <ol className="timeline">

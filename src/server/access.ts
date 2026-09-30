@@ -699,7 +699,6 @@ interface WorkspaceRow {
   key: string;
   name: string;
   role: Role;
-  team_count: number;
   created_at: string;
   updated_at: string;
 }
@@ -708,13 +707,12 @@ const toWorkspace = (row: WorkspaceRow): Workspace => ({
   key: row.key,
   name: row.name,
   role: row.role,
-  teamCount: row.team_count,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
 });
 
 const WORKSPACE_SELECT = `
-  SELECT w.*, m.role, (SELECT COUNT(*) FROM teams t WHERE t.workspace = w.key AND ${SEES_TEAM("m.user_id", "t")}) AS team_count
+  SELECT w.*, m.role
   FROM workspaces w JOIN workspace_members m ON m.workspace = w.key AND m.user_id = ? AND m.suspended_at IS NULL`;
 
 const workspaceFor = (userId: number, key: string) =>

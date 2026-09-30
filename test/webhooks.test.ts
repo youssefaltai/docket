@@ -85,7 +85,6 @@ describe("managing", () => {
     expect(res.body.secret).toMatch(/^dkwh_[0-9a-f]{64}$/);
     const { webhook } = res.body;
     expect(webhook).toMatchObject({ url: `${base}/h/manage`, label: "Agent runner", resourceTypes: ["Issue", "Comment", "Document", "Notification"], enabled: true, failures: 0 });
-    expect(webhook.createdBy.username).toBe("admin");
     const list = await s.api("GET", "/api/workspaces/acme/webhooks");
     expect(list.body.map((w: any) => w.id)).toContain(webhook.id);
     expect(JSON.stringify(list.body)).not.toContain(res.body.secret);

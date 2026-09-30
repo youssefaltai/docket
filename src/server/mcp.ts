@@ -332,13 +332,6 @@ function createServer(a: Actor, origin: string): McpServer {
     if (who && !who(a)) return;
     server.registerTool(name, config, cb);
   };
-  /** Wraps a tool that changes something: a read-only API key can't call it (kept alongside register as defence in depth). */
-  const writes =
-    <A extends unknown[], R>(fn: (...args: A) => R) =>
-    (...args: A): R => {
-      if (a.scope === "read") throw new AppError("This API key is read-only", 403);
-      return fn(...args);
-    };
   // Who sees a tool, besides the scope check in register.
   const people = (a: Actor) => a.kind === "person";
   // A key acts in one workspace (MCP takes only keys), so that's where every tool works.
@@ -350,10 +343,10 @@ function createServer(a: Actor, origin: string): McpServer {
       description: "Rename your workspace (admins only). Its key never changes. Only do this when asked to.",
       inputSchema: { name: z.string() },
     },
-    writes(({ name }) => {
+    ({ name }) => {
       const workspace = access.updateWorkspace(a, access.requestWorkspace(a), { name });
       return result(`Updated workspace ${workspace.key} · ${workspace.name}`, { workspace });
-    }),
+    },
     admins,
   );
 
@@ -404,10 +397,10 @@ function createServer(a: Actor, origin: string): McpServer {
         description: z.string().optional(),
       },
     },
-    writes((input) => {
+    (input) => {
       const team = tracker.createTeam(a, input);
       return result(`Created team ${team.key} · ${team.name} in workspace ${team.workspace}`, { team });
-    }),
+    },
     people,
   );
 
@@ -428,10 +421,10 @@ function createServer(a: Actor, origin: string): McpServer {
         cycleStartsOn: z.string().optional().describe("YYYY-MM-DD, today or later: where the first cycle starts. Only when turning cycles on"),
       },
     },
-    writes(({ key, ...patch }) => {
+    ({ key, ...patch }) => {
       const team = tracker.updateTeam(a, key, patch);
       return result(`Updated team ${team.key} · ${team.name} in workspace ${team.workspace}`, { team });
-    }),
+    },
     people,
   );
 
@@ -549,10 +542,10 @@ function createServer(a: Actor, origin: string): McpServer {
         template: z.number().int().optional().describe("An issue template's id (see list_templates in the team) to prefill title, description, labels, priority and status; fields you also pass override the template's"),
       },
     },
-    writes((input) => {
+    (input) => {
       const issue = tracker.createIssue(a, input);
       return result(`Created ${issue.id}\n${line(issue)}`, { issue });
-    }),
+    },
   );
 
   register(
@@ -581,12 +574,12 @@ function createServer(a: Actor, origin: string): McpServer {
         baseUpdatedAt: z.string().optional().describe("The updated time you read with get_issue. If the issue changed since, nothing is applied (reread and retry)."),
       },
     },
-    writes(({ id, ...patch }) => {
+    ({ id, ...patch }) => {
       const issue = tracker.updateIssue(a, id, patch);
       const was = id.trim().toUpperCase();
       const moved = patch.team !== undefined && was !== issue.id;
       return result(`${moved ? `Moved ${was} to ${issue.id}` : `Updated ${issue.id}`}\n${line(issue)}`, { issue });
-    }),
+    },
   );
 
   register(
@@ -595,10 +588,10 @@ function createServer(a: Actor, origin: string): McpServer {
       description: "Take an issue to work on, in one step no one else can interleave with: an agent becomes its delegate, a person its assignee, and an issue not started yet (triage, backlog or unstarted category) moves to the team's first started status (in_progress by default); one already started keeps its status. Fails if it's completed or canceled, or someone else holds it (the error names them): then pick another issue rather than working on it too. Claiming your own again is fine. To hand it back, update_issue with delegate (or assignee) null and status todo.",
       inputSchema: { id: identifier },
     },
-    writes(({ id }) => {
+    ({ id }) => {
       const issue = tracker.claimIssue(a, id);
       return result(`Claimed ${issue.id}\n${line(issue)}`, { issue });
-    }),
+    },
   );
 
   register(
@@ -607,10 +600,10 @@ function createServer(a: Actor, origin: string): McpServer {
       description: `Add a markdown comment to an issue, as you. Use it for progress notes, findings, decisions, and a summary of what you did when finishing (changes made, links). ${THREADS} Comments bump the issue's updated time.`,
       inputSchema: { id: identifier, body, parent },
     },
-    writes(({ id, body, parent }) => {
+    ({ id, body, parent }) => {
       const issue = tracker.addComment(a, id, body, parent);
       return result(`${parent === undefined ? "Commented on" : `Replied to #${parent} on`} ${issue.id}`, { issue });
-    }),
+    },
   );
 
   register(
@@ -656,10 +649,10 @@ function createServer(a: Actor, origin: string): McpServer {
         project: docProject.optional(),
       },
     },
-    writes((input) => {
+    (input) => {
       const document = tracker.createDocument(a, input);
       return result(`Created document ${document.slug} · ${document.title} (/doc/${document.slug})`, docMeta(document));
-    }),
+    },
   );
 
   register(
@@ -685,10 +678,10 @@ function createServer(a: Actor, origin: string): McpServer {
         baseUpdatedAt: z.string().optional().describe("The updatedAt you read with get_document. If the doc changed since, nothing is applied (reread and retry). Recommended with `content`."),
       },
     },
-    writes(({ slug, ...patch }) => {
+    ({ slug, ...patch }) => {
       const document = tracker.updateDocument(a, slug, patch);
       return result(`Updated document ${document.slug} · ${document.title}`, docMeta(document));
-    }),
+    },
   );
 
   register(
@@ -697,10 +690,10 @@ function createServer(a: Actor, origin: string): McpServer {
       description: `Add a markdown comment to a document, as you, e.g. review notes, questions, or a summary of what you changed. ${THREADS} Comments don't change the content.`,
       inputSchema: { slug, body, parent },
     },
-    writes(({ slug, body, parent }) => {
+    ({ slug, body, parent }) => {
       const document = tracker.addDocumentComment(a, slug, body, parent);
       return result(`${parent === undefined ? "Commented on" : `Replied to #${parent} on`} document ${document.slug}`, docMeta(document));
-    }),
+    },
   );
 
   const commentTarget = {
@@ -715,7 +708,7 @@ function createServer(a: Actor, origin: string): McpServer {
       description: "Edit one of your own comments on an issue or a document, e.g. to fix a typo or an outdated note. It shows as edited. For new information, add a new comment instead.",
       inputSchema: { ...commentTarget, body: z.string().describe(`Markdown, replaces the whole comment. ${MENTION}`) },
     },
-    writes(({ comment, body, ...target }) =>
+    ({ comment, body, ...target }) =>
       commentOn(
         target,
         (id) => {
@@ -727,7 +720,6 @@ function createServer(a: Actor, origin: string): McpServer {
           return result(`Edited comment #${comment} on document ${document.slug}`, docMeta(document));
         },
       ),
-    ),
   );
 
   register(
@@ -737,7 +729,7 @@ function createServer(a: Actor, origin: string): McpServer {
       inputSchema: commentTarget,
       annotations: { destructiveHint: true },
     },
-    writes(({ comment, ...target }) =>
+    ({ comment, ...target }) =>
       commentOn(
         target,
         (id) => {
@@ -749,7 +741,6 @@ function createServer(a: Actor, origin: string): McpServer {
           return result(`Deleted comment #${comment} on document ${document.slug}`, docMeta(document));
         },
       ),
-    ),
   );
 
   register(
@@ -763,7 +754,7 @@ function createServer(a: Actor, origin: string): McpServer {
         resolved: z.boolean().optional().describe("Default true; false reopens it"),
       },
     },
-    writes(({ comment, resolved = true, ...target }) => {
+    ({ comment, resolved = true, ...target }) => {
       const done = `${resolved ? "Resolved" : "Reopened"} thread #${comment} on`;
       return commentOn(
         target,
@@ -776,7 +767,7 @@ function createServer(a: Actor, origin: string): McpServer {
           return result(`${done} document ${document.slug}`, docMeta(document));
         },
       );
-    }),
+    },
   );
 
   register(
@@ -786,10 +777,10 @@ function createServer(a: Actor, origin: string): McpServer {
       inputSchema: { slug },
       annotations: { destructiveHint: true },
     },
-    writes(({ slug }) => {
+    ({ slug }) => {
       tracker.deleteDocument(a, slug);
       return result(`Moved document ${slug} to the trash`, { ok: true });
-    }),
+    },
   );
 
   register(
@@ -838,10 +829,10 @@ function createServer(a: Actor, origin: string): McpServer {
         slug: z.string().optional().describe("URL-safe id (a-z, 0-9, dashes); default derived from the name"),
       },
     },
-    writes((input) => {
+    (input) => {
       const project = tracker.createProject(a, input);
       return result(`Created project ${project.slug}\n${projectLine(project)}`, { project });
-    }),
+    },
   );
 
   register(
@@ -859,10 +850,10 @@ function createServer(a: Actor, origin: string): McpServer {
         baseUpdatedAt: z.string().optional().describe("The updatedAt you read with get_project. If the project changed since, nothing is applied (reread and retry)."),
       },
     },
-    writes(({ slug, ...patch }) => {
+    ({ slug, ...patch }) => {
       const project = tracker.updateProject(a, slug, patch);
       return result(`Updated project ${project.slug}\n${projectLine(project)}`, { project });
-    }),
+    },
   );
 
   register(
@@ -876,10 +867,10 @@ function createServer(a: Actor, origin: string): McpServer {
         targetDate: targetDate.optional(),
       },
     },
-    writes(({ project: slug, ...input }) => {
+    ({ project: slug, ...input }) => {
       const project = tracker.createMilestone(a, slug, input);
       return result(`Added milestone ${input.name.trim()} to ${project.slug}`, { project });
-    }),
+    },
   );
 
   register(
@@ -894,12 +885,12 @@ function createServer(a: Actor, origin: string): McpServer {
         targetDate: targetDate.nullable().optional().describe('A calendar date like "2026-12-01"; null to clear'),
       },
     },
-    writes(({ project: slug, milestone: name, ...patch }) => {
+    ({ project: slug, milestone: name, ...patch }) => {
       const found = tracker.getProject(a, slug).milestones.find((m) => m.name.toLowerCase() === name.trim().toLowerCase());
       if (!found) throw new AppError(`Unknown milestone "${name}" in ${slug}`);
       const project = tracker.updateMilestone(a, slug, found.id, patch);
       return result(`Updated milestone ${patch.name?.trim() ?? found.name} in ${project.slug}`, { project });
-    }),
+    },
   );
 
   register(
@@ -929,11 +920,11 @@ function createServer(a: Actor, origin: string): McpServer {
         read: z.boolean().optional().describe("Default true; false marks them unread"),
       },
     },
-    writes(({ ids, all, read = true }) => {
+    ({ ids, all, read = true }) => {
       if ((ids === undefined) === (all !== true)) throw new AppError("Pass exactly one of ids or all: true");
       const found = inbox.markRead(a, { ids, read });
       return result(`Marked ${all ? "all" : ids!.map((id) => `#${id}`).join(", ")} ${read ? "read" : "unread"} · ${found.unread} unread left`, { ...found });
-    }),
+    },
   );
 
   register(
@@ -946,7 +937,7 @@ function createServer(a: Actor, origin: string): McpServer {
         subscribed: z.boolean().optional().describe("Default true; false unsubscribes"),
       },
     },
-    writes(({ subscribed = true, ...target }) =>
+    ({ subscribed = true, ...target }) =>
       commentOn(
         target,
         (id) => {
@@ -958,7 +949,6 @@ function createServer(a: Actor, origin: string): McpServer {
           return result(`${subscribed ? "Subscribed to" : "Unsubscribed from"} document ${document.slug}`, docMeta(document));
         },
       ),
-    ),
   );
 
   register(
@@ -973,7 +963,7 @@ function createServer(a: Actor, origin: string): McpServer {
         remove: z.boolean().optional().describe("Default false; true takes back your reaction"),
       },
     },
-    writes(({ comment, emoji, remove = false, ...target }) => {
+    ({ comment, emoji, remove = false, ...target }) => {
       const on = !remove;
       const done = (what: string) => `${on ? "Reacted" : "Removed reaction"} ${emoji} on ${what}`;
       return commentOn(
@@ -988,7 +978,7 @@ function createServer(a: Actor, origin: string): McpServer {
           return result(done(`#${comment} on document ${document.slug}`), docMeta(document));
         },
       );
-    }),
+    },
   );
 
   register(
@@ -1002,7 +992,7 @@ function createServer(a: Actor, origin: string): McpServer {
         team: z.string().optional().describe('The team key of the issue or doc it goes in, e.g. "BRD": only those who see that team can open it'),
       },
     },
-    writes(({ name, text, base64, team }) => {
+    ({ name, text, base64, team }) => {
       if ((text === undefined) === (base64 === undefined)) throw new AppError("Pass exactly one of text or base64");
       let bytes: Uint8Array;
       if (text !== undefined) bytes = new TextEncoder().encode(text);
@@ -1013,7 +1003,7 @@ function createServer(a: Actor, origin: string): McpServer {
       }
       const attachment = saveAttachment(a, name, bytes, team);
       return result(attachmentMarkdown(attachment), { attachment, markdown: attachmentMarkdown(attachment) });
-    }),
+    },
   );
 
   register(

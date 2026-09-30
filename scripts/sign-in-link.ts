@@ -2,7 +2,6 @@
 // Usage on the server: bun run sign-in-link <username> [workspace]   (in Docker: docker compose exec docket bun run sign-in-link …)
 // Usernames are per workspace: if several people hold it, name the workspace. Shell access to the server is
 // the proof of identity, so this has no HTTP route.
-import "../src/server/config.ts";
 import { recoverySignInLink } from "../src/server/access.ts";
 import { AppError } from "../src/server/db.ts";
 

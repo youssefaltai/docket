@@ -51,8 +51,6 @@ describe("who sees which team", () => {
       expect((await who.api("POST", "/api/teams/SEC/statuses", { name: "Hidden", category: "started" })).status).toBe(404);
       expect((await who.api("GET", "/api/locate?team=SEC")).status).toBe(404);
     }
-    expect((await ok(bob.api("GET", "/api/workspaces"))).find((w: any) => w.key === "acme").teamCount).toBe(2);
-    expect((await ok(ana.api("GET", "/api/workspaces"))).find((w: any) => w.key === "acme").teamCount).toBe(3);
   });
 
   test("a guest sees only the teams they were invited to, can work in them like a member, and nothing workspace-wide", async () => {

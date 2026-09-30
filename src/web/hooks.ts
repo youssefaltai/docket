@@ -113,6 +113,19 @@ export function useRun() {
   return { busy, run };
 }
 
+/** Whether the viewport matches a media query, live. */
+export function useMedia(query: string) {
+  const [matches, setMatches] = useState(() => matchMedia(query).matches);
+  useEffect(() => {
+    const list = matchMedia(query);
+    const update = () => setMatches(list.matches);
+    update();
+    list.addEventListener("change", update);
+    return () => list.removeEventListener("change", update);
+  }, [query]);
+  return matches;
+}
+
 /** j/k and arrows move focus between rows or cards (`[data-nav]`); false if there are none. */
 export function moveFocus(delta: number): boolean {
   const items = [...document.querySelectorAll<HTMLElement>("[data-nav]")];
@@ -149,12 +162,6 @@ export function useGoChord(go: (path: string) => void) {
   }, true);
 }
 
-/** The first `[data-cmd="cmd"]` under `root` that's actually on screen — some pages render more than one
- * (e.g. issue.tsx's desktop sidebar and its phone-width inline copy) and only one is visible at a time. */
-export function visibleCmd(root: ParentNode, cmd: string): HTMLElement | null {
-  return [...root.querySelectorAll<HTMLElement>(`[data-cmd="${cmd}"]`)].find((n) => n.getClientRects().length > 0) ?? null;
-}
-
 const PROP_CMD: Record<string, string> = { s: "status", p: "priority", a: "assignee", d: "delegate", l: "labels", i: "claim" };
 
 /**
@@ -181,7 +188,7 @@ export function useIssueShortcuts(
     const current = scope();
     if (!current) return;
     e.preventDefault();
-    const target = visibleCmd(current.root, cmd);
+    const target = current.root.querySelector<HTMLElement>(`[data-cmd="${cmd}"]`);
     const btn = target instanceof HTMLButtonElement ? target : target?.querySelector<HTMLButtonElement>("button");
     if (btn) btn.click();
     else if (cmd === "claim") fallback?.claim(current.id);
