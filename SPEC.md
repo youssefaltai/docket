@@ -535,10 +535,10 @@ Linear's uploads: files (screenshots, logs, reports) attached to a workspace and
 
 MCP: `attach_file` and `get_attachment` (see MCP).
 
-**Backups**: `./backup.sh` snapshots the database, then copies files in `attachments/` that `backups/attachments/` doesn't have yet (never pruned; snapshots are kept 14 days). Snapshot first, files second, so every snapshot's files exist. Restoring is the snapshot as `docket.db` plus `backups/attachments/` as `attachments/`.
+**Backups**: `./backup.sh`; see README, Data and backups.
 
 ## Deploy
 
 The server serves the web app at `/`, `/login`, `/setup`, `/:ws` and `/:ws/*`, and at the paths from before URLs carried the workspace (`/settings/*`, `/t/*`, `/issue/*`, `/docs`, `/doc/*`) so the app can redirect them; `/api/*` and known files win over `/:ws`, and unknown `/icons/*` stay plain 404s.
 
-`Dockerfile` (oven/bun image) + `docker-compose.yml`: volume `./data:/app/data` (the database, `attachments/`, and `backups/`), port `127.0.0.1:${PORT:-7100}:7100`, `restart: unless-stopped`. HTTPS and exposure are the operator's choice. A hostname other than `localhost`, `127.0.0.1` or `[::1]` must be in `DOCKET_HOSTS` (see Rules for every request). On first start, the setup code is in the container's log (`docker compose logs docket`). Locked out: `docker compose exec docket bun run sign-in-link <username> [workspace]` prints a one-time link (name the workspace if several people hold that username) (set `DOCKET_URL` to the public origin: that link, webhook payload URLs and the setup message use it, and push uses it as its contact when it's https).
+`Dockerfile` (oven/bun image) + `docker-compose.yml`: volume `./data:/app/data` (the database, `attachments/` and `backups/`), port published on `127.0.0.1` only. HTTPS and exposure are the operator's choice: a hostname other than `localhost`, `127.0.0.1` or `[::1]` must be in `DOCKET_HOSTS` (see Rules for every request). Setup code, `sign-in-link` and the env vars: see README.
