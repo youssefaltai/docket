@@ -363,6 +363,19 @@ describe("mentions, the inbox and live events", () => {
     await ok(bob.api("PATCH", "/api/workspaces/acme/profile", { name: "bob" }));
     await ok(s.api("PATCH", "/api/workspaces/acme/profile", { name: "Admin" }));
   });
+  test("/ws: a guest hears nothing of saved views, which they can't use (DKT-52)", async () => {
+    const bobSocket = bob.ws();
+    const gusSocket = gus.ws();
+    expect([await bobSocket.opened, await gusSocket.opened]).toEqual([true, true]);
+    const view = await ok(s.api("POST", "/api/views", { name: "Live view" }), 201);
+    await ok(s.api("PATCH", `/api/views/${view.id}`, { name: "Renamed view" }));
+    await ok(s.api("DELETE", `/api/views/${view.id}`));
+    const seen = (e: any) => e.entity === "view" && e.id === String(view.id);
+    await bobSocket.until((e) => seen(e) && bobSocket.events.filter(seen).length === 3);
+    await create(s.admin, { team: "WEB", title: "After the views" }).then((i) => gusSocket.until((e) => e.id === i.id)); // gus has heard everything sent before it
+    expect(gusSocket.events.some((e) => e.entity === "view")).toBeFalse();
+    for (const socket of [bobSocket, gusSocket]) socket.close();
+  });
 });
 
 describe("joining, leaving and making a team private", () => {
