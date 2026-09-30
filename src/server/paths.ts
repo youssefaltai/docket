@@ -20,13 +20,3 @@ export function databasePath(): string {
 export function attachmentsDir(): string {
   return join(dirname(databasePath()), "attachments");
 }
-
-export function xdgConfigHome(): string {
-  return absoluteEnv("XDG_CONFIG_HOME") ?? join(homedir(), ".config");
-}
-
-/** Ordered, most to least preferred. Defaults to /etc/xdg per spec. */
-export function xdgConfigDirs(): string[] {
-  const dirs = (process.env.XDG_CONFIG_DIRS ?? "").split(":").filter(isAbsolute);
-  return dirs.length > 0 ? dirs : ["/etc/xdg"];
-}

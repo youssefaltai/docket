@@ -122,8 +122,6 @@ An admin connects it in **Settings → Workspace → GitHub** and gets a payload
 
 In Docker, set `DOCKET_HOSTS`, `DOCKET_URL` and `DOCKET_WEBHOOK_ALLOW_PRIVATE` in a `.env` file next to `docker-compose.yml` (see `.env.example`); any other variable goes under `environment:` in `docker-compose.yml`. There `PORT` only changes the host-side port; the container always listens on `7100`.
 
-Docket also reads the first `KEY=VALUE` file found at `$XDG_CONFIG_HOME/docket/config` (`~/.config` if unset), then in each of `$XDG_CONFIG_DIRS` (`/etc/xdg` if unset). Lines starting with `#` are comments, an unquoted value drops a trailing ` # comment`, and surrounding quotes are stripped. Real env vars win over the file; an empty one (like compose's `${DOCKET_HOSTS:-}`) counts as unset.
-
 </details>
 
 <details>

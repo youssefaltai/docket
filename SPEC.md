@@ -9,7 +9,6 @@ Rules: Docket copies Linear's features; "nano" is about the implementation. Mini
 ```
 src/shared/types.ts   the contract (do not change without updating both sides)
 src/server/index.ts   Bun.serve: routes, /api, /mcp, /ws, serves the web app, prints the setup code
-src/server/config.ts  loads an optional XDG config file into process.env (imported first)
 src/server/paths.ts   XDG Base Directory resolution
 src/server/db.ts      bun:sqlite connection, schema, change events, shared validation
 src/server/access.ts  accounts, sessions, API keys, one-time codes, workspaces and members; the Actor; the team visibility rule
@@ -29,7 +28,7 @@ src/web/*.tsx, *.ts, *.css  React UI
 public/               manifest, service worker (sw.js), icons
 ```
 
-Env vars and the optional XDG config file: see README's Configuration section. Dev: `bun run dev` (uses `./dev.db` unless `DATABASE_PATH` is set, and setup code `DEVEL-SETUP` unless `DOCKET_SETUP_CODE` is set). Tests: `bun test`, mostly black-box over HTTP against a temp database. Prod: `bun run start` (sets `NODE_ENV=production`, so Bun serves bundled assets and never shows its dev error page).
+Env vars: see README's Configuration section. Dev: `bun run dev` (uses `./dev.db` unless `DATABASE_PATH` is set, and setup code `DEVEL-SETUP` unless `DOCKET_SETUP_CODE` is set). Tests: `bun test`, mostly black-box over HTTP against a temp database. Prod: `bun run start` (sets `NODE_ENV=production`, so Bun serves bundled assets and never shows its dev error page).
 
 ## Access
 
