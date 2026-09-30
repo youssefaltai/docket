@@ -1983,10 +1983,12 @@ export type LinkInput = Pick<IssueLink, "url" | "kind" | "title" | "number" | "s
 
 /**
  * Links a pull request or commit to a live issue of the actor's workspace, or updates its link (title, state, closing).
- * Returns the issue's identifier and whether the link is new or changed (which bumps the issue), or null when
- * `identifier` names no live issue there: unknown, another workspace's, trashed or archived.
+ * A merged link stays merged (a replayed or late delivery can't undo it). Returns the issue's identifier, whether the
+ * link is new or changed (which bumps the issue), and whether it is new or its state or closing changed (`moves`: the
+ * only changes worth moving the issue for, not a retitle; never once merged), or null when `identifier` names no live issue there:
+ * unknown, another workspace's, trashed or archived.
  */
-export function linkIssue(a: Actor, identifier: string, link: LinkInput): { id: string; changed: boolean } | null {
+export function linkIssue(a: Actor, identifier: string, link: LinkInput): { id: string; changed: boolean; moves: boolean } | null {
   let issue: ReturnType<typeof issueRef>;
   try {
     issue = issueRef(a, identifier);
@@ -1995,10 +1997,10 @@ export function linkIssue(a: Actor, identifier: string, link: LinkInput): { id: 
     throw e;
   }
   if (issue.deleted_at || issue.archived_at) return null;
-  const values = [link.kind, link.title, link.number, link.state, link.closes ? 1 : 0] as const;
-  const fresh = db.transaction(() => {
+  const { fresh, moves } = db.transaction(() => {
     const was = db.query<LinkRow, [number, string]>("SELECT * FROM issue_links WHERE issue_id = ? AND url = ?").get(issue.id, link.url);
-    if (was && JSON.stringify([was.kind, was.title, was.number, was.state, was.closes]) === JSON.stringify(values)) return false;
+    const values = [link.kind, link.title, link.number, was?.state === "merged" ? "merged" : link.state, link.closes ? 1 : 0] as const;
+    if (was && JSON.stringify([was.kind, was.title, was.number, was.state, was.closes]) === JSON.stringify(values)) return { fresh: false, moves: false };
     const time = now();
     db.query(
       `INSERT INTO issue_links (issue_id, url, kind, title, number, state, closes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -2006,10 +2008,10 @@ export function linkIssue(a: Actor, identifier: string, link: LinkInput): { id: 
          state = excluded.state, closes = excluded.closes, updated_at = excluded.updated_at`,
     ).run(issue.id, link.url, ...values, time, time);
     bumpIssues([issue.id], time);
-    return true;
+    return { fresh: true, moves: !was || (was.state !== "merged" && (was.state !== values[3] || was.closes !== values[4])) };
   }).immediate();
   if (fresh) changed("issue", issue.workspace, issue.ref);
-  return { id: issue.ref, changed: fresh };
+  return { id: issue.ref, changed: fresh, moves };
 }
 
 /**

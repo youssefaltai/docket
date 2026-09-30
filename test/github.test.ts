@@ -242,9 +242,37 @@ describe("pull requests", () => {
     await s.api("PATCH", `/api/issues/${id}`, { status: "in_progress" });
     expect((await deliver("pull_request", pr(1, { action: "synchronize", branch: `ana/${id.toLowerCase()}-fix-login`, title: "Fix the login" }))).body).toEqual({ linked: [id], moved: {} });
     expect((await get(id)).status).toBe("in_progress");
+    // A title edit changes the link but is no state change either.
+    expect((await deliver("pull_request", pr(1, { action: "edited", branch: `ana/${id.toLowerCase()}-fix-login`, title: "Fix the login page" }))).body).toEqual({ linked: [id], moved: {} });
+    expect(await get(id)).toMatchObject({ status: "in_progress", links: [{ title: "Fix the login page" }] });
 
     expect((await deliver("pull_request", merged(1, { branch: `ana/${id.toLowerCase()}-fix-login`, title: "Fix the login" }))).body).toEqual({ linked: [id], moved: { [id]: "done" } });
     expect(await get(id)).toMatchObject({ status: "done", links: [{ state: "merged" }] });
+  });
+
+  test("an edit that adds a closing reference moves that issue; a replay after the merge doesn't re-close a reopened one", async () => {
+    const [first, added] = [await issue("Already referenced"), await issue("Added by edit")];
+    await deliver("pull_request", pr(3, { body: `Fixes ${first}` }));
+    expect((await deliver("pull_request", pr(3, { action: "edited", body: `Fixes ${first} and ${added}` }))).body).toEqual({ linked: [first, added], moved: { [added]: "in_review" } });
+    await deliver("pull_request", merged(3, { body: `Fixes ${first}` }));
+    await s.api("PATCH", `/api/issues/${first}`, { status: "in_progress" });
+    await deliver("pull_request", pr(3, { body: `Fixes ${first}` }));
+    expect((await deliver("pull_request", merged(3, { body: `Fixes ${first}` }))).body).toEqual({ linked: [first], moved: {} });
+    expect(await get(first)).toMatchObject({ status: "in_progress", links: [{ state: "merged" }] });
+  });
+
+  test("an edit that turns a contributing reference into a closing one moves the issue; once merged, replays never move it", async () => {
+    const id = await issue("Refs then fixes");
+    expect((await deliver("pull_request", pr(4, { body: `Refs ${id}` }))).body).toEqual({ linked: [id], moved: {} });
+    expect((await deliver("pull_request", pr(4, { action: "edited", body: `Fixes ${id}` }))).body).toEqual({ linked: [id], moved: { [id]: "in_review" } });
+    await deliver("pull_request", merged(4, { body: `Fixes ${id}` }));
+    await s.api("PATCH", `/api/issues/${id}`, { status: "in_progress" });
+    // A stale delivery that says "Refs" then "Fixes" again flips the closing flag of a merged link: still no move.
+    for (const [action, body] of [["opened", `Refs ${id}`], ["edited", `Fixes ${id}`], ["opened", `Fixes ${id}`]] as const) {
+      expect((await deliver("pull_request", pr(4, { action, body }))).body).toEqual({ linked: [id], moved: {} });
+    }
+    expect((await deliver("pull_request", merged(4, { body: `Fixes ${id}` }))).body).toEqual({ linked: [id], moved: {} });
+    expect(await get(id)).toMatchObject({ status: "in_progress", links: [{ state: "merged", closes: true }] });
   });
 
   test("a draft moves an unstarted issue to in_progress but never an in_review one back; ready for review moves it on", async () => {
@@ -339,11 +367,28 @@ describe("pushes", () => {
     const [onMain, onBranch, plain, part] = [await issue("Main"), await issue("Branch"), await issue("Plain"), await issue("Part")];
     const res = await deliver("push", push("refs/heads/main", `fix ${onMain}\n\nDetails`, `${plain} tidy`, `Refs ${part}`));
     expect(res.body).toEqual({ linked: [onMain, part], moved: { [onMain]: "done" } });
-    expect(await get(onMain)).toMatchObject({ status: "done", links: [{ kind: "commit", title: `fix ${onMain}`, number: null, state: null, closes: true }] });
+    expect(await get(onMain)).toMatchObject({ status: "done", links: [{ kind: "commit", title: `fix ${onMain}`, number: null, state: "merged", closes: true }] });
     expect(await get(part)).toMatchObject({ status: "backlog", links: [{ closes: false }] });
     expect((await get(plain)).links).toEqual([]);
     expect((await deliver("push", push("refs/heads/feature", `Fixes ${onBranch}`))).body).toEqual({ linked: [onBranch], moved: {} });
     expect((await get(onBranch)).status).toBe("backlog");
+  });
+
+  test("a replayed push doesn't close an issue again after it was reopened; a commit first pushed elsewhere still closes on main", async () => {
+    const [id, later] = [await issue("Replayed"), await issue("Merged later")];
+    const closing = push("refs/heads/main", `fixes ${id}`);
+    expect((await deliver("push", closing)).body).toEqual({ linked: [id], moved: { [id]: "done" } });
+    await s.api("PATCH", `/api/issues/${id}`, { status: "in_progress" });
+    expect((await deliver("push", closing)).body).toEqual({ linked: [id], moved: {} });
+    expect((await get(id)).status).toBe("in_progress");
+    // Merging main into a feature branch pushes the same commit there: it stays merged, so a replay still moves nothing.
+    await deliver("push", { ...closing, ref: "refs/heads/feature" });
+    expect((await deliver("push", closing)).body).toEqual({ linked: [id], moved: {} });
+    expect((await get(id)).status).toBe("in_progress");
+
+    const commit = push("refs/heads/feature", `fixes ${later}`); // the same commit, then merged to main
+    await deliver("push", commit);
+    expect((await deliver("push", { ...commit, ref: "refs/heads/main" })).body).toEqual({ linked: [later], moved: { [later]: "done" } });
   });
 
   test("a closing commit on main doesn't close an issue whose other closing PR is still open", async () => {
