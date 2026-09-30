@@ -250,6 +250,17 @@ describe("pull requests", () => {
     expect(await get(id)).toMatchObject({ status: "done", links: [{ state: "merged" }] });
   });
 
+  test("an edit that adds a closing reference moves that issue; a replay after the merge doesn't re-close a reopened one", async () => {
+    const [first, added] = [await issue("Already referenced"), await issue("Added by edit")];
+    await deliver("pull_request", pr(3, { body: `Fixes ${first}` }));
+    expect((await deliver("pull_request", pr(3, { action: "edited", body: `Fixes ${first} and ${added}` }))).body).toEqual({ linked: [first, added], moved: { [added]: "in_review" } });
+    await deliver("pull_request", merged(3, { body: `Fixes ${first}` }));
+    await s.api("PATCH", `/api/issues/${first}`, { status: "in_progress" });
+    await deliver("pull_request", pr(3, { body: `Fixes ${first}` }));
+    expect((await deliver("pull_request", merged(3, { body: `Fixes ${first}` }))).body).toEqual({ linked: [first], moved: {} });
+    expect(await get(first)).toMatchObject({ status: "in_progress", links: [{ state: "merged" }] });
+  });
+
   test("a draft moves an unstarted issue to in_progress but never an in_review one back; ready for review moves it on", async () => {
     const todo = await issue("Draft me", "todo");
     const review = await issue("Already in review", "in_review");
@@ -354,6 +365,10 @@ describe("pushes", () => {
     const closing = push("refs/heads/main", `fixes ${id}`);
     expect((await deliver("push", closing)).body).toEqual({ linked: [id], moved: { [id]: "done" } });
     await s.api("PATCH", `/api/issues/${id}`, { status: "in_progress" });
+    expect((await deliver("push", closing)).body).toEqual({ linked: [id], moved: {} });
+    expect((await get(id)).status).toBe("in_progress");
+    // Merging main into a feature branch pushes the same commit there: it stays merged, so a replay still moves nothing.
+    await deliver("push", { ...closing, ref: "refs/heads/feature" });
     expect((await deliver("push", closing)).body).toEqual({ linked: [id], moved: {} });
     expect((await get(id)).status).toBe("in_progress");
 

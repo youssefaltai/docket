@@ -694,7 +694,7 @@ const MIGRATIONS: (string | (() => void))[] = [
     kind TEXT NOT NULL CHECK (kind IN ('pull_request', 'commit')),
     title TEXT NOT NULL,          -- the PR's title, or the commit's first line
     number INTEGER,               -- the PR's number
-    state TEXT CHECK (state IN ('draft', 'open', 'merged', 'closed')), -- PRs only
+    state TEXT CHECK (state IN ('draft', 'open', 'merged', 'closed')), -- PRs; commits: merged once pushed to the default branch
     closes INTEGER NOT NULL CHECK (closes IN (0, 1)), -- 1: closing (branch, title or closing word); 0: contributing
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,

@@ -97,20 +97,19 @@ const record = (value: unknown): Record<string, unknown> => (typeof value === "o
 
 type Result = { linked: string[]; moved: Record<string, string> };
 
-/** Links each referenced live issue; closing links move theirs along on `event` when the link is new or changed. */
+/** Links each referenced live issue; closing links move theirs along on `event` when the link is new or its state or closing changed (not a retitle). */
 function apply(a: Actor, refs: Map<string, boolean>, link: Omit<tracker.LinkInput, "closes">, event: "draft" | "open" | "merged" | null, result: Result) {
   for (const [identifier, closes] of refs) {
     const linked = tracker.linkIssue(a, identifier, { ...link, closes });
     if (!linked) continue;
     if (!result.linked.includes(linked.id)) result.linked.push(linked.id);
-    if (!closes || !event || !linked.changed) continue;
+    if (!closes || !event || !linked.moves) continue;
     const to = tracker.advanceIssue(a, linked.id, event, link.url);
     if (to) result.moved[linked.id] = to;
   }
 }
 
 const PR_ACTIONS = ["opened", "reopened", "edited", "ready_for_review", "converted_to_draft", "closed", "synchronize"];
-const PR_MOVES = ["opened", "reopened", "ready_for_review", "converted_to_draft", "closed"]; // edited and synchronize only refresh the link
 
 function pullRequest(a: Actor, payload: Record<string, unknown>): Result | { ignored: string } {
   const pr = record(payload.pull_request);
@@ -121,8 +120,7 @@ function pullRequest(a: Actor, payload: Record<string, unknown>): Result | { ign
   const refs = references({ branch: text(record(pr.head).ref), title, text: text(pr.body) });
   const number = Number.isSafeInteger(pr.number) ? (pr.number as number) : null;
   const result: Result = { linked: [], moved: {} };
-  const event = state === "closed" || !PR_MOVES.includes(text(payload.action)) ? null : state;
-  apply(a, refs, { url, kind: "pull_request", title, number, state }, event, result);
+  apply(a, refs, { url, kind: "pull_request", title, number, state }, state === "closed" ? null : state, result);
   return result;
 }
 
