@@ -2042,16 +2042,16 @@ export function advanceIssue(a: Actor, identifier: string, event: "draft" | "ope
 
 // --- Auto-close (Linear's per-team settings) ---
 
-type IssueNode = { id: number; status: string; category: StatusCategory; team_id: number; parent_id: number | null; deleted_at: string | null };
-const NODE_SELECT = `SELECT i.id, i.status, ws.category, i.team_id, i.parent_id, i.deleted_at FROM issues i
+type IssueNode = { id: number; status: string; category: StatusCategory; team_id: number; parent_id: number | null; deleted_at: string | null; archived_at: string | null };
+const NODE_SELECT = `SELECT i.id, i.status, ws.category, i.team_id, i.parent_id, i.deleted_at, i.archived_at FROM issues i
   JOIN workflow_statuses ws ON ws.team_id = i.team_id AND ws.key = i.status`;
 const teamFlag = (teamId: number, flag: "auto_close_parent" | "auto_close_children") =>
   db.query<{ on: number }, [number]>(`SELECT ${flag} AS "on" FROM teams WHERE id = ?`).get(teamId)!.on === 1;
 
 /**
  * What closing issue `id` sets off, in the same transaction, each change made by Docket on behalf of `by`: when its
- * team auto-closes sub-issues, its live open sub-issues close to the same status (their own team's: the same key, else
- * the first of that category that isn't Duplicate); when its parent's team auto-closes parents and every live sub-issue
+ * team auto-closes sub-issues, its live, unarchived open sub-issues close to the same status (their own team's: the same key, else
+ * the first of that category that isn't Duplicate); when its parent's team auto-closes parents and every live, unarchived sub-issue
  * of the parent is now completed or canceled, the parent closes to its team's first completed status. Each close sets
  * off the same, so it cascades down the tree and up the chain (both acyclic). Reopening sets off nothing. Returns the
  * ids it closed.
@@ -2068,15 +2068,15 @@ function autoClose(by: number, id: number, workspace: string, time: string): num
   const cascade = (from: number) => {
     const issue = node.get(from)!;
     if (teamFlag(issue.team_id, "auto_close_children")) {
-      const open = db.query<IssueNode, [number]>(`${NODE_SELECT} WHERE i.parent_id = ? AND i.deleted_at IS NULL AND ws.category NOT IN ${CLOSED_SQL} ORDER BY i.id`);
+      const open = db.query<IssueNode, [number]>(`${NODE_SELECT} WHERE i.parent_id = ? AND i.deleted_at IS NULL AND i.archived_at IS NULL AND ws.category NOT IN ${CLOSED_SQL} ORDER BY i.id`);
       for (const child of open.all(from)) {
         const statuses = teamStatuses(child.team_id).filter((s) => s.category === issue.category && s.key !== DUPLICATE_STATUS);
         close(child, (statuses.find((s) => s.key === issue.status) ?? statuses[0]!).key);
       }
     }
     const parent = issue.parent_id === null ? null : node.get(issue.parent_id)!;
-    if (!parent || parent.deleted_at || isClosed(parent.category) || !teamFlag(parent.team_id, "auto_close_parent")) return;
-    const stillOpen = db.query(`${NODE_SELECT} WHERE i.parent_id = ? AND i.deleted_at IS NULL AND ws.category NOT IN ${CLOSED_SQL} LIMIT 1`).get(parent.id);
+    if (!parent || parent.deleted_at || parent.archived_at || isClosed(parent.category) || !teamFlag(parent.team_id, "auto_close_parent")) return;
+    const stillOpen = db.query(`${NODE_SELECT} WHERE i.parent_id = ? AND i.deleted_at IS NULL AND i.archived_at IS NULL AND ws.category NOT IN ${CLOSED_SQL} LIMIT 1`).get(parent.id);
     if (!stillOpen) close(parent, teamStatuses(parent.team_id).find((s) => s.category === "completed")!.key);
   };
   cascade(id);

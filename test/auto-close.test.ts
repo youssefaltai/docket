@@ -129,6 +129,33 @@ test("closing a parent closes its open sub-issues to the same status; closed one
   expect(await statusOf(c4)).toBe("todo");
 });
 
+test("archived issues are read-only to auto-close: not closed with the parent, not blocking it, not closed as a parent", async () => {
+  const parent = await create("AUT", "Parent");
+  const child = await create("AUT", "Child", { parent });
+  const archived = await create("AUT", "Archived open child", { parent });
+  await s.api("POST", `/api/issues/${archived}/archive`);
+  const rows = (await get(archived)).activity.length;
+
+  await setStatus(child, "done");
+  expect(await statusOf(parent)).toBe("done"); // the archived open child doesn't hold the parent open
+  expect(await statusOf(archived)).toBe("todo");
+
+  const p2 = await create("AUT", "Parent 2");
+  const c2 = await create("AUT", "Child 2", { parent: p2 });
+  const a2 = await create("AUT", "Archived open child 2", { parent: p2 });
+  await s.api("POST", `/api/issues/${a2}/archive`);
+  await setStatus(p2, "canceled");
+  expect(await statusOf(c2)).toBe("canceled");
+  expect(await statusOf(a2)).toBe("todo");
+  expect((await get(archived)).activity.length).toBe(rows); // no row, no event
+
+  const p3 = await create("AUT", "Archived open parent");
+  const c3 = await create("AUT", "Only child", { parent: p3 });
+  await s.api("POST", `/api/issues/${p3}/archive`);
+  await setStatus(c3, "done");
+  expect(await statusOf(p3)).toBe("todo");
+});
+
 test("a chain cascades: up from the last leaf, and down from the top", async () => {
   const top = await create("AUT", "Top");
   const mid = await create("AUT", "Mid", { parent: top });
