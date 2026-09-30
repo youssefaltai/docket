@@ -119,6 +119,18 @@ test("it keeps workspace labels and drops its old team's own; labels sent with t
   expect((await move(other.id, "DST", { labels: ["dst-only", "everywhere"] })).body.labels).toEqual(["dst-only", "everywhere"]);
 });
 
+test("it keeps its project and its new team joins it; leaving the project in the same move adds no team to it", async () => {
+  const teamsOf = (slug: string) => s.sql(`SELECT t.key FROM project_teams x JOIN teams t ON t.id = x.team_id JOIN projects p ON p.id = x.project_id WHERE p.slug = '${slug}' ORDER BY t.key`).map((r: any) => r.key);
+  const project = (await s.api("POST", "/api/projects", { teams: ["SRC"], name: "Stays put" })).body;
+  const kept = (await move((await create("Keeps", { project: project.slug })).id, "DST")).body;
+  expect(kept.project).toBe(project.slug);
+  expect(teamsOf(project.slug)).toEqual(["DST", "SRC"]);
+  const other = (await s.api("POST", "/api/projects", { teams: ["SRC"], name: "Left behind" })).body;
+  const left = (await move((await create("Leaves", { project: other.slug })).id, "DST", { project: null })).body;
+  expect(left.project).toBeNull();
+  expect(teamsOf(other.slug)).toEqual(["SRC"]);
+});
+
 test("parent, sub-issues, blockers, related, duplicates, comments, reactions, subscribers and docs come along", async () => {
   const parent = await create("Parent");
   const blocker = await create("Blocker");
