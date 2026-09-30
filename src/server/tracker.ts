@@ -3543,8 +3543,8 @@ export function listCycles(a: Actor, key: string): Cycle[] {
 
 /**
  * The teams a change event is about, so /ws sends it only to sockets that see one: an issue's (by its identifier's
- * key), a doc's, a team, a team's own label, a project's teams. null: not about a team (the workspace, its members,
- * views, the workspace's own labels), so everyone in the workspace hears it; members go by memberAudience instead.
+ * key), a doc's, a team, a team's own label, a project's teams. null: not about a team (the workspace, the workspace's
+ * own labels), so everyone in the workspace hears it; members go by memberAudience instead, and views go to all but guests.
  */
 export function eventTeams(event: ServerEvent): { id: number; private: boolean }[] | null {
   const { entity, workspace, id } = event;
