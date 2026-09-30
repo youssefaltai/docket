@@ -762,18 +762,19 @@ db.run("PRAGMA foreign_keys = ON");
 
 // --- Change events ---
 
-let listener: (event: ServerEvent, userId?: number) => void = () => {};
+let listener: (event: ServerEvent, to?: number | string) => void = () => {};
 
 /**
- * Called after every committed mutation: the server sends it over /ws to the workspace's members, or with
- * `userId` (an inbox, a subscription) only to that user's sockets in the workspace.
+ * Called after every committed mutation: the server sends it over /ws to the workspace's members, or with `to` only
+ * to a user's sockets in the workspace (a user id: an inbox, a subscription) or to those who see a team (its key:
+ * for a change whose own row is gone, like a deleted label's).
  */
 export function onChange(fn: typeof listener) {
   listener = fn;
 }
 
-export function changed(entity: ServerEvent["entity"], workspace: string, id: string, userId?: number) {
-  listener({ type: "changed", entity, workspace, id }, userId);
+export function changed(entity: ServerEvent["entity"], workspace: string, id: string, to?: number | string) {
+  listener({ type: "changed", entity, workspace, id }, to);
 }
 
 // --- Docket's own account ---
