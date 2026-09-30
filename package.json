@@ -9,7 +9,8 @@
     "seed": "bun scripts/seed.ts",
     "sign-in-link": "bun scripts/sign-in-link.ts",
     "start": "NODE_ENV=production bun src/server/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "check": "tsc --noEmit && bun test"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.1",
