@@ -367,59 +367,13 @@ Light theme only, neutral, Linear-like. Geist + Geist Mono (Google Fonts). White
 
 `⌘K`/`Ctrl+K` opens the command menu (see UI) from anywhere, even while typing in a field, except inside the rich editor (which keeps `⌘/Ctrl-K` for links) or while a popover or modal is open. `Esc` closes it; `Tab` closes it without refocusing; `↓`/`↑` (or `Ctrl-N`/`Ctrl-P`) move the active row; `Enter` runs it.
 
-Global (never while typing in a field, in a popover, or during IME composition):
+The keys and what they do are `SHORTCUT_GROUPS` in `src/web/shortcuts.tsx`, which is also the `?` help. What that list doesn't say:
 
-| Key | Action |
-|---|---|
-| `C` | New issue |
-| `/` | Focus search |
-| `J` / `K` / `↓` / `↑` | Move focus between rows or cards (issue, triage, cycle, docs and project lists and boards, the inbox, My Issues, views) |
-| `U` / `Alt-U` | Inbox: toggle the focused row read or unread / mark all read (by key position, so Option-U works on a Mac) |
-| `Backspace` / `Shift-Backspace` | Inbox: delete the focused row / delete all read |
-| `Shift-S` | Issue or doc page: subscribe or unsubscribe |
-| `⌘⇧.` / `Ctrl+Shift+.` | Issue page: copy its git branch name (by `e.code === "Period"`; works while typing too) |
-| `?` | Show the keyboard shortcuts help |
-| `G` then `I` | Go to Inbox |
-| `G` then `M` | Go to My Issues |
-| `G` then `D` | Go to All docs |
-| `G` then `V` | Go to Views |
-| `G` then `S` | Go to Settings |
-| `Esc` | Clear the issue selection if any, else close the mobile nav if open, else leave an issue, doc or project page for the last list of its kind, else blur (on a doc page, first leave editing, the version preview, then history) |
-
-A `G` chord arms a 900ms window for its second key; an unbound second key, or none within the window, doesn't navigate. The second key is consumed either way, so it never also triggers a page shortcut (`G` then `P` doesn't open the priority picker).
-
-On a focused row (after `J`/`K`) or an issue page, acting on the row's or page's own issue (same guards as above):
-
-| Key | Action |
-|---|---|
-| `S` | Set status |
-| `P` | Set priority |
-| `A` | Set assignee |
-| `D` | Set delegate (issue page only) |
-| `L` | Set labels (issue page only) |
-| `I` | Claim it (assign to me) |
-| `⌘⌫` / `Ctrl⌫` | Delete it to trash, with Undo |
-
-Selecting issues (same guards; where Multi-select under UI works):
-
-| Key | Action |
-|---|---|
-| `X` | Select or deselect the focused row |
-| `Shift-J` / `Shift-K` / `Shift-↓` / `Shift-↑` | Extend the selection down or up |
-| Shift-click | Select every row from the last one picked |
-| `S` / `P` / `A` / `D` / `L` | With a selection: open that picker in the bulk bar, for every selected issue (without one, the focused row's, as above; `I` always claims the focused row) |
-| `⌘⌫` / `Ctrl⌫` | With a selection: move them all to trash, after one confirm (without one, the focused row, as above) |
-| `Esc` | Clear the selection |
-
-In any popover picker (property pickers, filters, the bulk bar, the workspace switcher, the account menu):
-
-| Key | Action |
-|---|---|
-| `↓` / `Ctrl-N` | Next option |
-| `↑` / `Ctrl-P` | Previous option |
-| `Enter` | Pick |
-| `Esc` | Close and refocus the trigger |
-| `Tab` | Close without refocusing |
+- Page shortcuts never fire while typing in a field, in a popover, or during IME composition. The exception is `⌘⇧.` / `Ctrl+Shift+.` (copy the issue's branch name), which works while typing too and matches `e.code === "Period"`.
+- `J`/`K`/`↓`/`↑` move focus over issue, triage, cycle, docs and project lists and boards, the inbox, My Issues and views. `U` and `Alt-U` match by key position, so Option-U works on a Mac.
+- A `G` chord arms a 900ms window for its second key; an unbound second key, or none within the window, doesn't navigate. The second key is consumed either way, so it never also triggers a page shortcut (`G` then `P` doesn't open the priority picker).
+- `S`, `P`, `A`, `D`, `L`, `I` and `⌘/Ctrl-⌫` act on the focused row or the issue page (`D` and `L` on the issue page only); the delete comes with Undo. With a selection (where Multi-select under UI works), `S`/`P`/`A`/`D`/`L` open that picker in the bulk bar for every selected issue, and `⌘/Ctrl-⌫` trashes them all after one confirm; `I` always claims the focused row.
+- `Esc` clears the issue selection if any, else closes the mobile nav if open, else leaves an issue, doc or project page for the last list of its kind, else blurs (on a doc page, first it leaves editing, the version preview, then history). In a popover picker it closes and refocuses the trigger; `Tab` closes without refocusing. Pickers include the property pickers, filters, the bulk bar, the workspace switcher and the account menu.
 
 Elsewhere: `Enter` saves an inline title (issue/doc) by blurring; `⌘/Ctrl-Enter` saves or sends (description, comments, modals); `Esc` reverts an inline title or cancels an edit, or closes a modal/dialog (which also traps `Tab`); `E` opens a doc for editing, and inside it `⌘/Ctrl-S` saves immediately. In the rich editor: `⌘/Ctrl-B` bold, `⌘/Ctrl-I` italic, `⌘/Ctrl-Shift-S` strikethrough, `⌘/Ctrl-E` code, `⌘/Ctrl-K` link (on a selection or in a link), `/` the block menu (keys as in the @ menu); in either mode `⌘/Ctrl-Shift-A` attaches files. A capture-phase guard drops any keystroke from an IME composition before it reaches a shortcut.
 

@@ -1,5 +1,5 @@
-// The `?` help overlay: a static reference, grouped like SPEC.md's Keyboard section. `SHORTCUT_GROUPS` is
-// the one place this list is written for the app; SPEC.md's tables are kept in sync with it by hand.
+// The `?` help overlay: a static reference. `SHORTCUT_GROUPS` is the one place the shortcut list is written; SPEC.md's
+// Keyboard section points here and keeps only the prose this list lacks.
 import { Kbd, MOD, Modal } from "./ui";
 
 export const SHORTCUT_GROUPS: { title: string; rows: [string, string][] }[] = [
