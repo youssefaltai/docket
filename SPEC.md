@@ -387,7 +387,7 @@ Global (never while typing in a field, in a popover, or during IME composition):
 | `G` then `S` | Go to Settings |
 | `Esc` | Clear the issue selection if any, else close the mobile nav if open, else leave an issue, doc or project page for the last list of its kind, else blur (on a doc page, first leave editing, the version preview, then history) |
 
-A `G` chord arms a 900ms window for its second key; an unbound second key, or none within the window, doesn't navigate.
+A `G` chord arms a 900ms window for its second key; an unbound second key, or none within the window, doesn't navigate. The second key is consumed either way, so it never also triggers a page shortcut (`G` then `P` doesn't open the priority picker).
 
 On a focused row (after `J`/`K`) or an issue page, acting on the row's or page's own issue (same guards as above):
 
