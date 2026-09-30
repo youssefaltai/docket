@@ -264,6 +264,7 @@ export async function startServer(
     },
     sql(query, ...params) {
       const db = new Database(databasePath);
+      db.run("PRAGMA busy_timeout = 5000"); // the server may be writing in the background
       try {
         return db.query(query).all(...params) as any[];
       } finally {

@@ -25,7 +25,7 @@ function baseline() {
 
 test("a new database gets the baseline at version 29, with foreign keys on", () => {
   const db = new Database(":memory:");
-  migrate(db);
+  migrate(db, []);
   expect(version(db)).toBe(29);
   expect(schema(db).length).toBeGreaterThan(100);
   expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
@@ -47,12 +47,12 @@ test("the baseline never changes: a schema change is a new migration", () => {
 test("a database at version 29 opens unchanged", () => {
   const file = join(dir, "v29.db");
   const first = new Database(file, { create: true });
-  migrate(first);
+  migrate(first, []);
   first.run("INSERT INTO users (id, kind, created_at) VALUES (1, 'person', '2026-01-01T00:00:00.000Z')");
   const before = schema(first);
   first.close();
   const db = new Database(file);
-  migrate(db);
+  migrate(db, []);
   expect([version(db), schema(db), db.query("SELECT id FROM users").all()]).toEqual([29, before, [{ id: 1 }]]);
 });
 
