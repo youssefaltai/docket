@@ -1929,7 +1929,7 @@ export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Is
     const assignments = [...Object.keys(cols).map((c) => `${c} = ?`), BUMPED_AT];
     db.query(`UPDATE issues SET ${assignments.join(", ")} WHERE id = ?`).run(...Object.values(cols), time, time, id);
     // A moved issue keeps its project and milestone; its new team joins the project.
-    joinProject((cols.project_id ?? before.project_id) as number | null, team.id);
+    joinProject((cols.project_id === undefined ? before.project_id : cols.project_id) as number | null, team.id);
     const created = labels ? setLabels(a, "issue", id, workspace, team, labels, time) : [];
     if (blockers) setBlockers(id, blockers, seen);
     if (relatedTo) for (const r of setRelated(id, relatedTo, time, seen)) related.add(r);
