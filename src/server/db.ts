@@ -767,7 +767,8 @@ let listener: (event: ServerEvent, to?: number | string) => void = () => {};
 /**
  * Called after every committed mutation: the server sends it over /ws to the workspace's members, or with `to` only
  * to a user's sockets in the workspace (a user id: an inbox, a subscription) or to those who see a team (its key:
- * for a change whose own row is gone, like a deleted label's).
+ * for a change whose own row is gone, like a deleted label's). Who hears it is decided when this is called, so a change
+ * that takes someone's access away (removeTeamMember) calls it first.
  */
 export function onChange(fn: typeof listener) {
   listener = fn;

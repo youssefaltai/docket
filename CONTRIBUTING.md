@@ -7,12 +7,11 @@ You need [Bun](https://bun.sh) 1.4+ (CI uses the version in `package.json`).
 ```sh
 bun install
 bun run dev          # http://localhost:7100, hot reload; setup code DEVEL-SETUP (dev only: never expose it)
-DOCKET_API_KEY=dk_... bun run seed   # demo data, in another terminal; only into an empty Docket
 bun test
 bun run typecheck
 ```
 
-Create the key in Settings → Account → API keys. The dev server keeps its data in `./dev.db` (gitignored; delete `dev.db*` for a clean slate). It listens on port 7100, like the Docker container: stop one before starting the other, or set `PORT`.
+The dev server keeps its data in `./dev.db` (gitignored; delete `dev.db*` for a clean slate). It listens on port 7100, like the Docker container: stop one before starting the other, or set `PORT`.
 
 ## Find your way around
 
@@ -23,7 +22,7 @@ src/shared/types.ts   the contract between server and UI
 src/server/           Bun.serve, SQLite, REST, MCP
 src/web/              React UI, no framework beyond React
 test/                 bun test, black-box over HTTP
-scripts/              seed (demo data over REST) and sign-in-link (recovery CLI)
+scripts/              sign-in-link (recovery CLI)
 ```
 
 ## Tests

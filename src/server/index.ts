@@ -1,4 +1,3 @@
-import "./config.ts";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { type Actor, formatCode, heardTeams, needsSetup, onRevoke, setupCode } from "./access.ts";

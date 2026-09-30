@@ -104,7 +104,6 @@ export interface Workspace {
   key: string; // URL-safe lowercase slug, e.g. "acme"; not one of RESERVED_WORKSPACE_KEYS
   name: string;
   role: Role; // yours
-  teamCount: number; // the teams you can see
   createdAt: string;
   updatedAt: string;
 }
@@ -653,7 +652,6 @@ export interface Webhook {
   resourceTypes: WebhookResource[];
   enabled: boolean;
   failures: number; // deliveries in a row that failed for good; 10 disables the webhook
-  createdBy: UserRef;
   createdAt: string;
   updatedAt: string;
 }

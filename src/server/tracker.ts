@@ -575,12 +575,11 @@ function checkAutoArchiveDays(value: unknown): number | null {
  * auto-close, sets its estimate scale (null turns estimates off: issues keep theirs, hidden until it's back on), or
  * its cycles (see scheduleCycles). Teams never change workspace: their issues, people and links belong to it.
  */
-export function updateTeam(a: Actor, key: string, patch: TeamPatch & { workspace?: unknown }): Team {
+export function updateTeam(a: Actor, key: string, patch: TeamPatch): Team {
   requirePerson(a, NO_AGENT_TEAMS);
   const row = teamRow(a, key);
   notGuest(a, "change a team's settings");
   syncCycles(row.id); // settings act on the cycles as they are now
-  if (patch.workspace !== undefined && patch.workspace !== row.workspace) throw new AppError("Teams can't move between workspaces");
   const name = patch.name === undefined ? row.name : requireText(patch.name, "name");
   const description = patch.description === undefined ? row.description : optionalText(patch.description, "description");
   let defaultStatus = row.default_status;
@@ -723,7 +722,6 @@ export function removeTeamMember(a: Actor, key: string, username: unknown): Team
   db.query("DELETE FROM team_members WHERE team_id = ? AND user_id = ?").run(team.id, who.id);
   revokeAccess([who.id]);
   changed("team", team.workspace, team.key);
-  changed("member", team.workspace, who.username); // the teams left, and a guest left in none
   return toTeam(readTeam(a, team.id));
 }
 

@@ -104,8 +104,6 @@ export async function startServer(
   const env: Record<string, string | undefined> = {
     PATH: process.env.PATH,
     HOME: dir,
-    XDG_CONFIG_HOME: dir, // never pick up the developer's real config file
-    XDG_CONFIG_DIRS: dir,
     NODE_ENV: "production",
     PORT: "0",
     DATABASE_PATH: databasePath,
