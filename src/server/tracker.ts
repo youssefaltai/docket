@@ -1984,7 +1984,7 @@ export type LinkInput = Pick<IssueLink, "url" | "kind" | "title" | "number" | "s
  * Links a pull request or commit to a live issue of the actor's workspace, or updates its link (title, state, closing).
  * A merged link stays merged (a replayed or late delivery can't undo it). Returns the issue's identifier, whether the
  * link is new or changed (which bumps the issue), and whether it is new or its state or closing changed (`moves`: the
- * only changes worth moving the issue for, not a retitle), or null when `identifier` names no live issue there:
+ * only changes worth moving the issue for, not a retitle; never once merged), or null when `identifier` names no live issue there:
  * unknown, another workspace's, trashed or archived.
  */
 export function linkIssue(a: Actor, identifier: string, link: LinkInput): { id: string; changed: boolean; moves: boolean } | null {
@@ -2007,7 +2007,7 @@ export function linkIssue(a: Actor, identifier: string, link: LinkInput): { id: 
          state = excluded.state, closes = excluded.closes, updated_at = excluded.updated_at`,
     ).run(issue.id, link.url, ...values, time, time);
     bumpIssues([issue.id], time);
-    return { fresh: true, moves: !was || was.state !== values[3] || was.closes !== values[4] };
+    return { fresh: true, moves: !was || (was.state !== "merged" && (was.state !== values[3] || was.closes !== values[4])) };
   }).immediate();
   if (fresh) changed("issue", issue.workspace, issue.ref);
   return { id: issue.ref, changed: fresh, moves };

@@ -261,6 +261,20 @@ describe("pull requests", () => {
     expect(await get(first)).toMatchObject({ status: "in_progress", links: [{ state: "merged" }] });
   });
 
+  test("an edit that turns a contributing reference into a closing one moves the issue; once merged, replays never move it", async () => {
+    const id = await issue("Refs then fixes");
+    expect((await deliver("pull_request", pr(4, { body: `Refs ${id}` }))).body).toEqual({ linked: [id], moved: {} });
+    expect((await deliver("pull_request", pr(4, { action: "edited", body: `Fixes ${id}` }))).body).toEqual({ linked: [id], moved: { [id]: "in_review" } });
+    await deliver("pull_request", merged(4, { body: `Fixes ${id}` }));
+    await s.api("PATCH", `/api/issues/${id}`, { status: "in_progress" });
+    // A stale delivery that says "Refs" then "Fixes" again flips the closing flag of a merged link: still no move.
+    for (const [action, body] of [["opened", `Refs ${id}`], ["edited", `Fixes ${id}`], ["opened", `Fixes ${id}`]] as const) {
+      expect((await deliver("pull_request", pr(4, { action, body }))).body).toEqual({ linked: [id], moved: {} });
+    }
+    expect((await deliver("pull_request", merged(4, { body: `Fixes ${id}` }))).body).toEqual({ linked: [id], moved: {} });
+    expect(await get(id)).toMatchObject({ status: "in_progress", links: [{ state: "merged", closes: true }] });
+  });
+
   test("a draft moves an unstarted issue to in_progress but never an in_review one back; ready for review moves it on", async () => {
     const todo = await issue("Draft me", "todo");
     const review = await issue("Already in review", "in_review");
