@@ -1,6 +1,10 @@
 # Docket
 
-See [SPEC.md](SPEC.md) and [README.md](README.md).
+See [SPEC.md](SPEC.md) and [README.md](README.md). SPEC.md is large: `grep -n '^## ' SPEC.md` and read only the section you need.
+
+## Checks
+
+- `bun run check`: typecheck and all tests (~20 s). While iterating: `bun test test/<name>.test.ts`.
 
 ## Git
 

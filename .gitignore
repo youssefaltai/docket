@@ -5,3 +5,4 @@ data
 /attachments/
 .DS_Store
 .env
+.claude/worktrees/
