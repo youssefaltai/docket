@@ -376,6 +376,15 @@ describe("mentions, the inbox and live events", () => {
     expect(gusSocket.events.some((e) => e.entity === "view")).toBeFalse();
     for (const socket of [bobSocket, gusSocket]) socket.close();
   });
+
+  test("/ws: a guest hears that someone left their team (DKT-54)", async () => {
+    await ok(bob.api("POST", "/api/teams/WEB/members", { username: "me" }));
+    const gusSocket = gus.ws();
+    expect(await gusSocket.opened).toBeTrue();
+    await ok(bob.api("DELETE", "/api/teams/WEB/members/bob"));
+    await gusSocket.until((e) => e.entity === "member" && e.id === "bob");
+    gusSocket.close();
+  });
 });
 
 describe("joining, leaving and making a team private", () => {
