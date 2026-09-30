@@ -3,7 +3,7 @@
 import { Editor, Extension, flattenExtensions, Node as TiptapNode, type AnyExtension } from "@tiptap/core";
 import { Markdown } from "@tiptap/markdown";
 import { BulletList, getListMarker, ListItem, OrderedList, TaskItem, TaskList } from "@tiptap/extension-list";
-import { Table, TableCell, TableHeader, TableRow } from "@tiptap/extension-table";
+import { renderTableToMarkdown, Table, TableCell, TableHeader, TableRow } from "@tiptap/extension-table";
 import { Node as PMNode, Slice } from "@tiptap/pm/model";
 import { Plugin } from "@tiptap/pm/state";
 import { StarterKit } from "@tiptap/starter-kit";
@@ -11,46 +11,10 @@ import { Marked } from "marked";
 import { ATTACHMENT_URL } from "../shared/types";
 import { pastedFiles, safeUrl } from "./util";
 
-/**
- * @tiptap/extension-table's renderTableToMarkdown, ported line for line with one change: `|` in a cell's text is
- * escaped to `\|`. Upstream writes it bare, so the next load splits the row and drops a cell.
- */
+/** The upstream table writer, with `|` in a cell's text escaped to `\|`: bare, the next load splits the row and drops a cell. */
 const PipeSafeTable = Table.extend({
-  renderMarkdown: (node: any, h: any) => {
-    const cellSep = "\x1f"; // upstream's separator for a cell's hard line breaks, turned into <br>
-    if (!node?.content?.length) return "";
-    const rows: { text: string; isHeader: boolean; align: string | null }[][] = [];
-    node.content.forEach((rowNode: any) => {
-      const cells: (typeof rows)[number] = [];
-      rowNode.content?.forEach((cellNode: any) => {
-        const raw =
-          Array.isArray(cellNode.content) && cellNode.content.length > 1
-            ? cellNode.content.map((child: any) => h.renderChildren(child)).join(cellSep)
-            : cellNode.content
-              ? h.renderChildren(cellNode.content)
-              : "";
-        const text = (raw.split(cellSep).join("\n").replace(/[ \t]*\r?\n[ \t]*/g, "<br>") || "").replace(/\s+/g, " ").trim();
-        cells.push({ text: text.replace(/\|/g, "\\|"), isHeader: cellNode.type === "tableHeader", align: cellNode.attrs?.align || null });
-      });
-      rows.push(cells);
-    });
-    const columns = rows.reduce((max, r) => Math.max(max, r.length), 0);
-    if (columns === 0) return "";
-    const widths = Array.from({ length: columns }, (_, i) => Math.max(3, ...rows.map((r) => r[i]?.text.length ?? 0)));
-    const aligns = Array.from({ length: columns }, (_, i) => rows.map((r) => r[i]?.align).find(Boolean) ?? null);
-    const pad = (s: string, width: number) => s + " ".repeat(Math.max(0, width - s.length));
-    const line = (texts: string[]) => `| ${texts.map((t, i) => pad(t, widths[i]!)).join(" | ")} |\n`;
-    const hasHeader = rows[0]!.some((c) => c.isHeader);
-    let out = "\n" + line(widths.map((_, i) => (hasHeader ? rows[0]![i]?.text || "" : "")));
-    out += `| ${widths
-      .map((w, i) => {
-        const dashes = "-".repeat(Math.max(3, w));
-        return { left: `:${dashes}`, right: `${dashes}:`, center: `:${dashes}:` }[aligns[i] as string] ?? dashes;
-      })
-      .join(" | ")} |\n`;
-    for (const r of hasHeader ? rows.slice(1) : rows) out += line(widths.map((_, i) => r[i]?.text || ""));
-    return out;
-  },
+  renderMarkdown: (node: any, h: any) =>
+    renderTableToMarkdown(node, { ...h, renderChildren: (...args: any[]) => h.renderChildren(...args).replace(/\|/g, "\\|") }),
 });
 
 // Lists, patched where @tiptap/extension-list's markdown doesn't round-trip (DKT-37):

@@ -1,6 +1,6 @@
 // Issue page: title, description, sub-issues, comments and the properties panel.
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ESTIMATE_VALUES, PRIORITY_LABELS, type Issue, type IssueLink } from "../shared/types";
+import { ESTIMATE_VALUES, PRIORITY_LABELS, type Issue, type IssueLink, type ProjectSummary } from "../shared/types";
 import { HttpError, api } from "./api";
 import { RichEditor } from "./editor";
 import { SubscribeButton } from "./inbox";
@@ -76,6 +76,7 @@ import {
   useFetch,
   type CommentActions,
   useIssueShortcuts,
+  useMedia,
   useResolved,
   useKeydown,
   TrashBanner,
@@ -86,6 +87,9 @@ import { deleteToTrash } from "./trashActions";
 export function IssuePage({ id }: { id: string }) {
   const app = useApp();
   const { data: issue, setData: setIssue, missing, failed, reload, invalidate, isLatest } = useFetch(() => api.issue(id), [id]);
+
+  const projects = useProjects();
+  const narrow = useMedia("(max-width: 1100px)");
 
   useTitle(issue ? `${issue.id} ${issue.title}` : id);
 
@@ -291,9 +295,11 @@ export function IssuePage({ id }: { id: string }) {
               )}
               <TitleEditor key={issue.id} value={issue.title} onSave={(title) => patch({ title })} />
               {/* Narrow screens show the properties under the title instead of in the side panel. */}
-              <div className="issue-props-inline">
-                <Properties issue={issue} patch={patch} />
-              </div>
+              {narrow && (
+                <div className="issue-props-inline">
+                  <Properties issue={issue} patch={patch} projects={projects} />
+                </div>
+              )}
               <Description
                 key={`d-${issue.id}`}
                 value={issue.description}
@@ -305,15 +311,17 @@ export function IssuePage({ id }: { id: string }) {
               <SubIssues issue={issue} onPatch={patchChild} />
               <Docs issue={issue} />
               <Links issue={issue} />
-              {!issue.deletedAt && <Comments title="Activity" comments={issue.comments} activity={issue.activity} team={issue.team} actions={comments} />}
+              {!issue.deletedAt && <Comments title="Activity" comments={issue.comments} activity={issue.activity} team={issue.team} projects={projects} actions={comments} />}
             </fieldset>
           </div>
         </div>
-        <aside className="issue-props">
-          <fieldset className="plain" disabled={!!issue.deletedAt || !!issue.archivedAt}>
-            <Properties issue={issue} patch={patch} />
-          </fieldset>
-        </aside>
+        {!narrow && (
+          <aside className="issue-props">
+            <fieldset className="plain" disabled={!!issue.deletedAt || !!issue.archivedAt}>
+              <Properties issue={issue} patch={patch} projects={projects} />
+            </fieldset>
+          </aside>
+        )}
       </div>
       </EditorTeam.Provider>
     </>
@@ -629,12 +637,11 @@ function Relations({ ids, resolved, children }: { ids: string[]; resolved?: (id:
   );
 }
 
-function Properties({ issue, patch }: { issue: Issue; patch: (p: IssueChange) => void }) {
+function Properties({ issue, patch, projects }: { issue: Issue; patch: (p: IssueChange) => void; projects: ProjectSummary[] }) {
   const app = useApp();
   const team = app.teams?.find((t) => t.key === issue.team);
   const none = <span className="muted">None</span>;
   const resolved = useResolved();
-  const projects = useProjects();
   const project = projects.find((p) => p.slug === issue.project);
   return (
     <>
