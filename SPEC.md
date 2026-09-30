@@ -215,7 +215,7 @@ Plus the Access routes above. Everything here acts in the request's workspace (s
 | POST | /api/labels | `LabelInput` `{ name, team?, color?, group?, isGroup? }` (`workspace`, if given, must name the request's) | 201 `Label` |
 | PATCH | /api/labels/:id | `LabelPatch` `{ name?, color?, team?, group? }` (`isGroup`, `workspace`: 400) | `Label` |
 | DELETE | /api/labels/:id | | the deleted `Label` |
-| GET / POST | /api/templates | `?team` / `IssueTemplateInput` `{ team, name, title?, description?, status?, priority?, labels? }` | `IssueTemplate[]`, by name; 201 `IssueTemplate` |
+| GET / POST | /api/templates | `?team` (unknown: 400) / `IssueTemplateInput` `{ team, name, title?, description?, status?, priority?, labels? }` | `IssueTemplate[]`, by name; 201 `IssueTemplate` |
 | PATCH / DELETE | /api/templates/:id | `IssueTemplatePatch` (the same fields but `team`; people only) | `IssueTemplate` (DELETE: the deleted one, for good; issues already made from it are unaffected) |
 | GET | /api/notifications | `?unread=true` | `Inbox` `{ notifications, unread }`: yours in the request's workspace, newest first, at most 500; `unread` counts the issues and docs with unread ones there, one per inbox row |
 | PATCH | /api/notifications | `{ ids?: number[], read: boolean }` (no ids: all of yours here) | `Inbox` |

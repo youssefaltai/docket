@@ -240,6 +240,7 @@ describe("issues, docs and everything else in a private team", () => {
     const tpl = await ok(ana.api("POST", "/api/templates", { team: "SEC", name: "Incident" }), 201);
     expect((await bob.api("PATCH", `/api/templates/${tpl.id}`, { name: "x" })).status).toBe(404);
     expect((await ok(bob.api("GET", "/api/templates"))).map((t: any) => t.id)).not.toContain(tpl.id);
+    expect((await bob.api("GET", "/api/templates?team=SEC")).status).toBe(400);
     expect((await bob.api("POST", "/api/issues", { team: "SEC", title: "x", template: tpl.id })).status).toBe(404);
 
     const both = await ok(ana.api("POST", "/api/projects", { name: "Hardening", teams: ["WEB", "SEC"] }), 201);
