@@ -924,7 +924,7 @@ const checkTemplateStatus = (team: TeamRef, value: unknown): string | null => (v
 /** The request's workspace's templates in teams you see, by name; `team`: only that team's own (templates are always one team's). */
 export function listTemplates(a: Actor, filter: { team?: string } = {}): IssueTemplate[] {
   const params: SQLQueryBindings[] = [requestWorkspace(a)];
-  if (filter.team) params.push(teamRow(a, filter.team).id);
+  if (filter.team) params.push(knownTeam(a, filter.team).id);
   return db
     .query<TemplateRow, SQLQueryBindings[]>(
       `${TEMPLATE_SELECT} WHERE t.workspace = ? AND ${SEES_TEAM(String(a.id), "t")}${filter.team ? " AND t.id = ?" : ""} ORDER BY it.name COLLATE NOCASE, it.id`,

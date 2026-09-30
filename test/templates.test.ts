@@ -48,6 +48,10 @@ test("creating a template: all fields set, labels as a join table like an issue'
   expect((await templates("?team=WEB")).map((t: any) => t.name)).toEqual(["Bug report"]);
   expect((await templates()).map((t: any) => t.name)).toEqual(["Bug report"]);
   expect(await templates("?team=API")).toEqual([]);
+  // An unknown team in the filter is 400, like every other list.
+  const unknown = await s.api("GET", "/api/templates?team=NOPE");
+  expect(unknown.status).toBe(400);
+  expect(unknown.body.error).toBe('Unknown team "NOPE"');
   // Bare minimum: just a name, everything else defaults.
   const bare = await newTemplate({ team: "WEB", name: "Blank" });
   expect(bare.body).toMatchObject({ title: "", description: "", status: null, priority: null, labels: [] });
@@ -125,7 +129,7 @@ test("list_templates (MCP): one line per template, id · name · team", async ()
   expect(list).toContain("· Bug report · WEB");
   expect(list).toContain("· Chore · WEB");
   expect(await bot.tool("list_templates", { team: "API" })).not.toContain("Bug report");
-  await expect(bot.tool("list_templates", { team: "SID" })).rejects.toThrow(/not found/); // another workspace's team
+  await expect(bot.tool("list_templates", { team: "SID" })).rejects.toThrow(/Unknown team/); // another workspace's team
 });
 
 test("only people manage templates; a template naming another workspace's team is 404", async () => {
