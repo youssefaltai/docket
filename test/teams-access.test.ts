@@ -348,6 +348,21 @@ describe("mentions, the inbox and live events", () => {
     for (const socket of [anaSocket, bobSocket, gusSocket]) socket.close();
   });
 
+  test("/ws: deleting a private team's label reaches its members only; a workspace label's, everyone (DKT-44)", async () => {
+    const anaSocket = ana.ws();
+    const bobSocket = bob.ws();
+    expect([await anaSocket.opened, await bobSocket.opened]).toEqual([true, true]);
+    const secret = await ok(ana.api("POST", "/api/labels", { name: "zero-day", team: "SEC" }), 201);
+    const shared = await ok(s.api("POST", "/api/labels", { name: "everyone" }), 201);
+    const label = (id: number) => (e: any) => e.entity === "label" && e.id === String(id);
+    await ok(ana.api("DELETE", `/api/labels/${secret.id}`));
+    await anaSocket.until(label(secret.id));
+    await ok(s.api("DELETE", `/api/labels/${shared.id}`));
+    await bobSocket.until(label(shared.id)); // sent after the first: by now bob would have heard it
+    expect(bobSocket.events.some(label(secret.id))).toBeFalse();
+    for (const socket of [anaSocket, bobSocket]) socket.close();
+  });
+
   test("/ws: a guest hears about members who share a team with them, not the rest (DKT-42)", async () => {
     const bobSocket = bob.ws();
     const gusSocket = gus.ws();

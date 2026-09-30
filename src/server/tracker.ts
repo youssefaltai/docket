@@ -2627,7 +2627,7 @@ export function deleteLabel(a: Actor, id: unknown): Label {
     issues.forEach((issue, n) => logActivity(a, issue, label.workspace, changes(before[n]!, read.get(issue)!), time));
     return refs;
   }).immediate();
-  changed("label", label.workspace, String(label.id));
+  changed("label", label.workspace, String(label.id), label.team_key ?? undefined); // its row is gone: name its team's audience
   for (const ref of refs) changed("issue", label.workspace, ref);
   return deleted;
 }

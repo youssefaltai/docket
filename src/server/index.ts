@@ -117,9 +117,11 @@ const server = Bun.serve({
 setInterval(autoArchive, 60 * 60 * 1000);
 setInterval(() => syncCycles(), 60 * 1000); // a cycle ends within a minute of midnight UTC
 
-onChange((event, userId) => {
+onChange((event, to) => {
   const message = JSON.stringify(event);
-  for (const t of userId === undefined ? topicsFor(event) : [userTopic(userId, event.workspace)]) server.publish(t, message);
+  const topics =
+    to === undefined ? topicsFor(event) : typeof to === "number" ? [userTopic(to, event.workspace)] : topicsFor({ ...event, entity: "team", id: to });
+  for (const t of topics) server.publish(t, message);
 });
 
 // A socket only hears its workspaces as of when it opened, so any change to a user's access closes
