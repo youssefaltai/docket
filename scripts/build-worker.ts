@@ -5,8 +5,6 @@ import { cpSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { secure } from "../src/server/http.ts";
 
-if (process.env.DOCKET_SKIP_BUILD) process.exit(0); // the tests build once, then start many servers
-
 const root = join(import.meta.dir, "..");
 const dist = join(root, "dist");
 rmSync(dist, { recursive: true, force: true });

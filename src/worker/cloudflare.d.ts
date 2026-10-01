@@ -25,7 +25,7 @@ interface ResponseInit {
 
 interface R2Object {
   size: number;
-  checksums: { sha256?: ArrayBuffer };
+  checksums: { md5?: ArrayBuffer; sha256?: ArrayBuffer };
 }
 interface R2Bucket {
   put(key: string, value: ReadableStream | Uint8Array, options?: { sha256?: string }): Promise<R2Object | null>;

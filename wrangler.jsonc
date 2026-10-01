@@ -1,5 +1,6 @@
-// Docket on Cloudflare Workers' free plan (src/worker/worker.ts). Local: bunx wrangler dev. Nothing here is routed to a domain yet.
-// Secrets: DOCKET_SETUP_CODE (required for setup); ADMIN_TOKEN only while importing or recovering an account.
+// Docket on Cloudflare Workers' free plan (src/worker/worker.ts), at docket.youssefaltai.com. Local: bunx wrangler dev.
+// Secrets: DOCKET_SETUP_CODE (required for setup); BACKUP_TOKEN (scripts/backup.ts); ADMIN_TOKEN only while importing or
+// recovering an account.
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "docket",
@@ -7,6 +8,8 @@
   "compatibility_date": "2026-09-01",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": false,
+  "routes": [{ "pattern": "docket.youssefaltai.com", "custom_domain": true }],
+  "vars": { "DOCKET_URL": "https://docket.youssefaltai.com", "DOCKET_HOSTS": "docket.youssefaltai.com" },
   "build": { "command": "bun scripts/build-worker.ts" },
   "assets": {
     "directory": "./dist",

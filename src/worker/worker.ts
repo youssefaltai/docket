@@ -22,6 +22,8 @@ interface Env {
   ATTACHMENTS: R2Bucket;
   /** Turns on /api/admin/* for whoever has it: the import and account recovery. Set it when needed, delete it after. */
   ADMIN_TOKEN?: string;
+  /** Turns on /api/backup/*, read-only: what scripts/backup.ts copies off-site. */
+  BACKUP_TOKEN?: string;
 }
 
 const notFound = (req: Request) => secure(req, new Response("Not found", { status: 404 }));
@@ -65,6 +67,13 @@ async function sized(body: ReadableStream | Uint8Array, length?: number) {
   body.pipeTo(fixed.writable).catch(() => {}); // a short or long body fails the put
   return fixed.readable;
 }
+/** Whether the request carries `Bearer <token>` (compared in constant time). */
+function bearer(req: Request, token: string) {
+  const sha = (s: string) => createHash("sha256").update(s).digest();
+  return timingSafeEqual(sha(req.headers.get("authorization") ?? ""), sha(`Bearer ${token}`));
+}
+
+const hex = (digest?: ArrayBuffer) => digest && Buffer.from(digest).toString("hex");
 const contentLength = (req: Request) => (req.headers.has("content-length") ? Number(req.headers.get("content-length")) : undefined);
 
 export class Docket extends DurableObject<Env> {
@@ -96,8 +105,8 @@ export class Docket extends DurableObject<Env> {
   }
 
   async fetch(req: Request): Promise<Response> {
-    const admin = await this.admin(req);
-    if (admin) return admin;
+    const operator = (await this.admin(req)) ?? (await this.backup(req));
+    if (operator) return operator;
     let upgraded: Response | undefined;
     const server: Server = {
       requestIP: (r) => ({ address: r.headers.get("cf-connecting-ip") ?? "" }),
@@ -156,9 +165,7 @@ export class Docket extends DurableObject<Env> {
   private async admin(req: Request): Promise<Response | null> {
     const { pathname, searchParams } = new URL(req.url);
     const token = this.env.ADMIN_TOKEN;
-    if (!token || !pathname.startsWith("/api/admin/")) return null;
-    const sha = (s: string) => createHash("sha256").update(s).digest();
-    if (!timingSafeEqual(sha(req.headers.get("authorization") ?? ""), sha(`Bearer ${token}`))) return null;
+    if (!token || !pathname.startsWith("/api/admin/") || !bearer(req, token)) return null;
     const [, , , what, a] = pathname.split("/");
     try {
       if (what === "tables" && req.method === "GET") {
@@ -183,8 +190,7 @@ export class Docket extends DurableObject<Env> {
       if (file && req.method === "GET") {
         const object = await this.env.ATTACHMENTS.head(file);
         if (!object) return Response.json({ error: "No such file" }, { status: 404 });
-        const { sha256 } = object.checksums;
-        return Response.json({ size: object.size, sha256: sha256 && Buffer.from(sha256).toString("hex") });
+        return Response.json({ size: object.size, sha256: hex(object.checksums.sha256) });
       }
       if (what === "sign-in-link" && req.method === "POST") {
         const { username, workspace } = (await req.json()) as { username: string; workspace?: string };
@@ -192,6 +198,47 @@ export class Docket extends DurableObject<Env> {
       }
     } catch (err) {
       return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: err instanceof AppError ? err.status : 400 });
+    }
+    return null;
+  }
+
+  /**
+   * The off-site backup (scripts/backup.ts), read-only, only while the BACKUP_TOKEN secret is set and only with it:
+   *   GET /api/backup/tables              Docket's tables and the schema version
+   *   GET /api/backup/rows/:table?after   rows as they are, after rowid `after`, about 256 KB at a time, and the rowid to go on from
+   *   GET /api/backup/files?after         attachment ids after `after`, 100 at a time, with their size and MD5 in R2
+   *   GET /api/backup/files/:id           an attachment's bytes
+   */
+  private async backup(req: Request): Promise<Response | null> {
+    const { pathname, searchParams } = new URL(req.url);
+    const token = this.env.BACKUP_TOKEN;
+    if (!token || !pathname.startsWith("/api/backup/") || req.method !== "GET" || !bearer(req, token)) return null;
+    const [, , , what, a] = pathname.split("/");
+    const after = searchParams.get("after") ?? "";
+    if (what === "tables") {
+      const version = db.query<{ value: number }, []>("SELECT value FROM docket_meta WHERE key = 'schema_version'").get()!.value;
+      return Response.json({ tables: tables(db), version });
+    }
+    if (what === "rows" && a && tables(db).includes(a)) {
+      const rows: Record<string, unknown>[] = [];
+      let next = Number(after) || 0;
+      let size = 0;
+      for (const { _rowid, ...row } of db.query<Record<string, unknown>, [number]>(`SELECT rowid AS _rowid, * FROM "${a}" WHERE rowid > ? ORDER BY rowid LIMIT 500`).all(next)) {
+        size += JSON.stringify(row).length;
+        if (rows.length && size > 256 * 1024) break;
+        rows.push(row);
+        next = _rowid as number;
+      }
+      return Response.json({ rows, next });
+    }
+    if (what === "files" && !a) {
+      const ids = db.query<{ id: string }, [string]>("SELECT id FROM attachments WHERE id > ? ORDER BY id LIMIT 100").all(after);
+      const objects = await Promise.all(ids.map(({ id }) => this.env.ATTACHMENTS.head(id)));
+      return Response.json(ids.map(({ id }, i) => ({ id, size: objects[i]?.size ?? null, md5: hex(objects[i]?.checksums.md5) })));
+    }
+    if (what === "files" && a) {
+      const object = await this.env.ATTACHMENTS.get(a);
+      return object ? new Response(object.body) : Response.json({ error: "No such file" }, { status: 404 });
     }
     return null;
   }

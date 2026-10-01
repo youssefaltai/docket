@@ -3,7 +3,7 @@
 // Tests authenticate only through s.as / s.user / s.agent / s.anon, so an auth redesign touches this file alone.
 // MCP goes through the real SDK client, bearer only: a caller's tool(), tools() (what tools/list shows), instructions() and server().
 import { Database } from "bun:sqlite";
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -336,12 +336,18 @@ async function parse(res: Response): Promise<any> {
 /** wrangler dev on free ports, its state in `dir`, `env` as its vars; the web app is built once per test run. */
 async function wranglerDev(dir: string, env: Record<string, string | undefined>) {
   await (built ??= Bun.spawn(["bun", join(root, "scripts", "build-worker.ts")], { stdout: "ignore", stderr: "inherit" }).exited);
-  const vars = Object.entries({ ...env, ADMIN_TOKEN }).flatMap(([k, v]) => (/^(DOCKET_|ADMIN_TOKEN)/.test(k) && v !== undefined ? ["--var", `${k}:${v}`] : []));
   const ports = [freePort(), freePort()].map(String);
-  const args = ["dev", "--port", ports[0]!, "--inspector-port", ports[1]!, "--persist-to", join(dir, "state"), "--show-interactive-dev-session=false", ...vars];
+  const vars = Object.entries({ ...env, ADMIN_TOKEN }).flatMap(([k, v]) => (/^(DOCKET_|ADMIN_TOKEN)/.test(k) && v !== undefined ? ["--var", `${k}:${v}`] : []));
+  // wrangler.jsonc without production's domain and vars (with a route, wrangler dev rewrites every request's Host to it),
+  // nor its build: the web app is built once per test run.
+  const config = JSON.parse(readFileSync(join(root, "wrangler.jsonc"), "utf8").replace(/^\s*\/\/.*$/gm, ""));
+  for (const key of ["routes", "vars", "build"]) delete config[key];
+  Object.assign(config, { main: join(root, config.main), assets: { ...config.assets, directory: join(root, config.assets.directory) } });
+  writeFileSync(join(dir, "wrangler.json"), JSON.stringify(config));
+  const args = ["dev", "--config", join(dir, "wrangler.json"), "--port", ports[0]!, "--inspector-port", ports[1]!, "--persist-to", join(dir, "state"), "--show-interactive-dev-session=false", ...vars];
   return Bun.spawn([join(root, "node_modules", ".bin", "wrangler"), ...args], {
     cwd: root,
-    env: { PATH: process.env.PATH, HOME: process.env.HOME, DOCKET_SKIP_BUILD: "1" },
+    env: { PATH: process.env.PATH, HOME: process.env.HOME },
     stdout: "pipe",
     stderr: "inherit",
   });
