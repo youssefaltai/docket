@@ -1,16 +1,20 @@
 # Docket
 
-An issue tracker for people and agents, modeled on Linear: workspaces, teams, issues, docs, comments. Web UI for people, MCP for agents. Bun + SQLite + TypeScript, self-hosted anywhere. Everyone signs in; agents are apps with their own tokens.
+An issue tracker for people and agents, modeled on Linear: workspaces, teams, issues, docs, comments. Web UI for people, MCP for agents. Bun + SQLite + TypeScript, self-hosted anywhere, or on Cloudflare Workers. Everyone signs in; agents are apps with their own tokens.
 
-Rules: Docket copies Linear's features; "nano" is about the implementation. Minimal, simple, clean code, few files. Few dependencies (react, react-dom, marked, zod, @modelcontextprotocol/sdk, tiptap, web-push). No frameworks beyond that.
+Rules: Docket copies Linear's features; "nano" is about the implementation. Minimal, simple, clean code, few files. Few dependencies (react, react-dom, marked, zod, @modelcontextprotocol/sdk, tiptap). No frameworks beyond that.
 
 ## Layout
 
 ```
 src/shared/types.ts   the contract (do not change without updating both sides)
-src/server/index.ts   Bun.serve: routes, /api, /mcp, /ws, serves the web app, prints the setup code
+src/server/index.ts   Bun.serve: the web app, app.ts's routes and their WebSockets, timers, prints the setup code
+src/server/local.ts   Bun's storage: the SQLite file and the attachments folder (imported first)
+src/server/app.ts     the routes (/api, /mcp, /ws) and their matcher, WebSocket topics: shared by Bun and the Worker
 src/server/paths.ts   XDG Base Directory resolution
-src/server/db.ts      bun:sqlite connection, change events, shared validation
+src/server/store.ts   the Store interface the data modules query (bun:sqlite's Database; durableStore for a Durable Object)
+src/server/runtime.ts how background work starts: timers on Bun, waitUntil and the alarm on Workers
+src/server/db.ts      the connection (set by an entrypoint), change events, shared validation
 src/server/schema.ts  the schema: the baseline, migrations since, their runner
 src/server/access.ts  accounts, sessions, API keys, one-time codes, workspaces and members; the Actor; the team visibility rule
 src/server/tracker.ts teams and their members, issues, comments, labels, views, documents, projects, cycles; Docket's sweeps
@@ -20,16 +24,18 @@ src/server/webhooks.ts webhooks: the outbox written with each change, the sendin
 src/server/github.ts  the GitHub integration: connecting, the signed incoming webhook, magic words
 src/server/auth.ts    credentials → Actor, guards, rate limit, public setup/sign-in routes
 src/server/http.ts    security headers, body cap, rate limit per credential, the built web app
-src/server/attachments.ts uploads: stored next to the database, sniffed, served to the workspace's members
+src/server/attachments.ts uploads: bytes in `files` (disk or R2), sniffed, served to the workspace's members
+src/server/transfer.ts whole-database dump, load and per-table hashes (the Workers import)
+src/worker/worker.ts  Cloudflare: the Worker and the Durable Object that runs app.ts; wrangler.jsonc configures it
 src/server/api.ts     REST handlers
 src/server/mcp.ts     MCP server + tools
-scripts/              sign-in-link (recovery)
+scripts/              sign-in-link (recovery), build-worker (static assets), import (into Workers)
 src/web/index.html    HTML entry (Bun HTML import, bundled by Bun)
 src/web/*.tsx, *.ts, *.css  React UI
 public/               manifest, service worker (sw.js), icons
 ```
 
-Env vars: see README's Configuration section. Dev: `bun run dev` (uses `./dev.db` unless `DATABASE_PATH` is set, and setup code `DEVEL-SETUP` unless `DOCKET_SETUP_CODE` is set). Tests: `bun test`, mostly black-box over HTTP against a temp database. Prod: `bun run start` (sets `NODE_ENV=production`, so Bun serves bundled assets and never shows its dev error page).
+Env vars: see README's Configuration section. Dev: `bun run dev` (uses `./dev.db` unless `DATABASE_PATH` is set, and setup code `DEVEL-SETUP` unless `DOCKET_SETUP_CODE` is set). Tests: `bun test`, mostly black-box over HTTP against a temp database; `DOCKET_TEST_WORKER=1 bun test` runs the same against `wrangler dev`. Prod: `bun run start` (sets `NODE_ENV=production`, so Bun serves bundled assets and never shows its dev error page).
 
 ## Access
 
@@ -131,7 +137,7 @@ Team membership and privacy are managed from a browser session only (an API key 
 
 ## Data
 
-The schema lives in `schema.ts`, versioned by `PRAGMA user_version`: a baseline at 29 (what migrations 1-29 left), then append-only migrations. A new database gets the baseline; one at 1-28 is refused at startup, to be upgraded through the release tagged `migrations-v29` first. Each migration is SQL or a function (for backfills and checks), run in its own transaction with foreign keys off; `PRAGMA foreign_key_check` must pass before it commits, else it rolls back and the server doesn't start. Foreign keys are on afterwards; WAL mode.
+The schema lives in `schema.ts`, versioned by `PRAGMA user_version` (on a Durable Object, which refuses that pragma, a `docket_meta` row): a baseline at 29 (what migrations 1-29 left), then append-only migrations. A new database gets the baseline; one at 1-28 is refused at startup, to be upgraded through the release tagged `migrations-v29` first. Each migration is SQL or a function (for backfills and checks), run in its own transaction with foreign keys off; `PRAGMA foreign_key_check` must pass before it commits, else it rolls back and the server doesn't start. Foreign keys are on afterwards; WAL mode. A Durable Object can't turn foreign keys off, so there a migration defers them to its commit instead (a table rebuild there must not drop a table others reference: its ON DELETE actions would fire).
 
 - **users**, **workspaces**, **workspace_members**, **sessions**, **api_keys**, **codes**: see Access.
 - **teams**: id (internal; the API names teams by key), workspace, key (2–5 uppercase letters, unique within the workspace: `UNIQUE (workspace, key)`), name, description, next_number, default_status (where new issues start: a backlog or unstarted key; `defaultStatus` in the API), auto_close_parent and auto_close_children (0 or 1; `autoCloseParent`, `autoCloseChildren`: see Auto-close), auto_archive_days (`autoArchiveDays`: see Auto-archive), estimate_scale (`estimateScale`: see Estimates), cycle_weeks and upcoming_cycles (`cycleWeeks`, `upcomingCycles`: see Cycles), private (0 or 1; `private`: see Teams and guests), created_at, updated_at. `Team` also carries `member`: you're in it.
@@ -235,7 +241,7 @@ A `Comment` is `{ id, author, body, createdAt, editedAt, parent, resolvedAt, res
 
 ## Realtime
 
-`GET /ws` upgrades to a WebSocket that subscribes to the caller's workspaces (a key's: only its own). After every mutation (REST or MCP) the server publishes a `ServerEvent` `{ type: "changed", entity, workspace, id }` (`entity`: `workspace`, `member`, `team`, `issue`, `document`, `label` (`id`: its id), `project` (`id`: its slug), `view` (`id`: its id) or `inbox`) to that workspace's sockets only, and a team's only to sockets that see the team (`eventTeams` in tracker.ts, topics in index.ts): an issue's (by its identifier's key), a doc's, a team, a team's own label (a deleted one's too: its row is gone, so the delete names the team) or a project's (its teams) go to `public:<ws>` for a public team, heard by everyone in the workspace but guests, and to `team:<id>`, heard by a private team's members and a public team's guests; a member's goes to `public:<ws>` and their teams' `team:<id>`, so a guest hears only of members who share a team with them (a guest in no team: of themselves, on their own sockets), and a view's to `public:<ws>` alone, since guests can't use views; anything else goes to `workspace:<ws>`, heard by everyone there. A socket's topics are fixed when it opens; any change to what its user sees closes it (see Teams and guests). Three go to one person alone, on their sockets in that workspace (a key's socket: only its own): `inbox` (`id`: their username) whenever their notifications change, `issue`/`document` when they follow or unfollow it, and `view` when they star or unstar it. The UI refetches what it's showing (the inbox and its sidebar count only on `inbox` events). Signing out, revoking a session or key, suspension and agent token changes close the affected sockets (code 4401); clients reconnect with what's current.
+`GET /ws` upgrades to a WebSocket that subscribes to the caller's workspaces (a key's: only its own). After every mutation (REST or MCP) the server publishes a `ServerEvent` `{ type: "changed", entity, workspace, id }` (`entity`: `workspace`, `member`, `team`, `issue`, `document`, `label` (`id`: its id), `project` (`id`: its slug), `view` (`id`: its id) or `inbox`) to that workspace's sockets only, and a team's only to sockets that see the team (`eventTeams` in tracker.ts, topics in app.ts): an issue's (by its identifier's key), a doc's, a team, a team's own label (a deleted one's too: its row is gone, so the delete names the team) or a project's (its teams) go to `public:<ws>` for a public team, heard by everyone in the workspace but guests, and to `team:<id>`, heard by a private team's members and a public team's guests; a member's goes to `public:<ws>` and their teams' `team:<id>`, so a guest hears only of members who share a team with them (a guest in no team: of themselves, on their own sockets), and a view's to `public:<ws>` alone, since guests can't use views; anything else goes to `workspace:<ws>`, heard by everyone there. A socket's topics are fixed when it opens; any change to what its user sees closes it (see Teams and guests). Three go to one person alone, on their sockets in that workspace (a key's socket: only its own): `inbox` (`id`: their username) whenever their notifications change, `issue`/`document` when they follow or unfollow it, and `view` when they star or unstar it. The UI refetches what it's showing (the inbox and its sidebar count only on `inbox` events). Signing out, revoking a session or key, suspension and agent token changes close the affected sockets (code 4401); clients reconnect with what's current.
 
 ## Push notifications
 
@@ -476,7 +482,7 @@ UI:
 
 Linear's uploads: files (screenshots, logs, reports) attached to a workspace and linked from any markdown (descriptions, comments, docs). Unlike Linear's, they're private to the workspace (served only to its signed-in members), 10 MB each (`MAX_UPLOAD_BYTES`), and only raster images display inline.
 
-- **Storage** (`attachments.ts`): `attachments/<id>` in the database's folder (`paths.ts` `attachmentsDir()`; `/app/data/attachments` in Docker), created at startup. `id` is 16 random bytes, base64url (22 characters): the row's key and the file's name. The file is written first (to `<id>.part`, then renamed, so it's whole or absent), then its row; a failed insert removes the file. Files never change. No delete or cleanup yet: an attachment stays after the text linking it is edited or deleted.
+- **Storage** (`attachments.ts` `files`): on Bun `attachments/<id>` in the database's folder (`local.ts`, `paths.ts` `attachmentsDir()`; `/app/data/attachments` in Docker), created at startup; on Workers the R2 object `<id>`. `id` is 16 random bytes, base64url (22 characters): the row's key and the file's name. The file is written first (on disk to `<id>.part`, then renamed, so it's whole or absent), then its row; a failed insert removes the file. Files never change. No delete or cleanup yet: an attachment stays after the text linking it is edited or deleted.
 - **attachments**: id, workspace (cascades), team_id (the team it was uploaded in, or moved to with its issue or doc; null: the workspace's), name, content_type, size, uploader_id, created_at. `Attachment` in the API: `{ id, url, name, contentType, size, uploader, team, createdAt }`, `url` = `/api/attachments/<id>/<name>` (the name percent-encoded, parentheses too, so it can't end a markdown link).
 - **Name**: the uploaded name without `/`, `\`, `"`, control characters or bidi overrides, trimmed, at most 200 characters; empty is `file`.
 - **Type**: sniffed from the first bytes, never the client's claim: PNG, JPEG, GIF, WebP (`RIFF….WEBP`) as their image type; `%PDF-` as `application/pdf`; valid UTF-8 without a NUL in the first 8 KB as `text/plain; charset=utf-8`; anything else `application/octet-stream`. So SVG and HTML are text, never rendered.
@@ -497,3 +503,7 @@ MCP: `attach_file` and `get_attachment` (see MCP).
 The server serves the web app at `/`, `/login`, `/setup`, `/:ws` and `/:ws/*`, and at the paths from before URLs carried the workspace (`/settings/*`, `/t/*`, `/issue/*`, `/docs`, `/doc/*`) so the app can redirect them; `/api/*` and known files win over `/:ws`, and unknown `/icons/*` stay plain 404s.
 
 `Dockerfile` (oven/bun image) + `docker-compose.yml`: volume `./data:/app/data` (the database, `attachments/` and `backups/`), port published on `127.0.0.1` only. HTTPS and exposure are the operator's choice: a hostname other than `localhost`, `127.0.0.1` or `[::1]` must be in `DOCKET_HOSTS` (see Rules for every request). Setup code, `sign-in-link` and the env vars: see README.
+
+**Cloudflare Workers** (`wrangler.jsonc`): the web app is static assets (`scripts/build-worker.ts` builds `dist/` with a `_headers` file from `secure()`; SPA fallback, so unknown `/icons/*` get the app shell too). `/api/*`, `/mcp` and `/ws` run the Worker first, which drops client `x-forwarded-*` headers and hands the request to one SQLite-backed Durable Object (`Docket`) serving `app.ts`'s routes: its storage through `durableStore` (no booleans or bigints in its SQL, nested transactions are savepoints), attachments in the R2 bucket `docket-attachments` (`ATTACHMENTS`), the client IP from `CF-Connecting-IP`. WebSockets hibernate; each keeps its topics in its attachment (a socket takes at most 10 tags), and a publish goes through them all. Timers are one alarm, at the earliest of a minute away (cycles) and the next webhook delivery, with hourly auto-archive and delivery-log purge; a kick runs in `waitUntil`; a cron every 5 minutes makes sure the alarm is set. The startup catch-up runs whenever the object wakes. Webhook targets: a literal IP is checked, hostnames aren't looked up (no DNS on Workers; `localhost` names are refused). Vars and secrets are the same env names (`DOCKET_SETUP_CODE`, `DOCKET_URL`, `DOCKET_HOSTS`); set `DOCKET_SETUP_CODE` there, since a random one changes whenever the object wakes. `sign-in-link` has no Workers equivalent yet.
+
+**Import** (once, into an empty Durable Object): set the `IMPORT_TOKEN` secret, which turns on `POST /api/admin/import` (every table's rows in one transaction, foreign keys deferred, same ids and values), `PUT /api/admin/files/:id` (an attachment's bytes, before or after its row) and `GET /api/admin/hashes` (per-table row count and SHA-256 of typed values in value order, the schema's hash without comments, `quick_check`, `foreign_key_check`, R2's files with their MD5). `IMPORT_TOKEN=… bun scripts/import.ts <url> <snapshot.db> [attachments dir]` does all three and exits non-zero unless everything matches; it can rerun to resume. Delete the secret afterwards.
