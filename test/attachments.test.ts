@@ -4,7 +4,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { request } from "node:http";
 import { dirname, join } from "node:path";
-import { startServer, type Caller, type TestServer } from "./server.ts";
+import { startServer, WORKER, type Caller, type TestServer } from "./server.ts";
 
 const MB = 1024 * 1024;
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 73, 72, 68, 82, 1, 2, 3]);
@@ -48,7 +48,8 @@ test("an uploaded PNG comes back as it went in, inline, with the security header
   expect((await ana.raw("GET", `/api/attachments/${a.id}/anything.html`)).body).toEqual(PNG);
   expect((await (await s.agent("reader")).raw("GET", a.url)).status).toBe(200);
 
-  // Stored next to the database, under its id.
+  // Stored next to the database, under its id (on Workers, in R2).
+  if (WORKER) return;
   const dir = join(dirname(s.databasePath), "attachments");
   expect(readFileSync(join(dir, a.id))).toEqual(Buffer.from(PNG));
 });
@@ -162,7 +163,8 @@ test("no path, however encoded, reaches a file outside the attachments folder", 
     expect([path, res.status]).toEqual([path, 404]);
     expect(res.body).not.toContain("SQLite");
   }
-  // And only files Docket wrote are there: one per row.
+  // And only files Docket wrote are there: one per row (on Workers, R2 has no folder to escape).
+  if (WORKER) return;
   const dir = join(dirname(s.databasePath), "attachments");
   expect(existsSync(dir)).toBeTrue();
   expect(readdirSync(dir).every((f) => /^[A-Za-z0-9_-]{22}$/.test(f))).toBeTrue();

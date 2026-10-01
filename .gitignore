@@ -6,3 +6,5 @@ data
 .DS_Store
 .env
 .claude/worktrees/
+dist
+.wrangler

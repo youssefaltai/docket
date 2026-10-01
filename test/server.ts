@@ -1,8 +1,9 @@
-// Runs a real Docket server in a subprocess against a throwaway database, so tests only see HTTP.
+// Runs a real Docket server in a subprocess against a throwaway database, so tests only see HTTP. With DOCKET_TEST_WORKER=1
+// it's the Workers build instead (wrangler dev: workerd, a local Durable Object and R2), one per server.
 // Tests authenticate only through s.as / s.user / s.agent / s.anon, so an auth redesign touches this file alone.
 // MCP goes through the real SDK client, bearer only: a caller's tool(), tools() (what tools/list shows), instructions() and server().
 import { Database } from "bun:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -11,6 +12,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 const root = join(import.meta.dir, "..");
 const entry = join(root, "src", "server", "index.ts");
 export const SETUP_CODE = "TESTS-SETUP";
+export const WORKER = process.env.DOCKET_TEST_WORKER === "1";
 
 export type Via = "bearer" | "cookie";
 export type Reply = { status: number; body: any; headers: Headers };
@@ -99,8 +101,13 @@ type Internal = TestServer & { users: Map<string, Known> };
 export async function startServer(
   opts: { setup?: boolean; sharing?: TestServer; env?: Record<string, string> } = {},
 ): Promise<TestServer> {
+  // One Durable Object, so there's no second process: what a restart would do is the hourly housekeeping, run now.
+  if (WORKER && opts.sharing) {
+    await fetch(new URL("/cdn-cgi/local/scheduled?cron=0+*+*+*+*", opts.sharing.url));
+    return { ...opts.sharing, stop: async () => {} };
+  }
   const dir = mkdtempSync(join(tmpdir(), "docket-test-"));
-  const databasePath = opts.sharing?.databasePath ?? join(dir, "docket.db");
+  let databasePath = opts.sharing?.databasePath ?? join(dir, "docket.db");
   const env: Record<string, string | undefined> = {
     PATH: process.env.PATH,
     HOME: dir,
@@ -110,8 +117,18 @@ export async function startServer(
     DOCKET_SETUP_CODE: SETUP_CODE,
     ...opts.env,
   };
-  const proc = Bun.spawn(["bun", entry], { env, stdout: "pipe", stderr: "inherit" });
-  const url = await readUrl(proc.stdout);
+  let proc = WORKER ? await wranglerDev(dir, env) : Bun.spawn(["bun", entry], { env, stdout: "pipe", stderr: "inherit" });
+  const first = await readUrl(proc.stdout).catch((err) => (WORKER ? null : Promise.reject(err)));
+  // A free port can be taken again before wrangler binds it: then once more, on others.
+  const url = first ?? (await readUrl((proc = await wranglerDev(dir, env)).stdout));
+  if (WORKER) Object.assign(env, { ADMIN_TOKEN, DOCKET_URL: url }); // the CLI (sign-in-link) goes through the Worker
+  // The Durable Object's SQLite file, once its first request made it.
+  const db = () => {
+    if (!WORKER || existsSync(databasePath)) return databasePath;
+    const objects = join(dir, "state", "v3", "do", "docket-Docket");
+    const file = readdirSync(objects).find((f) => f.endsWith(".sqlite") && f !== "metadata.sqlite");
+    return (databasePath = env.DATABASE_PATH = join(objects, file!));
+  };
 
   const users: Map<string, Known> = (opts.sharing as Internal | undefined)?.users ?? new Map();
   const mcps: Client[] = [];
@@ -219,7 +236,9 @@ export async function startServer(
   const server: Internal = {
     url,
     dir,
-    databasePath,
+    get databasePath() {
+      return db();
+    },
     workspace,
     users,
     admin,
@@ -263,12 +282,12 @@ export async function startServer(
       return { exitCode, stdout, stderr };
     },
     sql(query, ...params) {
-      const db = new Database(databasePath);
-      db.run("PRAGMA busy_timeout = 5000"); // the server may be writing in the background
+      const sqlite = new Database(db());
+      sqlite.run("PRAGMA busy_timeout = 5000"); // the server may be writing in the background
       try {
-        return db.query(query).all(...params) as any[];
+        return sqlite.query(query).all(...params) as any[];
       } finally {
-        db.close();
+        sqlite.close();
       }
     },
     async stop() {
@@ -314,12 +333,41 @@ async function parse(res: Response): Promise<any> {
   return text && res.headers.get("content-type")?.includes("json") ? JSON.parse(text) : text;
 }
 
+/** wrangler dev on free ports, its state in `dir`, `env` as its vars; the web app is built once per test run. */
+async function wranglerDev(dir: string, env: Record<string, string | undefined>) {
+  await (built ??= Bun.spawn(["bun", join(root, "scripts", "build-worker.ts")], { stdout: "ignore", stderr: "inherit" }).exited);
+  const ports = [freePort(), freePort()].map(String);
+  const vars = Object.entries({ ...env, ADMIN_TOKEN }).flatMap(([k, v]) => (/^(DOCKET_|ADMIN_TOKEN)/.test(k) && v !== undefined ? ["--var", `${k}:${v}`] : []));
+  // wrangler.jsonc without production's domain and vars (with a route, wrangler dev rewrites every request's Host to it),
+  // nor its build: the web app is built once per test run.
+  const config = JSON.parse(readFileSync(join(root, "wrangler.jsonc"), "utf8").replace(/^\s*\/\/.*$/gm, ""));
+  for (const key of ["routes", "vars", "build"]) delete config[key];
+  Object.assign(config, { main: join(root, config.main), assets: { ...config.assets, directory: join(root, config.assets.directory) } });
+  writeFileSync(join(dir, "wrangler.json"), JSON.stringify(config));
+  const args = ["dev", "--config", join(dir, "wrangler.json"), "--port", ports[0]!, "--inspector-port", ports[1]!, "--persist-to", join(dir, "state"), "--show-interactive-dev-session=false", ...vars];
+  return Bun.spawn([join(root, "node_modules", ".bin", "wrangler"), ...args], {
+    cwd: root,
+    env: { PATH: process.env.PATH, HOME: process.env.HOME },
+    stdout: "pipe",
+    stderr: "inherit",
+  });
+}
+let built: Promise<number> | undefined;
+const ADMIN_TOKEN = "tests-admin-token";
+
+function freePort(): number {
+  const s = Bun.serve({ port: 0, fetch: () => new Response() });
+  const port = s.port!;
+  s.stop(true);
+  return port;
+}
+
 async function readUrl(stream: ReadableStream<Uint8Array>): Promise<string> {
   const decoder = new TextDecoder();
   let out = "";
   for await (const chunk of stream) {
     out += decoder.decode(chunk);
-    const match = out.match(/Docket running at (\S+)/);
+    const match = out.match(/(?:Docket running at|Ready on) (\S+)/);
     if (match) return match[1]!.replace("://[::]", "://localhost").replace("://0.0.0.0", "://localhost");
   }
   throw new Error(`Server exited before it was ready:\n${out}`);

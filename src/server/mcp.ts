@@ -35,7 +35,7 @@ import {
 } from "../shared/types.ts";
 import * as access from "./access.ts";
 import type { Actor } from "./access.ts";
-import { getAttachment, saveAttachment } from "./attachments.ts";
+import { files, getAttachment, saveAttachment } from "./attachments.ts";
 import { actorOf } from "./auth.ts";
 import { AppError } from "./db.ts";
 import { originOf } from "./http.ts";
@@ -992,7 +992,7 @@ function createServer(a: Actor, origin: string): McpServer {
         team: z.string().optional().describe('The team key of the issue or doc it goes in, e.g. "BRD": only those who see that team can open it'),
       },
     },
-    ({ name, text, base64, team }) => {
+    async ({ name, text, base64, team }) => {
       if ((text === undefined) === (base64 === undefined)) throw new AppError("Pass exactly one of text or base64");
       let bytes: Uint8Array;
       if (text !== undefined) bytes = new TextEncoder().encode(text);
@@ -1001,7 +1001,7 @@ function createServer(a: Actor, origin: string): McpServer {
         if (!/^[A-Za-z0-9+/]*={0,2}$/.test(clean) || clean.length % 4 === 1) throw new AppError("base64 isn't valid base64");
         bytes = Buffer.from(clean, "base64");
       }
-      const attachment = saveAttachment(a, name, bytes, team);
+      const attachment = await saveAttachment(a, name, bytes, team);
       return result(attachmentMarkdown(attachment), { attachment, markdown: attachmentMarkdown(attachment) });
     },
   );
@@ -1014,16 +1014,21 @@ function createServer(a: Actor, origin: string): McpServer {
       annotations: { readOnlyHint: true },
     },
     async ({ url }): Promise<CallToolResult> => {
-      const { attachment, path } = getAttachment(a, url);
+      const attachment = getAttachment(a, url);
+      const file = async () => {
+        const body = await files.get(attachment.id);
+        if (!body) throw new AppError("Attachment not found", 404); // e.g. a database restored without its files
+        return new Response(body);
+      };
       const meta = `${attachment.name} · ${attachment.contentType} · ${attachment.size} bytes · by ${at(attachment.uploader)} · ${attachment.createdAt}`;
       const structuredContent = { attachment };
       if (attachment.contentType.startsWith("text/")) {
-        const text = await Bun.file(path).text();
+        const text = await (await file()).text();
         const cut = text.length > TEXT_LIMIT ? `\n\n(cut: showing the first ${TEXT_LIMIT} of ${text.length} characters)` : "";
         return { content: [{ type: "text", text: `${meta}\n\n${text.slice(0, TEXT_LIMIT)}${cut}` }], structuredContent };
       }
       if (INLINE_IMAGE_TYPES.includes(attachment.contentType) && attachment.size <= IMAGE_LIMIT) {
-        const data = Buffer.from(await Bun.file(path).arrayBuffer()).toString("base64");
+        const data = Buffer.from(await (await file()).arrayBuffer()).toString("base64");
         return { content: [{ type: "text", text: meta }, { type: "image", data, mimeType: attachment.contentType }], structuredContent };
       }
       return result(meta, structuredContent);

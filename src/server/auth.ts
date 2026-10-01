@@ -5,7 +5,7 @@ import type { SetupInput } from "../shared/types.ts";
 import * as access from "./access.ts";
 import { SESSION_IDLE_MS, type Actor, type Client } from "./access.ts";
 import { AppError } from "./db.ts";
-import { https, rateLimit } from "./http.ts";
+import { https, rateLimit, type Server } from "./http.ts";
 
 const COOKIE = "docket_session";
 
@@ -137,8 +137,6 @@ function recordFailure(ip: string) {
   if (f) f.count++;
   else failures.set(ip, { count: 1, until: time + WINDOW_MS });
 }
-
-type Server = Pick<Bun.Server<unknown>, "requestIP">;
 
 /** A public JSON POST: Host and JSON checks, the per-IP limit, and AppErrors as JSON (401s and 403s count). */
 const open =

@@ -1,58 +1,16 @@
+// The Bun server: the web app and public/ files, the routes (app.ts) and their WebSockets, and the timers.
+import "./local.ts"; // first: the database
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
-import { type Actor, formatCode, heardTeams, needsSetup, onRevoke, setupCode } from "./access.ts";
-import { MAX_UPLOAD_BYTES, type ServerEvent } from "../shared/types.ts";
-import { apiRoutes } from "./api.ts";
-import { attachmentRoutes } from "./attachments.ts";
-import { actorOf, authRoutes, guard } from "./auth.ts";
-import { receive as receiveGitHub } from "./github.ts";
+import { formatCode, needsSetup, onRevoke, setupCode } from "./access.ts";
+import { eventTopics, revokes, route, SERVER_PATHS, type SocketData } from "./app.ts";
 import { onChange } from "./db.ts";
-import { HARD_MAX_BODY, http, publicFile, secure, webApp } from "./http.ts";
-import { handleMcp } from "./mcp.ts";
+import { HARD_MAX_BODY, publicFile, secure, webApp } from "./http.ts";
 import { startPush } from "./push.ts";
-import { autoArchive, eventTeams, memberAudience, syncCycles } from "./tracker.ts";
+import { autoArchive, catchUp, syncCycles } from "./tracker.ts";
 import { startWebhooks } from "./webhooks.ts";
 
-/** Whose credentials each socket rides on, so signing out, revoking or suspending closes it; and what it hears. */
-interface SocketData {
-  userId: number;
-  sessionId: number | null;
-  keyId: number | null;
-  topics: string[];
-}
 const sockets = new Map<number, Set<Bun.ServerWebSocket<SocketData>>>();
-// What isn't about a team (the workspace, workspace labels): everyone in the workspace.
-const topic = (workspace: string) => `workspace:${workspace}`;
-// Public teams' events: everyone in the workspace but guests, who hear only their teams.
-const publicTopic = (workspace: string) => `public:${workspace}`;
-// One team's events: a private team's members, and a public team's guests.
-const teamTopic = (teamId: number) => `team:${teamId}`;
-// Events for one user (their inbox, their subscriptions), per workspace: a key's socket hears only its own.
-const userTopic = (userId: number, workspace: string) => `user:${userId}:${workspace}`;
-
-/** A socket's topics as of when it opens; any change to what its user sees closes it (revokeAccess), and it reconnects. */
-const topicsOf = (a: Actor) =>
-  [...a.workspaces].flatMap(([workspace, role]) => [
-    topic(workspace),
-    userTopic(a.id, workspace),
-    ...(role === "guest" ? [] : [publicTopic(workspace)]),
-    ...heardTeams(a, workspace).map(teamTopic),
-  ]);
-
-/** Where a change goes: a team's to those who see it (see eventTeams), anything else to the whole workspace. */
-function topicsFor(event: ServerEvent): string[] {
-  // A member: everyone but guests, who hear only of those sharing a team with them (their member list shows no one else),
-  // and of themselves.
-  if (event.entity === "member") {
-    const { teams, alone } = memberAudience(event.workspace, event.id);
-    return [publicTopic(event.workspace), ...teams.map(teamTopic), ...(alone === null ? [] : [userTopic(alone, event.workspace)])];
-  }
-  // A view: everyone but guests, who can't use them.
-  if (event.entity === "view") return [publicTopic(event.workspace)];
-  const teams = eventTeams(event);
-  if (teams === null) return [topic(event.workspace)];
-  return [...new Set(teams.flatMap((t) => (t.private ? [teamTopic(t.id)] : [publicTopic(event.workspace), teamTopic(t.id)])))];
-}
 
 const publicDir = join(import.meta.dir, "..", "..", "public");
 const iconsDir = join(publicDir, "icons");
@@ -81,25 +39,9 @@ const server = Bun.serve({
         .map(({ name }) => [`/icons/${name}`, publicFile(iconsDir, name, { "Cache-Control": "public, max-age=31536000, immutable" })]),
     ),
     "/icons/*": (req: Request) => secure(req, new Response("Not found", { status: 404 })), // not the app shell of a workspace "icons"
-    ...(Object.fromEntries(Object.entries(authRoutes).map(([path, route]) => [path, http(route)])) as typeof authRoutes),
-    ...(Object.fromEntries(Object.entries(apiRoutes).map(([path, route]) => [path, http(guard(route), { guarded: true })])) as typeof apiRoutes),
-    ...(Object.fromEntries(
-      Object.entries(attachmentRoutes).map(([path, route]) => [path, http(guard(route), { guarded: true, maxBody: MAX_UPLOAD_BYTES })]),
-    ) as typeof attachmentRoutes),
-    // GitHub's webhook: public, signed with the workspace's secret; rate-limited per IP, as every unguarded route.
-    "/api/github/:workspace": http({ POST: receiveGitHub }),
-    "/mcp": http(guard(handleMcp, { mcp: true }), { guarded: true }),
-    "/ws": http(
-      guard((req: Request, server: Bun.Server<SocketData>) => {
-        const a = actorOf(req);
-        const data = { userId: a.id, sessionId: a.sessionId, keyId: a.keyId, topics: topicsOf(a) };
-        return server.upgrade(req, { data }) ? undefined : new Response("Expected a WebSocket", { status: 400 });
-      }),
-      { guarded: true },
-    ),
+    ...Object.fromEntries(SERVER_PATHS.map((path) => [path, route])),
   },
-  // Anything unmatched: a plain 404, with the headers too.
-  fetch: (req) => secure(req, new Response("Not found", { status: 404 })),
+  fetch: route, // a plain 404, with the headers too
   websocket: {
     data: {} as SocketData,
     open(ws) {
@@ -113,23 +55,19 @@ const server = Bun.serve({
   },
 });
 
+catchUp();
 setInterval(autoArchive, 60 * 60 * 1000);
 setInterval(() => syncCycles(), 60 * 1000); // a cycle ends within a minute of midnight UTC
 
 onChange((event, to) => {
   const message = JSON.stringify(event);
-  const topics =
-    to === undefined ? topicsFor(event) : typeof to === "number" ? [userTopic(to, event.workspace)] : topicsFor({ ...event, entity: "team", id: to });
-  for (const t of topics) server.publish(t, message);
+  for (const t of eventTopics(event, to)) server.publish(t, message);
 });
 
 // A socket only hears its workspaces as of when it opened, so any change to a user's access closes
 // theirs (or just the one riding on a revoked session or key); clients reconnect with what's current.
-onRevoke(({ userId, sessionId, keyId }) => {
-  for (const ws of sockets.get(userId) ?? []) {
-    const hit = sessionId !== undefined ? ws.data.sessionId === sessionId : keyId !== undefined ? ws.data.keyId === keyId : true;
-    if (hit) ws.close(4401, "Signed out");
-  }
+onRevoke((r) => {
+  for (const ws of sockets.get(r.userId) ?? []) if (revokes(r, ws.data)) ws.close(4401, "Signed out");
 });
 
 // Behind a proxy the listening address isn't where people open Docket; DOCKET_URL is (as for sign-in-link).
@@ -137,4 +75,4 @@ const publicUrl = (process.env.DOCKET_URL || server.url.href).replace(/\/+$/, ""
 startWebhooks(publicUrl); // payload URLs point there too
 startPush(publicUrl);
 console.log(`Docket running at ${server.url}`);
-if (needsSetup()) console.log(`Setup code: ${formatCode(setupCode)} (open ${publicUrl}/setup to create the first account)`);
+if (needsSetup()) console.log(`Setup code: ${formatCode(setupCode())} (open ${publicUrl}/setup to create the first account)`);

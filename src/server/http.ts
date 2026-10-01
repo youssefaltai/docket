@@ -99,7 +99,14 @@ export function rateLimit(req: Request, key?: string): Response | undefined {
   return wait ? Response.json({ error: "Too many requests, slow down" }, { status: 429, headers: { "Retry-After": String(wait) } }) : undefined;
 }
 
-type Handler = (req: Request, server: Bun.Server<any>) => Response | undefined | Promise<Response | undefined>;
+/** What a route needs from the server it runs in: Bun.serve's, or the Durable Object's stand-in (src/worker). */
+export interface Server {
+  requestIP(req: Request): { address: string } | null;
+  /** Takes the request over as a WebSocket carrying `data`; false if it isn't one. */
+  upgrade(req: Request, options: { data: any }): boolean;
+}
+
+type Handler = (req: Request, server: Server) => Response | undefined | Promise<Response | undefined>;
 
 /**
  * Wraps a route (a handler or a method map) with the body cap (`maxBody`), the rate limit and the headers. The limit is

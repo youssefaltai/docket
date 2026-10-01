@@ -2,7 +2,7 @@
 // encrypted to it (VAPID-signed), after the change commits. Only known push services, and never an agent's.
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createECDH, randomBytes } from "node:crypto";
-// @ts-expect-error: no types; web-push's own encryption, here to decrypt what the fake push service gets
+// @ts-expect-error: no types; a reference implementation of the encryption, here to decrypt what the fake push service gets
 import ece from "http_ece";
 import { startServer, type Caller, type TestServer } from "./server.ts";
 
@@ -106,7 +106,14 @@ test("a notification reaches the person's devices, encrypted and VAPID-signed; n
 
   const push = received.findLast((r) => r.path === "/push/ana-phone")!;
   expect(push.headers.get("content-encoding")).toBe("aes128gcm");
-  expect(push.headers.get("authorization")).toMatch(/^vapid t=[\w-]+\.[\w-]+\.[\w-]+, k=[\w-]+$/);
+  const [, jwt, k] = push.headers.get("authorization")!.match(/^vapid t=([\w-]+\.[\w-]+\.[\w-]+), k=([\w-]+)$/)!;
+  expect(k).toBe((await ana.api("GET", "/api/push")).body.publicKey);
+  // The JWT: for the push service's origin, signed with the key the device subscribed with.
+  const [header, claims, signature] = jwt!.split(".") as [string, string, string];
+  expect(JSON.parse(Buffer.from(claims, "base64url").toString())).toMatchObject({ aud: origin, sub: expect.stringMatching(/^https?:/) });
+  const key = await crypto.subtle.importKey("raw", Buffer.from(k!, "base64url"), { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
+  const signed = new TextEncoder().encode(`${header}.${claims}`);
+  expect(await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, key, Buffer.from(signature, "base64url"), signed)).toBe(true);
   expect(Number(push.headers.get("ttl"))).toBeGreaterThan(0);
 });
 

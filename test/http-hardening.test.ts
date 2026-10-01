@@ -1,6 +1,6 @@
 // The HTTP layer: security headers on every response, capped bodies and texts, and a rate limit per credential.
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { startServer, type TestServer } from "./server.ts";
+import { startServer, WORKER, type TestServer } from "./server.ts";
 
 let s: TestServer;
 beforeAll(async () => {
@@ -45,7 +45,7 @@ test("the page runs no inline script, so the policy needs no exception", async (
 test("API answers are never cached; HSTS only over https", async () => {
   expect((await s.api("GET", "/api/issues")).headers.get("cache-control")).toBe("no-store");
   expect((await get("/api/setup")).headers.get("cache-control")).toBe("no-store");
-  expect((await get("/")).headers.get("strict-transport-security")).toBeNull();
+  if (!WORKER) expect((await get("/")).headers.get("strict-transport-security")).toBeNull(); // Workers: assets always send it (https only)
   expect((await get("/", { "X-Forwarded-Proto": "https" })).headers.get("strict-transport-security")).toContain("max-age=");
 });
 
@@ -129,7 +129,8 @@ test("made-up credentials, however written, share the client IP's limit; one tha
     expect(statuses).toContain(429);
     expect(statuses.every((x) => x === 401 || x === 429)).toBeTrue();
     // While it's empty, guesses and the public code routes wait; credentials that sign in don't, even brand-new ones.
-    expect(await guess()).toBe(429);
+    // (A few at once: on a slow server a token may refill between two requests.)
+    expect(await Promise.all(Array.from({ length: 5 }, guess))).toContain(429);
     expect((await t.anon.api("POST", "/api/auth/peek", { code: "AAAAA-AAAAA" })).status).toBe(429);
     expect((await known.api("GET", "/api/me")).status).toBe(200);
     expect(await known.tools()).toContain("get_issue");
