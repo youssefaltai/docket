@@ -25,7 +25,7 @@ ssh vps "cd $APP && test -f data/backups/cutover-$TS.db || docker compose run --
   (await import(\"node:fs\")).mkdirSync(\"/app/data/backups\", { recursive: true });
   new Database(\"/app/data/docket.db\", { readonly: true }).run(\"VACUUM INTO \x27/app/data/backups/cutover-$TS.db\x27\");'"
 rsync -a "vps:$APP/data/backups/cutover-$TS.db" "$OUT/docket.db"
-rsync -a --ignore-missing-args "vps:$APP/data/docket.db" "vps:$APP/data/docket.db-wal" "vps:$APP/data/docket.db-shm" "$OUT/raw/"
+rsync -a "vps:$APP/data/docket.db*" "$OUT/raw/"
 rsync -a "vps:$APP/data/attachments/" "$OUT/attachments/"
 
 echo "c. Check the snapshot"
