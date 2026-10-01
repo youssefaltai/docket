@@ -16,6 +16,7 @@ import {
 } from "../shared/types.ts";
 import { type Actor, requireAdminSession } from "./access.ts";
 import { AppError, changed, checkOneOf, db, knownAs, now, optionalText } from "./db.ts";
+import { later, workers } from "./runtime.ts";
 
 const ALLOW_PRIVATE = process.env.DOCKET_WEBHOOK_ALLOW_PRIVATE === "true";
 const TIMEOUT_MS = Number(process.env.DOCKET_WEBHOOK_TIMEOUT_MS) || 5000; // tests only
@@ -82,7 +83,10 @@ async function checkTarget(raw: string): Promise<string | null> {
   if (url.username || url.password) return "no user or password in the URL";
   if (ALLOW_PRIVATE) return null;
   const host = url.hostname.replace(/^\[|\]$/g, "");
-  const addresses = await lookup(host, { all: true }).catch(() => []);
+  const literal = /^[\d.]+$/.test(host) ? 4 : host.includes(":") ? 6 : 0;
+  // Workers can't look up DNS, and their fetch reaches only the public internet: there, only a literal address is checked.
+  if (workers && !literal) return null;
+  const addresses = literal ? [{ address: host, family: literal }] : await lookup(host, { all: true }).catch(() => []);
   if (!addresses.length) return `can't resolve ${host}`;
   const hit = addresses.find((a) => isPrivate(a.address, a.family));
   return hit ? `${hit.address} is private` : null;
@@ -170,7 +174,7 @@ export function enqueue(c: Change) {
       insert.run(id, randomUUID(), c.type, c.action, c.entity, JSON.stringify({ ...payload, webhookId: id }), due, c.time);
     }
   }
-  if (started) setTimeout(pass, 0); // after this tick: the transaction has committed (or rolled back) by then
+  if (started) later(pass); // after this tick: the transaction has committed (or rolled back) by then
 }
 
 // --- Sending ---
@@ -179,7 +183,7 @@ const sending = new Set<number>(); // deliveries in flight
 const busy = new Set<number>(); // webhooks with one in flight: a webhook's deliveries go one at a time, in order
 
 /** Starts what's due, up to 4 at a time, one per webhook, oldest first. */
-function pass() {
+export function pass() {
   if (sending.size >= CONCURRENCY) return;
   const due = db
     .query<{ id: number; webhook_id: number }, [string]>(
@@ -267,7 +271,7 @@ function record(id: number, webhookId: number, attempts: number, status: number 
       }
     }
   })();
-  if (retry !== undefined) setTimeout(pass, retry);
+  if (retry !== undefined) later(pass, retry);
   if (disabled) changed("workspace", disabled, disabled);
 }
 
@@ -279,15 +283,22 @@ function disable(webhookId: number, time: string) {
   );
 }
 
-const purge = () => db.query("DELETE FROM webhook_deliveries WHERE created_at < ?").run(new Date(Date.now() - KEEP_MS).toISOString());
+/** Drops deliveries older than a week from the log. */
+export const purgeDeliveries = () => db.query("DELETE FROM webhook_deliveries WHERE created_at < ?").run(new Date(Date.now() - KEEP_MS).toISOString());
 
-/** Starts sending (index.ts): `origin` is where people open Docket, for payload URLs. */
-export function startWebhooks(origin: string) {
+/** When the next queued delivery is due (null: none): a Durable Object sets its alarm by it. */
+export const nextDelivery = () =>
+  db.query<{ at: string | null }, []>("SELECT MIN(next_attempt_at) AS at FROM webhook_deliveries WHERE status = 'pending'").get()?.at ?? null;
+
+/** Starts sending (index.ts, src/worker): `origin` is where people open Docket, for payload URLs. `timers`: Bun's, checking every second. */
+export function startWebhooks(origin: string, timers = true) {
   base = origin;
   started = true;
-  purge();
-  setInterval(purge, 60 * 60 * 1000);
-  setInterval(pass, 1000); // anything left, e.g. after a restart
+  purgeDeliveries();
+  if (timers) {
+    setInterval(purgeDeliveries, 60 * 60 * 1000);
+    setInterval(pass, 1000); // anything left, e.g. after a restart
+  }
   pass();
 }
 
