@@ -134,13 +134,16 @@ function mentionCandidates(text: string): string[] {
  * `typing`: a doc autosaves mid-word, so a mention at the very end of the text doesn't count yet.
  */
 export function mentionedIn(workspace: string, text: string, typing = false): Set<number> {
-  const candidates = mentionCandidates(typing ? text.replace(/@[a-z0-9._-]*$/i, "") : text);
-  if (!candidates.length) return new Set();
+  if (typing) text = text.replace(/@[a-z0-9._-]*$/i, "");
+  if (!text.includes("@")) return new Set();
   const members = new Map(
     db
       .query<{ username: string; user_id: number }, [string]>("SELECT username, user_id FROM workspace_members WHERE workspace = ? AND suspended_at IS NULL")
       .all(workspace)
       .map((m) => [m.username, m.user_id]),
   );
-  return new Set(candidates.map((c) => members.get(mentionOf(c, (u) => members.has(u)) ?? "")).filter((id) => id !== undefined));
+  // Parsing markdown is the costly part (a long doc autosaves often): only when some @username is in the text at all.
+  const lower = text.toLowerCase();
+  if (![...members.keys()].some((u) => lower.includes(`@${u}`))) return new Set();
+  return new Set(mentionCandidates(text).map((c) => members.get(mentionOf(c, (u) => members.has(u)) ?? "")).filter((id) => id !== undefined));
 }

@@ -156,8 +156,8 @@ function inline(t: Token): string {
   }
 }
 
-/** A comment's first 200 characters as plain text on one line. */
-const excerpt = (body: string) => plain(marked.lexer(body)).replace(/\s+/g, " ").trim().slice(0, 200).trimEnd();
+/** A comment's first 200 characters as plain text on one line (from its first 2,000: a long one isn't parsed whole). */
+const excerpt = (body: string) => plain(marked.lexer(body.slice(0, 2000))).replace(/\s+/g, " ").trim().slice(0, 200).trimEnd();
 
 function toNotification(r: Record<string, any>): Notification {
   return {

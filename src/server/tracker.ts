@@ -2918,7 +2918,8 @@ function saveVersion(documentId: number, title: string, content: string, authorI
 function saveRefs(documentId: number, content: string, workspace: string) {
   db.query("DELETE FROM document_refs WHERE document_id = ?").run(documentId);
   const ids = new Set<number>();
-  for (const [, key, number] of content.matchAll(/\b([A-Z]{2,5})-(\d+)\b/g)) {
+  for (const ref of new Set(content.match(/\b[A-Z]{2,5}-\d+\b/g))) {
+    const [key, number] = ref.split("-");
     const id = findIssue(workspace, key!, Number(number)); // an identifier from before a move too
     if (id !== null) ids.add(id);
   }
