@@ -49,14 +49,17 @@ export function load(db: Store, data: Dump) {
 
 /**
  * Per table: its row count and a SHA-256 of every row's values with their SQLite types, in an order that depends on
- * the values alone (not rowids); and `schema`, of the tables' and indexes' SQL. Two databases with the same hashes
+ * the values alone (not rowids); and `schema`, of the tables' and indexes' SQL without comments. Two databases with the same hashes
  * hold the same data.
  */
 export function hashes(db: Store): Record<string, { rows: number; sha256: string }> {
   const out: Record<string, { rows: number; sha256: string }> = {};
   const schema = db
-    .query<object, []>("SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE '%docket_meta%' AND name NOT LIKE '\\_%' ESCAPE '\\' ORDER BY type, name")
-    .all();
+    .query<{ type: string; name: string; sql: string }, []>(
+      "SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE '%docket_meta%' AND name NOT LIKE '\\_%' ESCAPE '\\' ORDER BY type, name",
+    )
+    .all()
+    .map((r) => ({ ...r, sql: r.sql.replace(/--[^\n]*/g, "").replace(/\s+/g, " ") })); // what it means, not its comments
   out.schema = { rows: schema.length, sha256: createHash("sha256").update(JSON.stringify(schema)).digest("hex") };
   for (const t of tables(db)) {
     const cols = columns(db, t);

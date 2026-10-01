@@ -121,7 +121,8 @@ export class Docket extends DurableObject<Env> {
 
   /**
    * The one-time import, only while the IMPORT_TOKEN secret is set and only with it (scripts/import.ts): POST
-   * /api/admin/import takes every table's rows into an empty database; PUT /api/admin/files/:id an attachment's bytes;
+   * /api/admin/import takes every table's rows into an empty database; PUT /api/admin/files/:id an attachment's bytes
+   * (before or after its row: files never change, so they can be copied ahead);
    * GET /api/admin/hashes what to check it against. Anything else, or without the token, is a normal request.
    */
   private async admin(req: Request): Promise<Response | null> {
@@ -137,7 +138,6 @@ export class Docket extends DurableObject<Env> {
       }
       const file = /^\/api\/admin\/files\/([A-Za-z0-9_-]{22})$/.exec(pathname)?.[1];
       if (file && req.method === "PUT") {
-        if (!db.query("SELECT 1 FROM attachments WHERE id = ?").get(file)) return Response.json({ error: "No such attachment" }, { status: 404 });
         await this.env.ATTACHMENTS.put(file, new Uint8Array(await req.arrayBuffer()));
         return Response.json({ ok: true });
       }
