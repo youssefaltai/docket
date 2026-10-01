@@ -75,4 +75,4 @@ const publicUrl = (process.env.DOCKET_URL || server.url.href).replace(/\/+$/, ""
 startWebhooks(publicUrl); // payload URLs point there too
 startPush(publicUrl);
 console.log(`Docket running at ${server.url}`);
-if (needsSetup()) console.log(`Setup code: ${formatCode(setupCode)} (open ${publicUrl}/setup to create the first account)`);
+if (needsSetup()) console.log(`Setup code: ${formatCode(setupCode())} (open ${publicUrl}/setup to create the first account)`);

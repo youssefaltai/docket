@@ -85,7 +85,7 @@ async function checkTarget(raw: string): Promise<string | null> {
   const host = url.hostname.replace(/^\[|\]$/g, "");
   const literal = /^[\d.]+$/.test(host) ? 4 : host.includes(":") ? 6 : 0;
   // Workers can't look up DNS, and their fetch reaches only the public internet: there, only a literal address is checked.
-  if (workers && !literal) return null;
+  if (workers && !literal) return /(^|\.)localhost$/i.test(host) ? `${host} is private` : null;
   const addresses = literal ? [{ address: host, family: literal }] : await lookup(host, { all: true }).catch(() => []);
   if (!addresses.length) return `can't resolve ${host}`;
   const hit = addresses.find((a) => isPrivate(a.address, a.family));

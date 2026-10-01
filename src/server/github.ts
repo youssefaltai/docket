@@ -145,7 +145,7 @@ function push(a: Actor, payload: Record<string, unknown>): Result {
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 // Unknown workspace, not connected, or a missing or wrong signature: all the same answer.
 const invalid = () => json({ error: "Invalid signature" }, 401);
-const DECOY = randomBytes(32).toString("hex"); // an unknown workspace takes as long to refuse as a wrong signature
+let decoy: string | undefined; // an unknown workspace takes as long to refuse as a wrong signature
 
 /** Whether `header` is `sha256=` + the hex HMAC-SHA256 of the exact body bytes, compared in constant time. */
 function signed(header: string | null, body: Uint8Array, secret: string): boolean {
@@ -160,7 +160,7 @@ export async function receive(req: BunRequest<"/api/github/:workspace">): Promis
   const body = new Uint8Array(await req.arrayBuffer());
   if (body.byteLength > MAX_BODY) return json({ error: "Request body too large (at most 1 MB)" }, 413);
   const row = integrationOf(req.params.workspace);
-  const ok = signed(req.headers.get("x-hub-signature-256"), body, row?.secret ?? DECOY);
+  const ok = signed(req.headers.get("x-hub-signature-256"), body, row?.secret ?? (decoy ??= randomBytes(32).toString("hex")));
   if (!row?.secret || !ok) return invalid();
   let payload: unknown;
   try {

@@ -1,0 +1,19 @@
+// Docket on Cloudflare Workers (src/worker/worker.ts). Local: bunx wrangler dev. Nothing here is routed to a domain yet.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "docket",
+  "main": "src/worker/worker.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "build": { "command": "bun scripts/build-worker.ts" },
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/mcp", "/ws"]
+  },
+  "durable_objects": { "bindings": [{ "name": "DOCKET", "class_name": "Docket" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Docket"] }],
+  "r2_buckets": [{ "binding": "ATTACHMENTS", "bucket_name": "docket-attachments" }],
+  "triggers": { "crons": ["*/5 * * * *"] }
+}
