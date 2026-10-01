@@ -1,7 +1,7 @@
 // Identity and access: accounts (people and agents), sessions, API keys, one-time codes (setup, invites,
 // sign-in links), and workspace membership. An account is a login; its username and name belong to each
 // membership. Every request acts as an Actor built here.
-import type { SQLQueryBindings } from "bun:sqlite";
+import type { Binding } from "./store.ts";
 import { createHash, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import {
   API_KEY_SCOPES,
@@ -173,7 +173,7 @@ function addMember(workspace: string, userId: number, role: Role, profile: { use
     role,
     time,
   );
-  const join = (where: string, ...params: SQLQueryBindings[]) =>
+  const join = (where: string, ...params: Binding[]) =>
     db.query(`INSERT OR IGNORE INTO team_members (team_id, user_id, created_at) SELECT id, ?, ? FROM teams WHERE workspace = ? AND ${where}`).run(userId, time, workspace, ...params);
   if (role !== "guest") join("private = 0");
   for (const id of teams) join("id = ?", id);

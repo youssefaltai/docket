@@ -1,7 +1,7 @@
 // The inbox, as in Linear: who follows which issue or doc (subscriptions) and what each person is told
 // (notifications). tracker.ts calls the fan-out helpers inside each mutation's transaction; the rest acts for the
 // caller alone, in the request's workspace: nobody sees, marks or deletes anyone else's notifications.
-import type { SQLQueryBindings } from "bun:sqlite";
+import type { Binding } from "./store.ts";
 import { marked, type Token } from "marked";
 import type { Inbox, Notification, NotificationKind, UserKind } from "../shared/types.ts";
 import { type Actor, requestWorkspace, SEES_TEAM, usernameOf } from "./access.ts";
@@ -192,7 +192,7 @@ export function listInbox(a: Actor, { unread = false, limit = MAX_LIST }: { unre
 }
 
 /** Which of yours a write touches: `ids` (each must be yours here, else 404), or all of yours here. */
-function scope(a: Actor, workspace: string, ids: unknown): { where: string; params: SQLQueryBindings[] } {
+function scope(a: Actor, workspace: string, ids: unknown): { where: string; params: Binding[] } {
   const where = "user_id = ? AND workspace = ?";
   if (ids === undefined) return { where, params: [a.id, workspace] };
   if (!Array.isArray(ids) || !ids.every((id) => Number.isInteger(id))) throw new AppError("ids must be an array of notification ids");

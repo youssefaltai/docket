@@ -1,10 +1,7 @@
 // The SQLite connection (its schema is in schema.ts), change events and the validation helpers the data modules share.
-import { Database } from "bun:sqlite";
 import { marked, type Token } from "marked";
-import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
-import { databasePath } from "./paths.ts";
 import { migrate } from "./schema.ts";
+import type { Store } from "./store.ts";
 import { MENTION_PATTERN, mentionOf, type ServerEvent } from "../shared/types.ts";
 
 /** An error with an HTTP status; REST returns it as `{ error }`, MCP as a tool error. */
@@ -16,13 +13,14 @@ export class AppError extends Error {
 
 // --- Connection and schema ---
 
-const path = databasePath();
-mkdirSync(dirname(path), { recursive: true });
-export const db = new Database(path, { create: true });
-db.run("PRAGMA busy_timeout = 5000"); // first, so switching to WAL waits for another process instead of failing
-db.run("PRAGMA journal_mode = WAL");
+/** The database, once `open` has run: on Bun a SQLite file (local.ts), on Workers the Durable Object's (src/worker). */
+export let db: Store;
 
-migrate(db);
+/** Brings `store`'s schema up to date and makes it the database. `durable`: a Durable Object's (see migrate). */
+export function open(store: Store, durable = false) {
+  migrate(store, undefined, durable);
+  db = store;
+}
 
 // --- Change events ---
 

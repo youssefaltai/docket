@@ -1,7 +1,7 @@
 // Teams and their members, issues, comments, labels, views, documents and projects. Every function acts for an Actor in the
 // request's one workspace (requestWorkspace), seeing only its teams (visibleTeamIds: private teams, guests): team keys,
 // identifiers and slugs resolve there, and anything elsewhere or in a team it doesn't see is 404, as if it didn't exist.
-import type { SQLQueryBindings } from "bun:sqlite";
+import type { Binding } from "./store.ts";
 import {
   CATEGORY_COLORS,
   CLOSED_CATEGORIES,
@@ -541,7 +541,7 @@ export function createTeam(a: Actor, input: TeamInput): Team {
   const time = now();
   db.transaction(() => {
     const { id } = db
-      .query<{ id: number }, SQLQueryBindings[]>(
+      .query<{ id: number }, Binding[]>(
         `INSERT INTO teams (key, workspace, name, description, auto_close_parent, auto_close_children, auto_archive_days, estimate_scale, private, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
       )
@@ -922,10 +922,10 @@ const checkTemplateStatus = (team: TeamRef, value: unknown): string | null => (v
 
 /** The request's workspace's templates in teams you see, by name; `team`: only that team's own (templates are always one team's). */
 export function listTemplates(a: Actor, filter: { team?: string } = {}): IssueTemplate[] {
-  const params: SQLQueryBindings[] = [requestWorkspace(a)];
+  const params: Binding[] = [requestWorkspace(a)];
   if (filter.team) params.push(knownTeam(a, filter.team).id);
   return db
-    .query<TemplateRow, SQLQueryBindings[]>(
+    .query<TemplateRow, Binding[]>(
       `${TEMPLATE_SELECT} WHERE t.workspace = ? AND ${SEES_TEAM(String(a.id), "t")}${filter.team ? " AND t.id = ?" : ""} ORDER BY it.name COLLATE NOCASE, it.id`,
     )
     .all(...params)
@@ -946,7 +946,7 @@ export function createTemplate(a: Actor, input: IssueTemplateInput): IssueTempla
   const time = now();
   const { id, created } = db.transaction(() => {
     const { id } = db
-      .query<{ id: number }, SQLQueryBindings[]>(
+      .query<{ id: number }, Binding[]>(
         "INSERT INTO issue_templates (team_id, name, title, description, status, priority, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
       )
       .get(team.id, name, title, description, status, priority, time, time)!;
@@ -1275,8 +1275,8 @@ function setDuplicate(id: number, canonical: number | null, time: string): numbe
 }
 
 /** Validates the patch fields that map directly to issue columns; a status must be one of the team's (by key or name). */
-function issueColumns(a: Actor, workspace: string, team: TeamRef, patch: IssuePatch): Record<string, SQLQueryBindings> {
-  const cols: Record<string, SQLQueryBindings> = {};
+function issueColumns(a: Actor, workspace: string, team: TeamRef, patch: IssuePatch): Record<string, Binding> {
+  const cols: Record<string, Binding> = {};
   if (patch.title !== undefined) cols.title = requireText(patch.title, "title");
   if (patch.description !== undefined) cols.description = optionalText(patch.description, "description");
   if (patch.status !== undefined) cols.status = statusOf(team, patch.status).key;
@@ -1368,7 +1368,7 @@ function listScope(a: Actor, alias: string, filter: { team?: string; q?: string;
   const seen = seenBy(a, workspace);
   const where = ["t.workspace = ?", within("t.id", seen), `${alias}.deleted_at IS NULL`];
   if (alias === "i" && !filter.q && !filter.archived) where.push("i.archived_at IS NULL");
-  const params: SQLQueryBindings[] = [workspace];
+  const params: Binding[] = [workspace];
   let teamId: number | null = null;
   if (filter.team) {
     const team = db
@@ -1390,7 +1390,7 @@ function listScope(a: Actor, alias: string, filter: { team?: string; q?: string;
  * A username filter on `column` ("me" is the actor): whoever holds that username in the workspace. It must
  * name someone who is or was there; anyone else is 400 (a typo shouldn't look like "no issues").
  */
-function userFilter(a: Actor, value: string, workspace: string, field: string, column: string): [string, SQLQueryBindings] {
+function userFilter(a: Actor, value: string, workspace: string, field: string, column: string): [string, Binding] {
   const username = value.trim().toLowerCase();
   if (username === "me") return [`${column} = ?`, a.id];
   const known = db.query("SELECT 1 FROM workspace_members WHERE username = ? AND workspace = ?").get(username, workspace);
@@ -1460,7 +1460,7 @@ function queryIssues(a: Actor, filter: IssueFilter, after?: Cursor, limit?: numb
   if (filter.status?.length) {
     // Each key must be a status of some team in scope: a typo shouldn't look like "no issues".
     const known = db
-      .query<{ key: string }, SQLQueryBindings[]>(
+      .query<{ key: string }, Binding[]>(
         `SELECT DISTINCT w.key FROM workflow_statuses w JOIN teams t ON t.id = w.team_id
          WHERE t.workspace = ? AND ${within("t.id", seen)}${teamId === null ? "" : " AND t.id = ?"}`,
       )
@@ -1522,7 +1522,7 @@ function queryIssues(a: Actor, filter: IssueFilter, after?: Cursor, limit?: numb
     const [s, o, p, u, id, due] = after;
     const byPriority = `(${PRIORITY_RANK} > ? OR (${PRIORITY_RANK} = ? AND (i.updated_at < ? OR (i.updated_at = ? AND i.id < ?))))`;
     let rest = `(${STATUS_RANK} > ? OR (${STATUS_RANK} = ? AND (${STATUS_POSITION} > ? OR (${STATUS_POSITION} = ? AND ${byPriority}))))`;
-    const restParams: SQLQueryBindings[] = [s, s, o, o, p, p, u, u, id];
+    const restParams: Binding[] = [s, s, o, o, p, p, u, u, id];
     if (byDue && due === null) rest = `(i.due_on IS NULL AND ${rest})`; // past the dated rows: only undated ones follow
     else if (byDue) {
       rest = `(i.due_on IS NULL OR i.due_on > ? OR (i.due_on = ? AND ${rest}))`;
@@ -1532,7 +1532,7 @@ function queryIssues(a: Actor, filter: IssueFilter, after?: Cursor, limit?: numb
     params.push(...restParams);
   }
   return db
-    .query<IssueRow, SQLQueryBindings[]>(`${issueSelect(seen)} WHERE ${where.join(" AND ")} ${byDue ? DUE_ORDER : ISSUE_ORDER}${limit ? ` LIMIT ${limit}` : ""}`)
+    .query<IssueRow, Binding[]>(`${issueSelect(seen)} WHERE ${where.join(" AND ")} ${byDue ? DUE_ORDER : ISSUE_ORDER}${limit ? ` LIMIT ${limit}` : ""}`)
     .all(...params);
 }
 
@@ -1801,7 +1801,7 @@ export function createIssue(a: Actor, rawInput: IssueInput): Issue {
     const { number } = db
       .query<{ number: number }, [number]>("UPDATE teams SET next_number = next_number + 1 WHERE id = ? RETURNING next_number - 1 AS number")
       .get(team.id)!;
-    const row: Record<string, SQLQueryBindings> = {
+    const row: Record<string, Binding> = {
       ...cols,
       ...inProject,
       team_id: team.id,
@@ -1813,7 +1813,7 @@ export function createIssue(a: Actor, rawInput: IssueInput): Issue {
     };
     const names = Object.keys(row);
     const { id } = db
-      .query<{ id: number }, SQLQueryBindings[]>(`INSERT INTO issues (${names.join(", ")}) VALUES (${names.map(() => "?").join(", ")}) RETURNING id`)
+      .query<{ id: number }, Binding[]>(`INSERT INTO issues (${names.join(", ")}) VALUES (${names.map(() => "?").join(", ")}) RETURNING id`)
       .get(...Object.values(row))!;
     joinProject(inProject.project_id, team.id);
     const created = setLabels(a, "issue", id, team.workspace, team, labels, time);
@@ -2401,7 +2401,7 @@ const readLabel = (a: Actor, id: number) => toLabel(db.query<LabelRow & { open: 
 function insertLabel(workspace: string, l: { teamId: number | null; parentId: number | null; name: string; color?: string; isGroup?: boolean }, time: string): number {
   const { n } = db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM labels WHERE workspace = ?").get(workspace)!;
   return db
-    .query<{ id: number }, SQLQueryBindings[]>("INSERT INTO labels (workspace, team_id, parent_id, name, color, is_group, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id")
+    .query<{ id: number }, Binding[]>("INSERT INTO labels (workspace, team_id, parent_id, name, color, is_group, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id")
     .get(workspace, l.teamId, l.parentId, l.name, l.color ?? LABEL_COLORS[n % LABEL_COLORS.length]!, l.isGroup ? 1 : 0, time)!.id;
 }
 
@@ -2475,10 +2475,10 @@ function setLabels(a: Actor, owner: "issue" | "template", ownerId: number, works
 export function listLabels(a: Actor, filter: { team?: string } = {}): Label[] {
   const workspace = requestWorkspace(a);
   const seen = seenBy(a, workspace);
-  const params: SQLQueryBindings[] = [workspace];
+  const params: Binding[] = [workspace];
   if (filter.team) params.push(knownTeam(a, filter.team).id);
   return db
-    .query<LabelRow & { open: number }, SQLQueryBindings[]>(
+    .query<LabelRow & { open: number }, Binding[]>(
       `${labelSelectOpen(seen)} WHERE l.workspace = ? AND ${labelSeen(seen)}${filter.team ? " AND (l.team_id IS NULL OR l.team_id = ?)" : ""}
        ORDER BY path COLLATE NOCASE, l.id`,
     )
@@ -2554,7 +2554,7 @@ export function createLabel(a: Actor, input: LabelInput): Label {
 
 /** Issues carrying any of these labels (trashed ones too). */
 const carrying = (ids: number[]) =>
-  db.query<{ id: number; team_id: number }, SQLQueryBindings[]>(
+  db.query<{ id: number; team_id: number }, Binding[]>(
     `SELECT DISTINCT i.id, i.team_id FROM issue_labels x JOIN issues i ON i.id = x.issue_id WHERE x.label_id IN (${inList(ids)})`,
   ).all(...ids);
 
@@ -2668,7 +2668,7 @@ const toView = (r: ViewRow): CustomView => ({
 /** A view of the request's workspace, by id, as the caller sees it; anything else is 404. */
 function viewRow(a: Actor, id: unknown): ViewRow {
   // Views are workspace-wide, which guests don't see (Linear's guests: only their teams).
-  const row = isGuest(a) ? null : db.query<ViewRow, SQLQueryBindings[]>(`${VIEW_SELECT} WHERE v.id = ? AND v.workspace = ?`).get(a.id, Number(id), requestWorkspace(a));
+  const row = isGuest(a) ? null : db.query<ViewRow, Binding[]>(`${VIEW_SELECT} WHERE v.id = ? AND v.workspace = ?`).get(a.id, Number(id), requestWorkspace(a));
   if (!row || !viewSeen(row, seenBy(a))) throw new AppError(`View ${id} not found`, 404);
   return row;
 }
@@ -2739,7 +2739,7 @@ export function listViews(a: Actor): CustomView[] {
   if (isGuest(a)) return []; // workspace-wide: not for guests
   const seen = seenBy(a);
   return db
-    .query<ViewRow, SQLQueryBindings[]>(`${VIEW_SELECT} WHERE v.workspace = ? ORDER BY v.name COLLATE NOCASE, v.id`)
+    .query<ViewRow, Binding[]>(`${VIEW_SELECT} WHERE v.workspace = ? ORDER BY v.name COLLATE NOCASE, v.id`)
     .all(a.id, requestWorkspace(a))
     .filter((row) => viewSeen(row, seen))
     .map(toView);
@@ -2759,7 +2759,7 @@ export function createView(a: Actor, input: CustomViewInput): CustomView {
   const d = checkDisplay(input.display ?? {}, DEFAULT_DISPLAY);
   const time = now();
   const { id } = db
-    .query<{ id: number }, SQLQueryBindings[]>(
+    .query<{ id: number }, Binding[]>(
       `INSERT INTO custom_views (workspace, name, filter, group_by, order_by, layout, creator_id, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
     )
@@ -2931,7 +2931,7 @@ export function listDocuments(a: Actor, filter: DocumentFilter): DocumentSummary
     where.push("d.project_id = ?");
     params.push(projectIn(a, filter.project).id);
   }
-  return db.query<DocumentRow, SQLQueryBindings[]>(`${DOC_SELECT} WHERE ${where.join(" AND ")} ORDER BY t.key, d.position, d.id`).all(...params).map(toDocSummary);
+  return db.query<DocumentRow, Binding[]>(`${DOC_SELECT} WHERE ${where.join(" AND ")} ORDER BY t.key, d.position, d.id`).all(...params).map(toDocSummary);
 }
 
 /** A doc as you see it: the issues it mentions leave out those in teams you don't see (their chips stay plain text). */
@@ -2958,7 +2958,7 @@ export function createDocument(a: Actor, input: DocumentInput): Document {
     const taken = (s: string) => db.query("SELECT 1 FROM documents WHERE workspace = ? AND slug = ?").get(team.workspace, s) !== null;
     const slug = pickSlug(input.slug, title, taken, { label: "slug", fallback: "doc" });
     const { id } = db
-      .query<{ id: number }, SQLQueryBindings[]>(
+      .query<{ id: number }, Binding[]>(
         `INSERT INTO documents (workspace, team_id, slug, title, content, position, project_id, created_at, updated_at, updated_by_id)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
       )
@@ -2979,7 +2979,7 @@ export function updateDocument(a: Actor, slug: string, patch: DocumentPatch): Do
   const row = liveDocument(a, slug);
   if (patch.baseUpdatedAt !== undefined && patch.baseUpdatedAt !== row.updated_at) throw new AppError("Document changed since you started editing", 409);
   if (patch.content !== undefined && patch.edits !== undefined) throw new AppError("Pass either content (full replacement) or edits, not both");
-  const cols: Record<string, SQLQueryBindings> = {};
+  const cols: Record<string, Binding> = {};
   if (patch.title !== undefined) cols.title = requireText(patch.title, "title");
   if (patch.content !== undefined) cols.content = checkContent(patch.content);
   if (patch.edits !== undefined) cols.content = capLength(applyEdits(row.content, patch.edits), "content");
@@ -2997,7 +2997,7 @@ export function updateDocument(a: Actor, slug: string, patch: DocumentPatch): Do
   const title = (cols.title as string | undefined) ?? row.title;
   const content = (cols.content as string | undefined) ?? row.content;
   db.transaction(() => {
-    const next: Record<string, SQLQueryBindings> = { ...cols, updated_at: time, updated_by_id: a.id };
+    const next: Record<string, Binding> = { ...cols, updated_at: time, updated_by_id: a.id };
     db.query(`UPDATE documents SET ${Object.keys(next).map((n) => `${n} = ?`).join(", ")} WHERE id = ?`).run(...Object.values(next), row.id);
     if (cols.title !== undefined || cols.content !== undefined) saveVersion(row.id, title, content, a.id, time, patch.checkpoint === true);
     if (cols.team_id !== undefined) {
@@ -3201,7 +3201,7 @@ export function listProjects(a: Actor, filter: { team?: string; status?: string[
   const workspace = requestWorkspace(a);
   const seen = seenBy(a, workspace);
   const where = ["p.workspace = ?", projectSeen(seen)];
-  const params: SQLQueryBindings[] = [workspace];
+  const params: Binding[] = [workspace];
   if (filter.team) {
     where.push("EXISTS (SELECT 1 FROM project_teams x WHERE x.project_id = p.id AND x.team_id = ?)");
     params.push(knownTeam(a, filter.team).id);
@@ -3210,7 +3210,7 @@ export function listProjects(a: Actor, filter: { team?: string; status?: string[
     where.push(`p.status IN (${inList(filter.status)})`);
     params.push(...filter.status.map((s) => checkOneOf(s, PROJECT_STATUSES, "status")));
   }
-  return db.query<ProjectRow, SQLQueryBindings[]>(`${projectSelect(seen)} WHERE ${where.join(" AND ")} ${PROJECT_ORDER}`).all(...params).map(toProjectSummary);
+  return db.query<ProjectRow, Binding[]>(`${projectSelect(seen)} WHERE ${where.join(" AND ")} ${PROJECT_ORDER}`).all(...params).map(toProjectSummary);
 }
 
 export function getProject(a: Actor, slug: string): Project {
@@ -3248,7 +3248,7 @@ export function createProject(a: Actor, input: ProjectInput): Project {
     const taken = (s: string) => db.query("SELECT 1 FROM projects WHERE workspace = ? AND slug = ?").get(workspace, s) !== null;
     const slug = pickSlug(input.slug, name, taken, { label: "slug", fallback: "project" });
     const { id } = db
-      .query<{ id: number }, SQLQueryBindings[]>(
+      .query<{ id: number }, Binding[]>(
         `INSERT INTO projects (workspace, slug, name, description, status, lead_id, target_date, creator_id, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
       )
@@ -3266,7 +3266,7 @@ export function createProject(a: Actor, input: ProjectInput): Project {
  */
 export function updateProject(a: Actor, slug: string, patch: ProjectPatch): Project {
   const row = projectRow(a, slug);
-  const cols: Record<string, SQLQueryBindings> = {};
+  const cols: Record<string, Binding> = {};
   if (patch.name !== undefined) cols.name = requireText(patch.name, "name");
   if (patch.description !== undefined) cols.description = optionalText(patch.description, "description");
   if (patch.status !== undefined) cols.status = checkOneOf(patch.status, PROJECT_STATUSES, "status");
@@ -3282,7 +3282,7 @@ export function updateProject(a: Actor, slug: string, patch: ProjectPatch): Proj
     if (patch.baseUpdatedAt !== undefined && patch.baseUpdatedAt !== updated_at) throw new AppError("Project changed since you read it", 409);
     if (teams) {
       const stays = db
-        .query<{ key: string; n: number }, SQLQueryBindings[]>(
+        .query<{ key: string; n: number }, Binding[]>(
           `SELECT t.key, COUNT(*) AS n FROM issues i JOIN teams t ON t.id = i.team_id
            WHERE i.project_id = ? AND i.team_id NOT IN (${inList(teams)}) GROUP BY t.key ORDER BY t.key LIMIT 1`,
         )
@@ -3372,10 +3372,10 @@ type CycleSettings = { weeks: number | null; upcoming: number; startsOn: string 
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const addWeeks = (iso: string, weeks: number) => new Date(Date.parse(iso) + weeks * WEEK_MS).toISOString();
-const cycleNumbered = db.query<CycleRow, [number, number]>("SELECT * FROM cycles WHERE team_id = ? AND number = ?");
+const cycleNumbered = () => db.query<CycleRow, [number, number]>("SELECT * FROM cycles WHERE team_id = ? AND number = ?");
 // Not over and started by `?2`: the current one (an ended one only until syncCycles completes it).
-const cycleStarted = db.query<CycleRow, [number, string]>("SELECT * FROM cycles WHERE team_id = ? AND completed_at IS NULL AND starts_at <= ? ORDER BY number DESC LIMIT 1");
-const cyclesUpcoming = db.query<CycleRow, [number, string]>("SELECT * FROM cycles WHERE team_id = ? AND completed_at IS NULL AND starts_at > ? ORDER BY number");
+const cycleStarted = () => db.query<CycleRow, [number, string]>("SELECT * FROM cycles WHERE team_id = ? AND completed_at IS NULL AND starts_at <= ? ORDER BY number DESC LIMIT 1");
+const cyclesUpcoming = () => db.query<CycleRow, [number, string]>("SELECT * FROM cycles WHERE team_id = ? AND completed_at IS NULL AND starts_at > ? ORDER BY number");
 
 /** A team's cycle settings after `patch`: cycleWeeks 1–8 or null (off), upcomingCycles 1–15, cycleStartsOn only when turning them on. */
 function cycleSettings(row: TeamRow, patch: TeamPatch): CycleSettings {
@@ -3408,8 +3408,8 @@ function scheduleCycles(a: Actor, team: TeamRow, { weeks, startsOn }: CycleSetti
     db.query("INSERT INTO cycles (team_id, number, starts_at, ends_at) VALUES (?, ?, ?, ?)").run(team.id, n, start, addWeeks(start, weeks!));
     return [];
   }
-  const current = cycleStarted.get(team.id, time);
-  const upcoming = cyclesUpcoming.all(team.id, time);
+  const current = cycleStarted().get(team.id, time);
+  const upcoming = cyclesUpcoming().all(team.id, time);
   if (weeks !== null) {
     let start = current?.ends_at ?? upcoming[0]?.starts_at;
     for (const c of upcoming) {
@@ -3440,7 +3440,7 @@ function scheduleCycles(a: Actor, team: TeamRow, { weeks, startsOn }: CycleSetti
 export function syncCycles(teamId?: number) {
   const time = now();
   const due = db
-    .query<TeamRow, SQLQueryBindings[]>(
+    .query<TeamRow, Binding[]>(
       `SELECT * FROM teams t WHERE cycle_weeks IS NOT NULL${teamId === undefined ? "" : " AND id = ?2"}
          AND (EXISTS (SELECT 1 FROM cycles c WHERE c.team_id = t.id AND c.completed_at IS NULL AND c.ends_at <= ?1)
            OR (SELECT COUNT(*) FROM cycles c WHERE c.team_id = t.id AND c.completed_at IS NULL AND c.starts_at > ?1) < t.upcoming_cycles)`,
@@ -3465,7 +3465,7 @@ function rollCycles(team: TeamRow, time: string): string[] {
   );
   const refs: string[] = [];
   for (let c = ended.get(team.id, time); c; c = ended.get(team.id, time)) {
-    const next = cycleNumbered.get(team.id, c.number + 1) ?? append(c);
+    const next = cycleNumbered().get(team.id, c.number + 1) ?? append(c);
     const issues = unfinished.all(c.id).map((i) => i.id);
     for (const id of issues) db.query("UPDATE issues SET cycle_id = ? WHERE id = ?").run(next.id, id);
     refs.push(...bumpIssues(issues, time));
@@ -3473,7 +3473,7 @@ function rollCycles(team: TeamRow, time: string): string[] {
     db.query("UPDATE cycles SET completed_at = ends_at WHERE id = ?").run(c.id);
   }
   const last = () => db.query<CycleRow, [number]>("SELECT * FROM cycles WHERE team_id = ? ORDER BY number DESC LIMIT 1").get(team.id)!;
-  for (let n = cyclesUpcoming.all(team.id, time).length; n < team.upcoming_cycles; n++) append(last());
+  for (let n = cyclesUpcoming().all(team.id, time).length; n < team.upcoming_cycles; n++) append(last());
   return refs;
 }
 
@@ -3485,13 +3485,13 @@ function cycleId(team: TeamRef, value: unknown): number | null {
   syncCycles(team.id);
   const time = now();
   if (value === "current") {
-    const current = cycleStarted.get(team.id, time);
+    const current = cycleStarted().get(team.id, time);
     if (!current) throw new AppError(`${team.key} has no current cycle`);
     return current.id;
   }
-  if (value === "next") return cyclesUpcoming.all(team.id, time)[0]!.id; // cycles on: there's always one
+  if (value === "next") return cyclesUpcoming().all(team.id, time)[0]!.id; // cycles on: there's always one
   if (!Number.isInteger(value)) throw new AppError('cycle must be a cycle number, "current", "next" or null');
-  const row = cycleNumbered.get(team.id, value as number);
+  const row = cycleNumbered().get(team.id, value as number);
   if (!row) throw new AppError(`Unknown cycle ${value} in ${team.key}`);
   if (row.completed_at) throw new AppError(`Cycle ${value} is over`);
   return row.id;
@@ -3516,7 +3516,7 @@ function cycleFilter(teamId: number | null, team: string | undefined, value: str
   }
   if (!/^\d+$/.test(given)) throw new AppError(`Invalid cycle "${value}": use current or a cycle number`);
   if (teamId === null) throw new AppError("Filter by cycle number needs a team");
-  const row = cycleNumbered.get(teamId, Number(given));
+  const row = cycleNumbered().get(teamId, Number(given));
   if (!row) throw new AppError(`Unknown cycle ${Number(given)} in ${team!.trim().toUpperCase()}`);
   return row.id;
 }
@@ -3549,9 +3549,9 @@ export function listCycles(a: Actor, key: string): Cycle[] {
  */
 export function eventTeams(event: ServerEvent): { id: number; private: boolean }[] | null {
   const { entity, workspace, id } = event;
-  const teams = (sql: string, key: SQLQueryBindings) =>
+  const teams = (sql: string, key: Binding) =>
     db
-      .query<{ id: number; private: number }, [string, SQLQueryBindings]>(`SELECT t.id, t.private ${sql}`)
+      .query<{ id: number; private: number }, [string, Binding]>(`SELECT t.id, t.private ${sql}`)
       .all(workspace, key)
       .map((t) => ({ id: t.id, private: t.private === 1 }));
   if (entity === "team") return teams("FROM teams t WHERE t.workspace = ? AND t.key = ?", id);
@@ -3617,9 +3617,12 @@ export function locate(a: Actor, query: { issue?: string; doc?: string; team?: s
   return { workspace: row.workspace };
 }
 
-// Anything that expired while the server was down goes now; later deletes and trash views purge as they go.
-purgeTrash();
-// Likewise, a team's already-old closed issues archive now, even if nothing in it changes for a while.
-autoArchive();
-// And cycles that ended while it was down complete now, rolling their unfinished issues over.
-syncCycles();
+/** At startup, what came due while the server was down. */
+export function catchUp() {
+  // What expired in the trash goes now; later deletes and trash views purge as they go.
+  purgeTrash();
+  // Likewise, a team's already-old closed issues archive now, even if nothing in it changes for a while.
+  autoArchive();
+  // And cycles that ended complete now, rolling their unfinished issues over.
+  syncCycles();
+}

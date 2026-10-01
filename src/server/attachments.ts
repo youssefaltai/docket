@@ -1,20 +1,23 @@
 // Attachments: files people and agents upload to a workspace (screenshots, logs) and link from markdown. The bytes
-// live in attachments/<id> next to the database; a row holds the rest. Only the workspace's active members get
+// live in `files` (on Bun attachments/<id> next to the database, on Workers R2), by id; a row holds the rest. Only the workspace's active members get
 // them back (a file uploaded in a team: only those who see the team), as the type Docket sniffed (never the
 // uploader's claim), and only raster images display inline.
 import type { BunRequest } from "bun";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { ATTACHMENT_URL, INLINE_IMAGE_TYPES, MAX_UPLOAD_BYTES, type Attachment, type UserKind } from "../shared/types.ts";
 import { type Actor, requestWorkspace, SEES_TEAM, seesTeam } from "./access.ts";
 import { errorResponse } from "./api.ts";
 import { actorOf, mediaType } from "./auth.ts";
 import { AppError, db, now } from "./db.ts";
-import { attachmentsDir } from "./paths.ts";
 
-const dir = attachmentsDir();
-mkdirSync(dir, { recursive: true });
+/** Where the bytes are, by attachment id; set by the entrypoint. `get`: null if missing (a database restored without its files). */
+export interface Files {
+  put(id: string, bytes: Uint8Array): Promise<void>;
+  get(id: string): Promise<Blob | ReadableStream | null>;
+  delete(id: string): Promise<void>;
+}
+export let files: Files;
+export const useFiles = (f: Files) => (files = f);
 
 interface Row {
   id: string;
@@ -78,9 +81,9 @@ function sniff(bytes: Uint8Array): string {
 
 /**
  * Stores a file in the request's workspace, or with `team` (a key) in that team, which only those who see it can get
- * back: written to disk first, then its row (a failed insert removes the file). A team you don't see is 404.
+ * back: its bytes stored first, then its row (a failed insert removes them). A team you don't see is 404.
  */
-export function saveAttachment(a: Actor, name: unknown, bytes: Uint8Array, team?: string | null): Attachment {
+export async function saveAttachment(a: Actor, name: unknown, bytes: Uint8Array, team?: string | null): Promise<Attachment> {
   const workspace = requestWorkspace(a);
   const teamId = team
     ? db.query<{ id: number }, [string, string]>(`SELECT id FROM teams t WHERE t.workspace = ? AND t.key = ? AND ${SEES_TEAM(String(a.id), "t")}`).get(workspace, team.trim().toUpperCase())?.id
@@ -89,15 +92,7 @@ export function saveAttachment(a: Actor, name: unknown, bytes: Uint8Array, team?
   if (bytes.length === 0) throw new AppError("The file is empty");
   if (bytes.length > MAX_UPLOAD_BYTES) throw new AppError(`Files can be at most ${MAX_UPLOAD_BYTES / 1024 / 1024} MB`, 413);
   const id = randomBytes(16).toString("base64url");
-  const path = join(dir, id);
-  // Whole or not at all, so a backup running meanwhile never copies half a file: written aside, then renamed.
-  try {
-    writeFileSync(`${path}.part`, bytes, { flag: "wx" });
-    renameSync(`${path}.part`, path);
-  } catch (err) {
-    rmSync(`${path}.part`, { force: true }); // e.g. the disk is full
-    throw err;
-  }
+  await files.put(id, bytes);
   try {
     db.query("INSERT INTO attachments (id, workspace, team_id, name, content_type, size, uploader_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(
       id,
@@ -110,7 +105,7 @@ export function saveAttachment(a: Actor, name: unknown, bytes: Uint8Array, team?
       now(),
     );
   } catch (err) {
-    rmSync(path, { force: true });
+    await files.delete(id);
     throw err;
   }
   return toAttachment(db.query<Row, [string]>(`${SELECT} WHERE a.id = ?`).get(id)!);
@@ -121,14 +116,14 @@ export function saveAttachment(a: Actor, name: unknown, bytes: Uint8Array, team?
  * active member of its workspace (a key: its own) and, if it was uploaded in a team, see that team. The id is looked
  * up, never joined into a path as given.
  */
-export function getAttachment(a: Actor, idOrUrl: string): { attachment: Attachment; path: string } {
+export function getAttachment(a: Actor, idOrUrl: string): Attachment {
   const path = URL.parse(idOrUrl, "http://docket")?.pathname ?? "";
   const id = /^[A-Za-z0-9_-]{22}$/.test(idOrUrl) ? idOrUrl : ATTACHMENT_URL.exec(path)?.[1];
   const row = id ? db.query<Row, [string]>(`${SELECT} WHERE a.id = ?`).get(id) : null;
   if (!row || !a.workspaces.has(row.workspace) || (row.team_id !== null && !seesTeam(a.id, row.team_id))) {
     throw new AppError("Attachment not found", 404);
   }
-  return { attachment: toAttachment(row), path: join(dir, row.id) };
+  return toAttachment(row);
 }
 
 /** `filename` for old clients (ASCII, no quotes), `filename*` for the real name. */
@@ -146,7 +141,7 @@ export const attachmentRoutes = {
         }
         const bytes = new Uint8Array(await req.arrayBuffer());
         const query = new URL(req.url).searchParams;
-        return Response.json(saveAttachment(actorOf(req), query.get("name"), bytes, query.get("team")), { status: 201 });
+        return Response.json(await saveAttachment(actorOf(req), query.get("name"), bytes, query.get("team")), { status: 201 });
       } catch (err) {
         return errorResponse(err);
       }
@@ -158,9 +153,9 @@ export const attachmentRoutes = {
       try {
         const id = req.params.id;
         if (!/^[A-Za-z0-9_-]{22}$/.test(id)) throw new AppError("Attachment not found", 404);
-        const { attachment, path } = getAttachment(actorOf(req), id);
-        const file = Bun.file(path);
-        if (!(await file.exists())) throw new AppError("Attachment not found", 404); // e.g. a database restored without its files
+        const attachment = getAttachment(actorOf(req), id);
+        const file = await files.get(id);
+        if (!file) throw new AppError("Attachment not found", 404); // e.g. a database restored without its files
         const inline = INLINE_IMAGE_TYPES.includes(attachment.contentType);
         return new Response(file, {
           headers: {

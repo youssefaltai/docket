@@ -98,13 +98,26 @@ test("a migration that breaks a foreign key or throws rolls back whole; the ones
   expect([version(db), db.query("SELECT name FROM pragma_table_info('notes')").all()]).toEqual([30, [{ name: "id" }, { name: "user_id" }]]);
 });
 
+test("on a Durable Object, the version is in docket_meta: the same baseline, and migrations roll back whole", () => {
+  const db = new Database(":memory:");
+  migrate(db, [], true);
+  const plain = new Database(":memory:");
+  migrate(plain, []);
+  const meta = () => db.query("SELECT key, value FROM docket_meta").all();
+  expect([version(db), meta(), schema(db).filter((r: any) => !r.name.includes("docket_meta"))]).toEqual([0, [{ key: "schema_version", value: 29 }], schema(plain)]);
+  db.run("INSERT INTO users (id, kind, created_at) VALUES (1, 'person', '2026-01-01T00:00:00.000Z')");
+  const notes = "CREATE TABLE notes (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id))";
+  expect(() => migrate(db, [notes, "INSERT INTO notes (user_id) VALUES (99)"], true)).toThrow("Migration 31 broke foreign keys");
+  expect([meta(), db.query("SELECT * FROM notes").all()]).toEqual([[{ key: "schema_version", value: 30 }], []]);
+});
+
 test("the server refuses to start on a database older than the baseline", async () => {
   const file = join(dir, "v28.db");
   const old = new Database(file, { create: true });
   old.run("CREATE TABLE users (id INTEGER PRIMARY KEY)");
   old.run("PRAGMA user_version = 28");
   old.close();
-  const run = Bun.spawn(["bun", "-e", 'await import("./src/server/db.ts")'], {
+  const run = Bun.spawn(["bun", "-e", 'await import("./src/server/local.ts")'], {
     cwd: join(import.meta.dir, ".."),
     env: { PATH: process.env.PATH, HOME: dir, DATABASE_PATH: file },
     stdout: "pipe",

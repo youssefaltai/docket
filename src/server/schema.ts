@@ -1,8 +1,8 @@
 // The schema: the baseline a new database starts from, the migrations since, and the runner that applies them.
-import type { Database } from "bun:sqlite";
+import type { Store } from "./store.ts";
 
-/** A step up by one PRAGMA user_version: SQL, or a function for what SQL can't do (backfills, checks). */
-export type Migration = string | ((db: Database) => void);
+/** A step up by one schema version: SQL, or a function for what SQL can't do (backfills, checks). */
+export type Migration = string | ((db: Store) => void);
 
 /**
  * The schema at user_version 29, as migrations 1-29 left it: their sqlite_master, verbatim, so a new database
@@ -432,13 +432,20 @@ CREATE TABLE vapid_keys (
 const MIGRATIONS: Migration[] = [];
 
 /**
- * Brings the schema up to date, or throws and changes nothing it hasn't committed. A new database (user_version 0)
+ * Brings the schema up to date, or throws and changes nothing it hasn't committed. A new database (version 0)
  * gets the baseline, then every migration; an existing one the migrations it lacks. Each runs in its own transaction
  * with foreign keys off (it may rebuild a table: SQLite's 12-step ALTER), and PRAGMA foreign_key_check must pass
  * before it commits, else it rolls back. Foreign keys are on afterwards.
+ *
+ * `durable`: a Durable Object's database, which refuses PRAGMA user_version and turning foreign keys off. Its version
+ * is in a `docket_meta` row, and a migration runs with foreign keys deferred to the commit instead: still checked,
+ * but a dropped table's ON DELETE actions fire, so a table rebuild there must not drop a referenced table.
  */
-export function migrate(db: Database, migrations = MIGRATIONS) {
-  const { user_version } = db.query("PRAGMA user_version").get() as { user_version: number };
+export function migrate(db: Store, migrations = MIGRATIONS, durable = false) {
+  if (durable) db.run("CREATE TABLE IF NOT EXISTS docket_meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL)");
+  const user_version = durable
+    ? (db.query<{ value: number }>("SELECT value FROM docket_meta WHERE key = 'schema_version'").get()?.value ?? 0)
+    : db.query<{ user_version: number }>("PRAGMA user_version").get()!.user_version;
   if (user_version < 0) throw new Error(`This database's schema version is ${user_version}: not one Docket wrote. Refusing to start.`);
   if (user_version > 0 && user_version < BASELINE_VERSION) {
     throw new Error(
@@ -448,16 +455,18 @@ export function migrate(db: Database, migrations = MIGRATIONS) {
   }
   const steps = [BASELINE, ...migrations]; // steps[i] brings the schema to BASELINE_VERSION + i
   const done = user_version === 0 ? 0 : user_version - BASELINE_VERSION + 1;
-  db.run("PRAGMA foreign_keys = OFF");
+  if (!durable) db.run("PRAGMA foreign_keys = OFF");
   steps.slice(done).forEach((step, i) => {
     const version = BASELINE_VERSION + done + i;
     db.transaction(() => {
+      if (durable) db.run("PRAGMA defer_foreign_keys = ON");
       if (typeof step === "string") db.run(step);
       else step(db);
       const broken = db.query("PRAGMA foreign_key_check").all();
       if (broken.length) throw new Error(`Migration ${version} broke foreign keys: ${JSON.stringify(broken.slice(0, 5))}`);
-      db.run(`PRAGMA user_version = ${version}`);
+      if (durable) db.query("INSERT OR REPLACE INTO docket_meta (key, value) VALUES ('schema_version', ?)").run(version);
+      else db.run(`PRAGMA user_version = ${version}`);
     })();
   });
-  db.run("PRAGMA foreign_keys = ON");
+  if (!durable) db.run("PRAGMA foreign_keys = ON");
 }
