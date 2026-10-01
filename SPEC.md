@@ -30,7 +30,7 @@ src/worker/worker.ts  Cloudflare: the Worker and the Durable Object that runs ap
 src/server/api.ts     REST handlers
 src/server/mcp.ts     MCP server + tools
 scripts/              sign-in-link (recovery, on Bun or Workers), build-worker (static assets), import (into Workers),
-                      backup (Workers to this machine), cutover.sh and rollback.sh (the move off the VPS)
+                      backup (Workers to this machine)
 src/web/index.html    HTML entry (Bun HTML import, bundled by Bun)
 src/web/*.tsx, *.ts, *.css  React UI
 public/               manifest, service worker (sw.js), icons
@@ -510,5 +510,3 @@ The server serves the web app at `/`, `/login`, `/setup`, `/:ws` and `/:ws/*`, a
 **Import** (`ADMIN_TOKEN=… bun scripts/import.ts <url> <snapshot.db> [attachments dir]`), in small requests that can be repeated: rows go table by table, parents first (and a table's rows after those they reference in it), about 64 KB per request, inserted as they are with `INSERT OR IGNORE`; a table whose count already matches is skipped. Files go one a request, streamed, each only if R2 doesn't already hold it with the same SHA-256; R2 checks the bytes against the SHA-256 sent with them. Then the check: every table page by page (100 rows: count and SHA-256 of typed values in value order), each table's `foreign_key_check`, `quick_check`, the schema's hash without comments, and every attachment's R2 object with its SHA-256. It exits non-zero unless everything matches; run it again to resume. Delete `ADMIN_TOKEN` afterwards.
 
 **Backup** (`BACKUP_TOKEN=… bun scripts/backup.ts <url> <dir>`, nightly from the operator's machine): the `BACKUP_TOKEN` secret turns on read-only `GET /api/backup/*` (tables and schema version; a table's rows by rowid, about 256 KB a request; attachment ids with their R2 size and MD5; one attachment's bytes), and nothing else. It writes `<dir>/docket-<UTC time>.db`, a SQLite file with this checkout's schema (which must be at the Worker's version) that `import.ts` restores and `bun:sqlite` opens, failing unless `integrity_check` and `foreign_key_check` pass (pages are read while Docket runs, so a write in between can break that: run it again); mirrors into `<dir>/attachments` only files missing or different by MD5, each checked once written; and keeps its newest 14 snapshots, never touching other files.
-
-**Cutover** (`ADMIN_TOKEN=… scripts/cutover.sh [timestamp]`): stops Docket on the VPS, snapshots its database there with `VACUUM INTO` (read-only, in a one-off container), copies that, the raw database files and the attachments to `~/Backups/docket/cutover-<timestamp>/`, checks the snapshot, imports it with `import.ts` and prints a summary. Each step can run again (pass the timestamp to resume); it stops on the first error and deletes nothing. `scripts/rollback.sh` starts the VPS's Docket again.
