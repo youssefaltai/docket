@@ -12,7 +12,7 @@ mkdirSync(dirname(path), { recursive: true });
 const sqlite = new Database(path, { create: true });
 sqlite.run("PRAGMA busy_timeout = 5000"); // first, so switching to WAL waits for another process instead of failing
 sqlite.run("PRAGMA journal_mode = WAL");
-open(sqlite, sqlite.query("SELECT 1 FROM sqlite_master WHERE name = 'docket_meta'").get() !== null); // a Durable Object's, opened as it is (sign-in-link in local dev)
+open(sqlite);
 
 const dir = attachmentsDir();
 mkdirSync(dir, { recursive: true });

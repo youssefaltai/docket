@@ -101,7 +101,11 @@ type Internal = TestServer & { users: Map<string, Known> };
 export async function startServer(
   opts: { setup?: boolean; sharing?: TestServer; env?: Record<string, string> } = {},
 ): Promise<TestServer> {
-  if (WORKER && opts.sharing) return { ...opts.sharing, stop: async () => {} }; // one Durable Object: there's no second process
+  // One Durable Object, so there's no second process: what a restart would do is the hourly housekeeping, run now.
+  if (WORKER && opts.sharing) {
+    await fetch(new URL("/cdn-cgi/local/scheduled?cron=0+*+*+*+*", opts.sharing.url));
+    return { ...opts.sharing, stop: async () => {} };
+  }
   const dir = mkdtempSync(join(tmpdir(), "docket-test-"));
   let databasePath = opts.sharing?.databasePath ?? join(dir, "docket.db");
   const env: Record<string, string | undefined> = {
@@ -115,7 +119,8 @@ export async function startServer(
   };
   const proc = WORKER ? await wranglerDev(dir, env) : Bun.spawn(["bun", entry], { env, stdout: "pipe", stderr: "inherit" });
   const url = await readUrl(proc.stdout);
-  // The Durable Object's SQLite file, once its first request made it; the CLI opens it as it is.
+  if (WORKER) Object.assign(env, { ADMIN_TOKEN, DOCKET_URL: url }); // the CLI (sign-in-link) goes through the Worker
+  // The Durable Object's SQLite file, once its first request made it.
   const db = () => {
     if (!WORKER || existsSync(databasePath)) return databasePath;
     const objects = join(dir, "state", "v3", "do", "docket-Docket");
@@ -270,7 +275,6 @@ export async function startServer(
       return as(label);
     },
     async cli(script, ...args) {
-      db();
       const p = Bun.spawn(["bun", "run", script, ...args], { cwd: root, env, stdout: "pipe", stderr: "pipe" });
       const [stdout, stderr, exitCode] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
       return { exitCode, stdout, stderr };
@@ -330,7 +334,7 @@ async function parse(res: Response): Promise<any> {
 /** wrangler dev on free ports, its state in `dir`, `env` as its vars; the web app is built once per test run. */
 async function wranglerDev(dir: string, env: Record<string, string | undefined>) {
   await (built ??= Bun.spawn(["bun", join(root, "scripts", "build-worker.ts")], { stdout: "ignore", stderr: "inherit" }).exited);
-  const vars = Object.entries(env).flatMap(([k, v]) => (k.startsWith("DOCKET_") && v !== undefined ? ["--var", `${k}:${v}`] : []));
+  const vars = Object.entries({ ...env, ADMIN_TOKEN }).flatMap(([k, v]) => (/^(DOCKET_|ADMIN_TOKEN)/.test(k) && v !== undefined ? ["--var", `${k}:${v}`] : []));
   const ports = [freePort(), freePort()].map(String);
   const args = ["dev", "--port", ports[0]!, "--inspector-port", ports[1]!, "--persist-to", join(dir, "state"), "--show-interactive-dev-session=false", ...vars];
   return Bun.spawn([join(root, "node_modules", ".bin", "wrangler"), ...args], {
@@ -341,6 +345,7 @@ async function wranglerDev(dir: string, env: Record<string, string | undefined>)
   });
 }
 let built: Promise<number> | undefined;
+const ADMIN_TOKEN = "tests-admin-token";
 
 function freePort(): number {
   const s = Bun.serve({ port: 0, fetch: () => new Response() });

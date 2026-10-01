@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { startServer, type Caller, type TestServer } from "./server.ts";
+import { startServer, type Caller, type TestServer, WORKER } from "./server.ts";
 
 let s: TestServer;
 let claude: Caller;
@@ -105,6 +105,7 @@ test("the origin is DOCKET_URL when set, else the one the client used (honouring
   } finally {
     await other.stop();
   }
+  if (WORKER) return; // Workers drop the client's x-forwarded-* headers: there's no proxy in front to trust
   // Behind a proxy, without DOCKET_URL: the forwarded host and protocol.
   const res = await fetch(new URL("/mcp", s.url), {
     method: "POST",

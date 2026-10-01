@@ -139,7 +139,7 @@ test("the app shell answers under /<workspace>; unknown icons and API routes sta
   const get = (path: string) => fetch(new URL(path, s.url));
   for (const path of ["/acme", "/acme/issue/BRD-1", "/acme/doc/plan", "/acme/t/BRD/docs", "/acme/settings/account", "/issue/BRD-1", "/t/BRD", "/docs"]) {
     const res = await get(path);
-    expect([path, res.status, res.headers.get("content-type")]).toEqual([path, 200, "text/html;charset=utf-8"]);
+    expect([path, res.status, res.headers.get("content-type")?.replace("; ", ";")]).toEqual([path, 200, "text/html;charset=utf-8"]);
   }
   const icon = await get("/icons/nope");
   expect([icon.status, await icon.text()]).toEqual([404, "Not found"]);

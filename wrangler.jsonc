@@ -1,4 +1,5 @@
-// Docket on Cloudflare Workers (src/worker/worker.ts). Local: bunx wrangler dev. Nothing here is routed to a domain yet.
+// Docket on Cloudflare Workers' free plan (src/worker/worker.ts). Local: bunx wrangler dev. Nothing here is routed to a domain yet.
+// Secrets: DOCKET_SETUP_CODE (required for setup); ADMIN_TOKEN only while importing or recovering an account.
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "docket",
@@ -9,11 +10,11 @@
   "build": { "command": "bun scripts/build-worker.ts" },
   "assets": {
     "directory": "./dist",
+    "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/api/*", "/mcp", "/ws"]
+    "run_worker_first": ["/api/*", "/mcp", "/ws", "/icons/*"]
   },
   "durable_objects": { "bindings": [{ "name": "DOCKET", "class_name": "Docket" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Docket"] }],
-  "r2_buckets": [{ "binding": "ATTACHMENTS", "bucket_name": "docket-attachments" }],
-  "triggers": { "crons": ["*/5 * * * *"] }
+  "triggers": { "crons": ["0 * * * *"] }
 }

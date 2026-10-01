@@ -23,13 +23,6 @@ interface ResponseInit {
   webSocket?: WebSocket;
 }
 
-interface R2Bucket {
-  put(key: string, value: Uint8Array | ReadableStream | null): Promise<unknown>;
-  get(key: string): Promise<{ body: ReadableStream } | null>;
-  delete(key: string): Promise<void>;
-  list(options?: { cursor?: string }): Promise<{ objects: { key: string; size: number; etag: string }[]; truncated: boolean; cursor?: string }>;
-}
-
 interface DurableObjectNamespace<T> {
   idFromName(name: string): unknown;
   get(id: unknown): { fetch(req: Request): Promise<Response> } & { [K in keyof T]: T[K] };

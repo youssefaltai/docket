@@ -290,12 +290,15 @@ export const purgeDeliveries = () => db.query("DELETE FROM webhook_deliveries WH
 export const nextDelivery = () =>
   db.query<{ at: string | null }, []>("SELECT MIN(next_attempt_at) AS at FROM webhook_deliveries WHERE status = 'pending'").get()?.at ?? null;
 
-/** Starts sending (index.ts, src/worker): `origin` is where people open Docket, for payload URLs. `timers`: Bun's, checking every second. */
+/**
+ * Starts sending (index.ts, src/worker): `origin` is where people open Docket, for payload URLs. `timers`: Bun's, purging
+ * now and hourly and checking every second (a Durable Object does those in its housekeeping and alarm).
+ */
 export function startWebhooks(origin: string, timers = true) {
   base = origin;
   started = true;
-  purgeDeliveries();
   if (timers) {
+    purgeDeliveries();
     setInterval(purgeDeliveries, 60 * 60 * 1000);
     setInterval(pass, 1000); // anything left, e.g. after a restart
   }

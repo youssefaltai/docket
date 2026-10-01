@@ -23,6 +23,7 @@ import {
   type WorkspacePatch,
 } from "../shared/types.ts";
 import { AppError, SYSTEM_USER, capLength, changed, checkOneOf, db, exists, now, pickSlug, requireText } from "./db.ts";
+import { workers } from "./runtime.ts";
 
 /** Who a request acts as. Built fresh per request, so role and suspension changes apply at once. */
 export interface Actor {
@@ -406,7 +407,11 @@ export function systemUserId(): number {
 
 /** The first-run setup code: DOCKET_SETUP_CODE if set, else random; only usable while there are no users. */
 let code: string | undefined;
-export const setupCode = () => (code ??= normalizeCode(process.env.DOCKET_SETUP_CODE || newCode())); // made on first use: Workers allow no random at startup
+export function setupCode(): string {
+  // On Workers a random one would change whenever the Durable Object wakes, and nobody would see it: the secret is required.
+  if (!process.env.DOCKET_SETUP_CODE && workers) throw new AppError("Setup needs the DOCKET_SETUP_CODE secret", 503);
+  return (code ??= normalizeCode(process.env.DOCKET_SETUP_CODE || newCode())); // made on first use: Workers allow no random at startup
+}
 export const needsSetup = () => db.query("SELECT 1 FROM users LIMIT 1").get() === null;
 
 /** Creates the first account (admin of a new workspace) and signs it in. */

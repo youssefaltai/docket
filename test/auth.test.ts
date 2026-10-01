@@ -1,6 +1,6 @@
 // Signing in: setup, one-time codes, sessions, API keys, and what anonymous callers can reach.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { SETUP_CODE, sessionCookie, startServer, type TestServer } from "./server.ts";
+import { SETUP_CODE, sessionCookie, startServer, WORKER, type TestServer } from "./server.ts";
 
 describe("setup", () => {
   let s: TestServer;
@@ -31,6 +31,17 @@ describe("setup", () => {
 
     expect((await s.anon.api("GET", "/api/setup")).body).toEqual({ needed: false });
     expect((await setup(SETUP_CODE)).status).toBe(409);
+  });
+
+  // A random code would change whenever the Durable Object wakes, and only its logs would show it.
+  test.if(WORKER)("on Workers there's no random code: setup needs the DOCKET_SETUP_CODE secret", async () => {
+    const bare = await startServer({ setup: false, env: { DOCKET_SETUP_CODE: "" } });
+    try {
+      const res = await bare.anon.api("POST", "/api/setup", { code: "ABCDE-FGHJK", email: "o@example.com", name: "O", username: "o", workspace: { name: "H", key: "h" } });
+      expect([res.status, res.body.error]).toEqual([503, "Setup needs the DOCKET_SETUP_CODE secret"]);
+    } finally {
+      await bare.stop();
+    }
   });
 });
 
