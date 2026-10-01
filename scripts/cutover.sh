@@ -4,7 +4,7 @@
 # Rollback: scripts/rollback.sh starts the VPS's Docket again.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-: "${ADMIN_TOKEN:?Set ADMIN_TOKEN to the Worker's ADMIN_TOKEN secret}"
+: "${ADMIN_TOKEN:?Set ADMIN_TOKEN to the ADMIN_TOKEN secret of the Worker}"
 URL=https://docket.youssefaltai.com
 APP=/opt/apps/docket
 TS=${1:-$(date -u +%Y%m%dT%H%M%SZ)}
