@@ -16,5 +16,6 @@
   },
   "durable_objects": { "bindings": [{ "name": "DOCKET", "class_name": "Docket" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Docket"] }],
+  "r2_buckets": [{ "binding": "ATTACHMENTS", "bucket_name": "docket-attachments" }],
   "triggers": { "crons": ["0 * * * *"] }
 }

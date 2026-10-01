@@ -1,6 +1,6 @@
 // Docket on Cloudflare Workers (the free plan: 10 ms of CPU a request): the web app is static assets
 // (scripts/build-worker.ts), and everything else (/api, /mcp, /ws) goes to one SQLite-backed Durable Object that runs the
-// same server as Bun (app.ts) on its own storage: SQL through the Store interface, attachment bytes in chunked rows,
+// same server as Bun (app.ts) on its own storage: SQL through the Store interface, attachment bytes streamed to R2,
 // WebSockets that hibernate, an hourly cron for housekeeping and an alarm only when a webhook delivery is due.
 import { DurableObject } from "cloudflare:workers";
 import { createHash, timingSafeEqual } from "node:crypto";
@@ -13,12 +13,13 @@ import { startPush } from "../server/push.ts";
 import { useScheduler } from "../server/runtime.ts";
 import { durableStore } from "../server/store.ts";
 import { catchUp } from "../server/tracker.ts";
-import { CHUNK_BYTES, load, pageHash, schemaHash, tables } from "../server/transfer.ts";
+import { load, pageHash, schemaHash, tables } from "../server/transfer.ts";
 import { nextDelivery, pass, purgeDeliveries, startWebhooks } from "../server/webhooks.ts";
 
 interface Env {
   DOCKET: DurableObjectNamespace<Docket>;
   ASSETS: { fetch(req: Request): Promise<Response> };
+  ATTACHMENTS: R2Bucket;
   /** Turns on /api/admin/* for whoever has it: the import and account recovery. Set it when needed, delete it after. */
   ADMIN_TOKEN?: string;
 }
@@ -28,7 +29,8 @@ const notFound = (req: Request) => secure(req, new Response("Not found", { statu
 export default {
   /**
    * The server's paths and /icons/* get here (run_worker_first); the rest is static assets. x-forwarded-* are the client's
-   * own claims, so they go. The body is read here (at most HARD_MAX_BODY): the object may answer without reading it.
+   * own claims, so they go. A body is read here (at most HARD_MAX_BODY), since the object may answer without reading it,
+   * except an upload's, which streams on to R2 (the object reads every one: see `fetch` there).
    */
   async fetch(req: Request, env: Env) {
     // Icons are files; anything else under /icons is a plain 404, not the app shell the assets fall back to.
@@ -38,7 +40,7 @@ export default {
     }
     const headers = new Headers([...req.headers].filter(([name]) => !name.startsWith("x-forwarded-")));
     if (Number(req.headers.get("content-length") ?? 0) > HARD_MAX_BODY) return secure(req, Response.json({ error: "Request body too large" }, { status: 413 }), { api: true });
-    const body = req.body ? await req.arrayBuffer() : null;
+    const body = !req.body || streams(req) ? req.body : await req.arrayBuffer();
     return docket(env).fetch(new Request(req.url, { method: req.method, headers, body }));
   },
   /** Hourly (at :00, so a cycle ends within a minute of midnight UTC): the housekeeping. */
@@ -49,24 +51,30 @@ export default {
 
 const docket = (env: Env) => env.DOCKET.get(env.DOCKET.idFromName("docket"));
 
+/** An upload: its body streams through to R2 instead of being held whole. */
+const streams = (req: Request) => {
+  const { pathname } = new URL(req.url);
+  return (req.method === "POST" && pathname === "/api/attachments") || (req.method === "PUT" && pathname.startsWith("/api/admin/files/"));
+};
+
+/** A body of `length` bytes as R2 takes a stream (a known length); unknown, it's read whole. */
+async function sized(body: ReadableStream | Uint8Array, length?: number) {
+  if (body instanceof Uint8Array) return body;
+  if (length === undefined) return new Uint8Array(await new Response(body).arrayBuffer());
+  const fixed = new FixedLengthStream(length);
+  body.pipeTo(fixed.writable).catch(() => {}); // a short or long body fails the put
+  return fixed.readable;
+}
+const contentLength = (req: Request) => (req.headers.has("content-length") ? Number(req.headers.get("content-length")) : undefined);
+
 export class Docket extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     open(durableStore(ctx.storage), true);
-    db.run("CREATE TABLE IF NOT EXISTS attachment_chunks (id TEXT NOT NULL, seq INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (id, seq))");
     useFiles({
-      put: async (id, bytes) =>
-        db.transaction(() => {
-          db.query("DELETE FROM attachment_chunks WHERE id = ?").run(id);
-          for (let seq = 0; seq * CHUNK_BYTES < bytes.length; seq++) {
-            db.query("INSERT INTO attachment_chunks (id, seq, data) VALUES (?, ?, ?)").run(id, seq, bytes.subarray(seq * CHUNK_BYTES, (seq + 1) * CHUNK_BYTES));
-          }
-        })(),
-      get: async (id) => {
-        const chunks = db.query<{ data: ArrayBuffer }, [string]>("SELECT data FROM attachment_chunks WHERE id = ? ORDER BY seq").all(id);
-        return chunks.length ? new Blob(chunks.map((c) => c.data)) : null;
-      },
-      delete: async (id) => void db.query("DELETE FROM attachment_chunks WHERE id = ?").run(id),
+      put: async (id, body, length) => (await env.ATTACHMENTS.put(id, await sized(body, length)))!.size,
+      get: async (id, bytes) => (await env.ATTACHMENTS.get(id, bytes === undefined ? undefined : { range: { offset: 0, length: bytes } }))?.body ?? null,
+      delete: (id) => env.ATTACHMENTS.delete(id),
     });
     // A kick runs right after this request's transaction; a retry wakes the object with its alarm.
     useScheduler((fn, ms) => ctx.waitUntil(ms ? this.schedule(Date.now() + ms) : new Promise((done) => setTimeout(done, 0)).then(fn)));
@@ -102,7 +110,10 @@ export class Docket extends DurableObject<Env> {
         return true;
       },
     };
-    return (await route(req, server)) ?? upgraded!;
+    const res = (await route(req, server)) ?? upgraded!;
+    // An upload answered without reading it all (a 401, a 413): it's read to the end, or the Worker couldn't answer.
+    if (req.body && !req.bodyUsed) await req.body.pipeTo(new WritableStream()).catch(() => {});
+    return res;
   }
 
   webSocketMessage() {} // clients only listen
@@ -136,8 +147,9 @@ export class Docket extends DurableObject<Env> {
    *   GET  /api/admin/tables                 Docket's tables with row counts, the schema's hash, quick_check
    *   POST /api/admin/rows/:table            a batch of rows `[{…}]`, inserted as they are (rows already there are skipped)
    *   GET  /api/admin/rows/:table?offset&limit the hash of a page of rows (transfer.ts pageHash), and foreign_key_check's for the table
-   *   PUT  /api/admin/files/:id/:seq          one chunk of an attachment's bytes (before or after its row: files never change)
-   *   GET  /api/admin/files/:id/:seq          a chunk's size and SHA-256 (404: missing)
+   *   PUT  /api/admin/files/:id              an attachment's bytes, streamed to R2, which checks them against X-Docket-SHA256
+   *                                          (before or after its row: files never change)
+   *   GET  /api/admin/files/:id              its size and SHA-256 as R2 has them (404: missing)
    * Recovery (scripts/sign-in-link.ts): POST /api/admin/sign-in-link `{ username, workspace? }`, a one-time sign-in code.
    * Anything else, or without the token, is a normal request.
    */
@@ -145,9 +157,9 @@ export class Docket extends DurableObject<Env> {
     const { pathname, searchParams } = new URL(req.url);
     const token = this.env.ADMIN_TOKEN;
     if (!token || !pathname.startsWith("/api/admin/")) return null;
-    const sha = (s: string | ArrayBuffer) => createHash("sha256").update(typeof s === "string" ? s : new Uint8Array(s)).digest();
+    const sha = (s: string) => createHash("sha256").update(s).digest();
     if (!timingSafeEqual(sha(req.headers.get("authorization") ?? ""), sha(`Bearer ${token}`))) return null;
-    const [, , , what, a, b] = pathname.split("/");
+    const [, , , what, a] = pathname.split("/");
     try {
       if (what === "tables" && req.method === "GET") {
         const counts = tables(db).map((t) => ({ table: t, rows: db.query<{ n: number }, []>(`SELECT COUNT(*) AS n FROM "${t}"`).get()!.n }));
@@ -161,16 +173,18 @@ export class Docket extends DurableObject<Env> {
         const page = pageHash(db, a, Number(searchParams.get("offset")) || 0, Number(searchParams.get("limit")) || 100);
         return Response.json({ ...page, foreignKeyCheck: db.query(`PRAGMA foreign_key_check("${a.replace(/"/g, "")}")`).all() });
       }
-      const chunk = /^[A-Za-z0-9_-]{22}$/.test(a ?? "") && /^\d+$/.test(b ?? "") ? ([a!, Number(b)] as const) : null;
-      if (what === "files" && chunk && req.method === "PUT") {
-        const data = new Uint8Array(await req.arrayBuffer());
-        if (data.length > CHUNK_BYTES) throw new AppError(`A chunk is at most ${CHUNK_BYTES} bytes`);
-        db.query("INSERT OR REPLACE INTO attachment_chunks (id, seq, data) VALUES (?, ?, ?)").run(...chunk, data);
-        return Response.json({ ok: true });
+      const file = what === "files" && /^[A-Za-z0-9_-]{22}$/.test(a ?? "") ? a! : null;
+      if (file && req.method === "PUT") {
+        const object = await this.env.ATTACHMENTS.put(file, await sized(req.body ?? new Uint8Array(), contentLength(req)), {
+          sha256: req.headers.get("x-docket-sha256") ?? undefined,
+        });
+        return Response.json({ size: object!.size });
       }
-      if (what === "files" && chunk && req.method === "GET") {
-        const row = db.query<{ data: ArrayBuffer }, [string, number]>("SELECT data FROM attachment_chunks WHERE id = ? AND seq = ?").get(...chunk);
-        return row ? Response.json({ size: row.data.byteLength, sha256: sha(row.data).toString("hex") }) : Response.json({ error: "No such chunk" }, { status: 404 });
+      if (file && req.method === "GET") {
+        const object = await this.env.ATTACHMENTS.head(file);
+        if (!object) return Response.json({ error: "No such file" }, { status: 404 });
+        const { sha256 } = object.checksums;
+        return Response.json({ size: object.size, sha256: sha256 && Buffer.from(sha256).toString("hex") });
       }
       if (what === "sign-in-link" && req.method === "POST") {
         const { username, workspace } = (await req.json()) as { username: string; workspace?: string };

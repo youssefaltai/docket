@@ -10,10 +10,14 @@ import { errorResponse } from "./api.ts";
 import { actorOf, mediaType } from "./auth.ts";
 import { AppError, db, now } from "./db.ts";
 
-/** Where the bytes are, by attachment id; set by the entrypoint. `get`: null if missing (a database restored without its files). */
+/**
+ * Where the bytes are, by attachment id; set by the entrypoint (local.ts on disk, src/worker in R2). `put` streams a
+ * request body (`length`: its Content-Length, if known) and says how many bytes it stored; `get` the first `bytes` only
+ * if given, null if missing (a database restored without its files).
+ */
 export interface Files {
-  put(id: string, bytes: Uint8Array): Promise<void>;
-  get(id: string): Promise<Blob | ReadableStream | null>;
+  put(id: string, body: ReadableStream | Uint8Array, length?: number): Promise<number>;
+  get(id: string, bytes?: number): Promise<Blob | ReadableStream | null>;
   delete(id: string): Promise<void>;
 }
 export let files: Files;
@@ -81,26 +85,30 @@ function sniff(bytes: Uint8Array): string {
 
 /**
  * Stores a file in the request's workspace, or with `team` (a key) in that team, which only those who see it can get
- * back: its bytes stored first, then its row (a failed insert removes them). A team you don't see is 404.
+ * back: its bytes stored first (streamed, never held whole), then its row (a failed check or insert removes them). A team you
+ * don't see is 404.
  */
-export async function saveAttachment(a: Actor, name: unknown, bytes: Uint8Array, team?: string | null): Promise<Attachment> {
+export async function saveAttachment(a: Actor, name: unknown, body: ReadableStream | Uint8Array, team?: string | null, length?: number): Promise<Attachment> {
   const workspace = requestWorkspace(a);
   const teamId = team
     ? db.query<{ id: number }, [string, string]>(`SELECT id FROM teams t WHERE t.workspace = ? AND t.key = ? AND ${SEES_TEAM(String(a.id), "t")}`).get(workspace, team.trim().toUpperCase())?.id
     : null;
   if (teamId === undefined) throw new AppError(`Team ${team} not found`, 404);
-  if (bytes.length === 0) throw new AppError("The file is empty");
-  if (bytes.length > MAX_UPLOAD_BYTES) throw new AppError(`Files can be at most ${MAX_UPLOAD_BYTES / 1024 / 1024} MB`, 413);
+  const tooBig = () => new AppError(`Files can be at most ${MAX_UPLOAD_BYTES / 1024 / 1024} MB`, 413);
+  if ((length ?? 0) > MAX_UPLOAD_BYTES) throw tooBig();
   const id = randomBytes(16).toString("base64url");
-  await files.put(id, bytes);
+  const size = await files.put(id, body, length);
   try {
+    if (size === 0) throw new AppError("The file is empty");
+    if (size > MAX_UPLOAD_BYTES) throw tooBig();
+    const head = new Uint8Array(await new Response(await files.get(id, 8192)).arrayBuffer());
     db.query("INSERT INTO attachments (id, workspace, team_id, name, content_type, size, uploader_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(
       id,
       workspace,
       teamId,
       cleanName(name),
-      sniff(bytes),
-      bytes.length,
+      sniff(head),
+      size,
       a.id,
       now(),
     );
@@ -139,9 +147,10 @@ export const attachmentRoutes = {
         if (mediaType(req) !== "application/octet-stream") {
           throw new AppError("Expected Content-Type: application/octet-stream", 415);
         }
-        const bytes = new Uint8Array(await req.arrayBuffer());
         const query = new URL(req.url).searchParams;
-        return Response.json(await saveAttachment(actorOf(req), query.get("name"), bytes, query.get("team")), { status: 201 });
+        const length = req.headers.has("content-length") ? Number(req.headers.get("content-length")) : undefined;
+        const body = req.body ?? new Uint8Array();
+        return Response.json(await saveAttachment(actorOf(req), query.get("name"), body, query.get("team"), length), { status: 201 });
       } catch (err) {
         return errorResponse(err);
       }

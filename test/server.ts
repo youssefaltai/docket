@@ -117,8 +117,10 @@ export async function startServer(
     DOCKET_SETUP_CODE: SETUP_CODE,
     ...opts.env,
   };
-  const proc = WORKER ? await wranglerDev(dir, env) : Bun.spawn(["bun", entry], { env, stdout: "pipe", stderr: "inherit" });
-  const url = await readUrl(proc.stdout);
+  let proc = WORKER ? await wranglerDev(dir, env) : Bun.spawn(["bun", entry], { env, stdout: "pipe", stderr: "inherit" });
+  const first = await readUrl(proc.stdout).catch((err) => (WORKER ? null : Promise.reject(err)));
+  // A free port can be taken again before wrangler binds it: then once more, on others.
+  const url = first ?? (await readUrl((proc = await wranglerDev(dir, env)).stdout));
   if (WORKER) Object.assign(env, { ADMIN_TOKEN, DOCKET_URL: url }); // the CLI (sign-in-link) goes through the Worker
   // The Durable Object's SQLite file, once its first request made it.
   const db = () => {

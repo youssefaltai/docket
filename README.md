@@ -77,7 +77,7 @@ Give each Docket its own hostname: browsers share cookies across ports, so two D
 <details>
 <summary><b>Run it on Cloudflare Workers</b></summary>
 
-`wrangler.jsonc` runs Docket on Cloudflare's free plan: a Worker and one SQLite Durable Object, which also holds the uploads, with the web app as static assets. Try it locally with `bunx wrangler dev`. Set `DOCKET_SETUP_CODE` (required for setup there) and `DOCKET_URL`, `DOCKET_HOSTS` for your hostname with `bunx wrangler secret put`.
+`wrangler.jsonc` runs Docket on Cloudflare's free plan: a Worker and one SQLite Durable Object, uploads in an R2 bucket (`docket-attachments`, create it first), and the web app as static assets. Try it locally with `bunx wrangler dev`. Set `DOCKET_SETUP_CODE` (required for setup there) and `DOCKET_URL`, `DOCKET_HOSTS` for your hostname with `bunx wrangler secret put`.
 
 To move an existing Docket over: take a snapshot (`./backup.sh`), `bunx wrangler secret put ADMIN_TOKEN`, then `ADMIN_TOKEN=… bun scripts/import.ts https://<your worker> <snapshot.db> <attachments dir>`. It copies every row and file in small steps and checks both sides match; run it again to resume. **Locked out** there: `ADMIN_TOKEN=… DOCKET_URL=https://<your worker> bun run sign-in-link <username> [workspace]`. Delete the secret when done. Details in SPEC.md's Deploy section.
 

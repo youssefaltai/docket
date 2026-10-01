@@ -23,6 +23,20 @@ interface ResponseInit {
   webSocket?: WebSocket;
 }
 
+interface R2Object {
+  size: number;
+  checksums: { sha256?: ArrayBuffer };
+}
+interface R2Bucket {
+  put(key: string, value: ReadableStream | Uint8Array, options?: { sha256?: string }): Promise<R2Object | null>;
+  get(key: string, options?: { range: { offset: number; length: number } }): Promise<(R2Object & { body: ReadableStream }) | null>;
+  head(key: string): Promise<R2Object | null>;
+  delete(key: string): Promise<void>;
+}
+declare class FixedLengthStream extends TransformStream<Uint8Array, Uint8Array> {
+  constructor(length: number);
+}
+
 interface DurableObjectNamespace<T> {
   idFromName(name: string): unknown;
   get(id: unknown): { fetch(req: Request): Promise<Response> } & { [K in keyof T]: T[K] };

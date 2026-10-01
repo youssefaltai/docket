@@ -3,8 +3,8 @@
 import { createHash } from "node:crypto";
 import type { Binding, Store } from "./store.ts";
 
-// Not Docket's data: SQLite's, the runtime's (_cf_…, Miniflare's __…), and the Durable Object's own (version, file bytes).
-const OWN = "name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name NOT LIKE '\\_%' ESCAPE '\\' AND name NOT IN ('docket_meta', 'attachment_chunks')";
+// Not Docket's data: SQLite's, the runtime's (_cf_…, Miniflare's __…), and the Durable Object's schema version.
+const OWN = "name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name NOT LIKE '\\_%' ESCAPE '\\' AND name != 'docket_meta'";
 
 /** Docket's tables, by name. */
 export const tables = (db: Store) =>
@@ -41,7 +41,7 @@ export function load(db: Store, table: string, rows: Record<string, Binding>[]) 
 /** The tables' and indexes' SQL without comments (what it means), hashed. */
 export function schemaHash(db: Store): string {
   const rows = db
-    .query<{ type: string; name: string; sql: string }, []>(`SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL AND ${OWN} AND tbl_name NOT IN ('docket_meta', 'attachment_chunks') ORDER BY type, name`)
+    .query<{ type: string; name: string; sql: string }, []>(`SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL AND ${OWN} AND tbl_name != 'docket_meta' ORDER BY type, name`)
     .all()
     .map((r) => ({ ...r, sql: r.sql.replace(/--[^\n]*/g, "").replace(/\s+/g, " ") }));
   return sha256(JSON.stringify(rows));
@@ -62,6 +62,3 @@ export function pageHash(db: Store, table: string, offset: number, limit: number
   const { n } = db.query<{ n: number }, []>(`SELECT COUNT(*) AS n FROM "${table}"`).get()!;
   return { rows: n, sha256: sha256(page.map((row) => JSON.stringify(Object.values(row))).join("\n")) };
 }
-
-/** How a Durable Object keeps an attachment's bytes: rows of at most this much (a value can be 2 MB at most). */
-export const CHUNK_BYTES = 1024 * 1024;

@@ -1,4 +1,4 @@
-// Imports a Docket database into the Workers deployment: every table's rows (same ids, same values) and the attachments,
+// Imports a Docket database into the Workers deployment: every table's rows (same ids, same values) and the attachments (to R2),
 // then checks both sides hold the same. Small requests throughout (Workers Free gives each 10 ms of CPU); run it again
 // to resume or just re-check. Needs the ADMIN_TOKEN secret set on the Worker, and the token here.
 // Usage: ADMIN_TOKEN=… bun scripts/import.ts <url> <snapshot.db> [attachments dir]
@@ -7,7 +7,7 @@ import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { CHUNK_BYTES, pageHash, schemaHash, tables } from "../src/server/transfer.ts";
+import { pageHash, schemaHash, tables } from "../src/server/transfer.ts";
 
 const BATCH_BYTES = 64 * 1024; // of JSON rows per request
 const PAGE = 100; // rows per hashed page
@@ -78,7 +78,7 @@ for (const t of order) {
 }
 console.log(`Sent ${sent} rows.`);
 
-// The files, a chunk at a time: each is compared by SHA-256, sent if it's missing or differs, then compared again.
+// The files, one a request, streamed: each sent only if R2 doesn't have it with the same SHA-256, which R2 checks on upload.
 const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const ids = db.query<{ id: string }, []>("SELECT id FROM attachments ORDER BY id").all().map((a) => a.id);
 const missing = ids.filter((id) => !files || !existsSync(join(files, id)));
@@ -86,18 +86,12 @@ let uploaded = 0;
 const badFiles: string[] = [];
 if (files) {
   for (const id of ids.filter((id) => !missing.includes(id))) {
-    const bytes = readFileSync(join(files, id));
-    let good = true;
-    for (let seq = 0; seq * CHUNK_BYTES < bytes.length; seq++) {
-      const chunk = bytes.subarray(seq * CHUNK_BYTES, (seq + 1) * CHUNK_BYTES);
-      const same = async () => (await admin(`files/${id}/${seq}`, {}, [200, 404])).sha256 === sha256(chunk);
-      if (await same()) continue;
-      await admin(`files/${id}/${seq}`, { method: "PUT", body: chunk });
-      uploaded++;
-      good &&= await same();
-    }
-    const extra = await admin(`files/${id}/${Math.ceil(bytes.length / CHUNK_BYTES)}`, {}, [200, 404]); // nothing past the end
-    if (!good || extra.sha256) badFiles.push(id);
+    const hash = sha256(readFileSync(join(files, id)));
+    const there = async () => (await admin(`files/${id}`, {}, [200, 404])).sha256 === hash;
+    if (await there()) continue;
+    await admin(`files/${id}`, { method: "PUT", headers: { "X-Docket-SHA256": hash }, body: Bun.file(join(files, id)) });
+    uploaded++;
+    if (!(await there())) badFiles.push(id);
   }
 }
 
@@ -120,7 +114,7 @@ console.table(results);
 const extra = remote.tables.map((t: { table: string }) => t.table).filter((t: string) => !order.includes(t));
 console.log(`Schema: matches. Tables: ${results.filter((r) => r.match).length}/${results.length} match${extra.length ? `; extra on the Worker: ${extra.join(", ")}` : ""}.`);
 console.log(`quick_check: ${JSON.stringify(quickCheck)}; foreign_key_check: ${results.reduce((n, r) => n + r.fkProblems, 0)} problems.`);
-if (files) console.log(`Files: ${ids.length - missing.length - badFiles.length}/${ids.length} match by SHA-256 (${uploaded} chunks sent)${missing.length ? `; not in ${files}: ${missing.join(", ")}` : ""}${badFiles.length ? `; differ: ${badFiles.join(", ")}` : ""}.`);
+if (files) console.log(`Files: ${ids.length - missing.length - badFiles.length}/${ids.length} in R2 with a matching SHA-256 (${uploaded} sent)${missing.length ? `; not in ${files}: ${missing.join(", ")}` : ""}${badFiles.length ? `; differ: ${badFiles.join(", ")}` : ""}.`);
 const ok = results.every((r) => r.match && !r.fkProblems) && !extra.length && JSON.stringify(quickCheck) === '[{"quick_check":"ok"}]' && !badFiles.length && (!files || !missing.length);
 console.log(ok ? "Import verified." : "Import NOT verified.");
 process.exit(ok ? 0 : 1);

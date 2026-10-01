@@ -1,7 +1,7 @@
 // The Bun server's storage: the SQLite file (DATABASE_PATH) and the attachments folder next to it. Imported first by
 // whatever runs on Bun (index.ts, scripts), so the database is open before anything uses it.
 import { Database } from "bun:sqlite";
-import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, renameSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { useFiles } from "./attachments.ts";
 import { open } from "./db.ts";
@@ -18,18 +18,21 @@ const dir = attachmentsDir();
 mkdirSync(dir, { recursive: true });
 useFiles({
   // Whole or not at all, so a backup running meanwhile never copies half a file: written aside, then renamed.
-  async put(id, bytes) {
+  async put(id, body) {
+    const part = join(dir, `${id}.part`);
     try {
-      writeFileSync(join(dir, `${id}.part`), bytes, { flag: "wx" });
-      renameSync(join(dir, `${id}.part`), join(dir, id));
+      const size = body instanceof Uint8Array ? await Bun.write(part, body) : await Bun.write(part, new Response(body));
+      renameSync(part, join(dir, id));
+      return size;
     } catch (err) {
-      rmSync(join(dir, `${id}.part`), { force: true }); // e.g. the disk is full
+      rmSync(part, { force: true }); // e.g. the disk is full
       throw err;
     }
   },
-  async get(id) {
+  async get(id, bytes) {
     const file = Bun.file(join(dir, id));
-    return (await file.exists()) ? file : null;
+    if (!(await file.exists())) return null;
+    return bytes === undefined ? file : file.slice(0, bytes);
   },
   async delete(id) {
     rmSync(join(dir, id), { force: true });
