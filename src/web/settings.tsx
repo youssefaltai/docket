@@ -63,6 +63,7 @@ import {
   useTitle,
   useRun,
   type StatusLook,
+  navigate,
 } from "./ui";
 
 export function SettingsPage({ section: asked }: { section: "account" | "workspace" }) {
@@ -524,6 +525,30 @@ function WorkspaceName({ workspace }: { workspace: Workspace }) {
   );
 }
 
+/** Deleting a team or workspace for good: type its key to unlock the button. */
+function DeleteZone({ what, name, gone, remove }: { what: "team" | "workspace"; name: string; gone: string; remove: () => Promise<unknown> }) {
+  const [typed, setTyped] = useState("");
+  const { busy, run } = useRun();
+  return (
+    <Section title={`Delete ${what}`}>
+      <form
+        className="settings-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (typed.trim().toLowerCase() === name.toLowerCase()) run(remove);
+        }}
+      >
+        <Field label={`Type ${name} to confirm`} hint={`Deletes the ${what} and ${gone}, for good. There is no undo; back up first if unsure.`}>
+          <input className="input" value={typed} onChange={(e) => setTyped(e.target.value)} />
+        </Field>
+        <button className="btn btn-danger" disabled={busy || typed.trim().toLowerCase() !== name.toLowerCase()}>
+          Delete {what}
+        </button>
+      </form>
+    </Section>
+  );
+}
+
 function WorkspaceSettings({ workspace }: { workspace: Workspace }) {
   const { members, teams, loadDirectory } = useApp();
   const admin = workspace.role === "admin";
@@ -541,6 +566,12 @@ function WorkspaceSettings({ workspace }: { workspace: Workspace }) {
           <Agents workspace={workspace.key} agents={agents} reload={loadDirectory} />
           <Webhooks workspace={workspace.key} />
           <GitHub workspace={workspace.key} reload={loadDirectory} />
+          <DeleteZone
+            what="workspace"
+            name={workspace.key}
+            gone="everything in it: teams, issues, docs, projects, members’ access, agents and files"
+            remove={() => api.deleteWorkspace(workspace.key).then(() => location.assign("/"), errorToast)}
+          />
         </>
       )}
     </>
@@ -1301,7 +1332,7 @@ const CATEGORY_NAMES: Record<StatusCategory, string> = {
 
 /** A team's settings (`/t/:key/settings`): its description, and its workflow. */
 export function TeamSettingsPage({ teamKey }: { teamKey: string }) {
-  const { teams, workspace } = useApp();
+  const { teams, workspace, reloadTeams } = useApp();
   const team = teams?.find((t) => t.key === teamKey);
   // Guests set nothing up: they see who's in the team, and manage its own labels.
   const guest = workspace?.role === "guest";
@@ -1327,6 +1358,14 @@ export function TeamSettingsPage({ teamKey }: { teamKey: string }) {
                 </>
               )}
               <Labels team={team.key} />
+              {workspace?.role === "admin" && (
+                <DeleteZone
+                  what="team"
+                  name={team.key}
+                  gone="its issues, docs, cycles, workflow, templates and labels"
+                  remove={() => api.deleteTeam(team.key).then(() => (navigate("/"), reloadTeams()), errorToast)}
+                />
+              )}
             </div>
           )
         )}

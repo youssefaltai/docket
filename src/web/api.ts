@@ -158,12 +158,16 @@ export const api = {
   createWorkspace: (input: WorkspaceInput) => request<Workspace>("POST", "/api/workspaces", input),
   updateWorkspace: (key: string, patch: WorkspacePatch) =>
     request<Workspace>("PATCH", `/api/workspaces/${enc(key)}`, patch),
+  /** Deletes the workspace and everything in it for good; `confirm` is its key. */
+  deleteWorkspace: (key: string) => request<{ ok: true }>("DELETE", `/api/workspaces/${enc(key)}?confirm=${enc(key)}`),
   members: (workspace: string) => request<WorkspaceMember[]>("GET", `/api/workspaces/${enc(workspace)}/members`),
 
   teams: () => request<Team[]>("GET", "/api/teams"),
   createTeam: (input: TeamInput) => request<Team>("POST", "/api/teams", input),
   updateTeam: (key: string, patch: TeamPatch) =>
     request<Team>("PATCH", `/api/teams/${enc(key)}`, patch),
+  /** Deletes the team and everything in it for good; `confirm` is its key. */
+  deleteTeam: (key: string) => request<{ ok: true }>("DELETE", `/api/teams/${enc(key)}?confirm=${enc(key)}`),
   teamMembers: (key: string) => request<UserRef[]>("GET", `/api/teams/${enc(key)}/members`),
   /** `username` "me" joins it. */
   addTeamMember: (key: string, username: string) => request<Team>("POST", `/api/teams/${enc(key)}/members`, { username }),

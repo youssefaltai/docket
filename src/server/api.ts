@@ -7,6 +7,7 @@ import * as github from "./github.ts";
 import { originOf } from "./http.ts";
 import * as inbox from "./inbox.ts";
 import * as push from "./push.ts";
+import * as removal from "./removal.ts";
 import * as tracker from "./tracker.ts";
 import * as webhooks from "./webhooks.ts";
 
@@ -120,6 +121,7 @@ export const apiRoutes = {
     PATCH: handle<"/api/workspaces/:key">(async (req, a) =>
       access.updateWorkspace(a, req.params.key, await patch(req, "a workspace", ["name"], { key: "A workspace's key never changes" })),
     ),
+    DELETE: handle<"/api/workspaces/:key">((req, a) => removal.deleteWorkspace(a, req.params.key, param(req, "confirm"))),
   },
   "/api/workspaces/:key/profile": {
     PATCH: handle<"/api/workspaces/:key/profile">(async (req, a) => access.updateProfile(a, req.params.key, await patch(req, "your profile", ["name", "username"]))),
@@ -175,6 +177,7 @@ export const apiRoutes = {
     POST: handle(async (req, a) => tracker.createTeam(a, await body<TeamInput>(req)), 201),
   },
   "/api/teams/:key": {
+    DELETE: handle<"/api/teams/:key">((req, a) => removal.deleteTeam(a, req.params.key, param(req, "confirm"))),
     PATCH: handle<"/api/teams/:key">(async (req, a) =>
       tracker.updateTeam(a, req.params.key, await patch(req, "a team", TEAM_FIELDS, { workspace: "Teams can't move between workspaces", key: "A team's key never changes" })),
     ),

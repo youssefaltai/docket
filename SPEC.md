@@ -97,7 +97,7 @@ Team membership and privacy are managed from a browser session only (an API key 
 
 **Stale tabs**: tabs share one cookie, so the web app sends `X-Docket-User: <account id it shows>` (`Me.user.id`) with every request. If it's not the signed-in account (someone signed in as someone else in another tab), the request gets 401 `{ switched: true }` and the tab reloads as whoever is really signed in, instead of acting as them under the old name.
 
-**Workspaces can't be deleted.**
+**Deleting** a workspace or a team (`DELETE /api/workspaces/:key?confirm=<key>`, `DELETE /api/teams/:key?confirm=<key>`; settings, under a type-the-key box) is for good, with everything in it (a team: its issues, docs, cycles, workflow, templates, team labels, attachments; a workspace: all its teams, projects, labels, views, webhooks, GitHub, memberships, keys, agent accounts, files). Workspace admins only, browser session only (API keys and agents 403, no MCP tool); a wrong or missing `confirm` is 400. Sub-issues in other teams lose a deleted team's parent; people's accounts stay. It's one transaction: any row left pointing at a deleted one rolls it all back (500). Back up first.
 
 **Authors** are never sent by clients: every write is attributed to the signed-in user or agent (Docket's own changes to @docket, on their behalf). Only a comment's author can edit or delete it (403 otherwise, with no admin override).
 
@@ -126,6 +126,7 @@ Team membership and privacy are managed from a browser session only (an API key 
 | DELETE | /api/api-keys/:id | | revokes |
 | GET / POST | /api/workspaces | `WorkspaceInput` | yours, with your `role` (a key: only its own); 201, you're its admin (a session only). The key is the first segment of app URLs, so `api, doc, docs, icons, issue, login, mcp, settings, setup, t, ws` are reserved: 400 `Workspace key "docs" is reserved` when given, skipped when derived ("Docs" gets `docs-2`) |
 | PATCH | /api/workspaces/:key | `{ name }` | (admin) |
+| DELETE | /api/workspaces/:key | `?confirm=<key>` | `{ ok }` (admin, browser session; see Deleting) |
 | GET | /api/workspaces/:key/members | | `WorkspaceMember[]` (people, then agents; each with `teams`, the keys of their teams you see; a guest gets only those who share a team with them) |
 | PATCH | /api/workspaces/:key/members/:username | `{ role?, suspended? }` | (admin) `role`: `admin`, `member` or `guest` |
 | POST | /api/workspaces/:key/invites | `{ role?, teams? }` | (admin) 201 `CodeLink`; `teams`: team keys joined on redeeming (a guest's: at least one) |
@@ -195,6 +196,7 @@ Plus the Access routes above. Everything here acts in the request's workspace (s
 |---|---|---|---|
 | GET | /api/teams | | `Team[]`: the teams you see (see Teams and guests), each with `private` and `member` |
 | POST | /api/teams | `TeamInput` (created in the request's workspace; `workspace`, if given, must name it: 400 `Teams are created in the workspace you're in`; a key taken there is 409 `Team key BRD is taken in this workspace`) (`private: true` makes it private; its creator is its first member; guests: 403) | 201 `Team` |
+| DELETE | /api/teams/:key | `?confirm=<key>` | `{ ok }` (admin, browser session; see Deleting) |
 | PATCH | /api/teams/:key | `{ name?, description?, defaultStatus?, autoCloseParent?, autoCloseChildren?, autoArchiveDays?, estimateScale?, cycleWeeks?, upcomingCycles?, cycleStartsOn?, private? }` (`private`: admins, in a browser session, else 403; teams never change workspace: 400; `defaultStatus` a backlog or unstarted key, else 400; the auto-close switches booleans, else 400; `autoArchiveDays` a positive whole number of days, or `null` for never, else 400; `estimateScale` a scale or `null` (off), else 400; people only). `POST /api/teams` takes them too, but for `defaultStatus`. The cycle fields: `cycleWeeks` 1–8 or `null` (off), `upcomingCycles` 1–15, `cycleStartsOn` a date, today or later, only when turning cycles on (see Cycles); `Team` carries `cycleWeeks`, `upcomingCycles` and `currentCycle` (its number, or null) | `Team` |
 | GET | /api/teams/:key/members | | `UserRef[]`: its active members, people then agents (a browser session only; an admin may list a private team they aren't in) |
 | POST | /api/teams/:key/members | `{ username }` (`"me"` joins) | `Team` (a browser session only: 403 for keys; who: see Teams and guests) |
