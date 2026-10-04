@@ -40,6 +40,36 @@ test("MCP writes show up over REST", async () => {
   expect(body.docs.map((d: any) => d.slug)).toEqual(["plan"]);
 });
 
+test("agents triage in bulk, filter by priority, archive, restore and read doc history", async () => {
+  for (const n of [2, 3, 4]) await claude.tool("create_issue", { team: "MCP", title: `Bulk ${n}` });
+  const out = await claude.tool("bulk_update_issues", { ids: ["MCP-2", "MCP-3", "MCP-999"], patch: { priority: 1, addLabels: ["triaged"] } });
+  expect(out).toContain("Updated MCP-2");
+  expect(out).toContain("MCP-999 failed");
+  const urgent = await claude.tool("list_issues", { team: "MCP", priority: [1] });
+  expect(urgent).toContain("MCP-3");
+  expect(urgent).not.toContain("MCP-4");
+  expect((await s.api("GET", "/api/issues?team=MCP&priority=1")).body.map((i: any) => i.id).sort()).toEqual(["MCP-2", "MCP-3"]);
+  expect((await s.api("GET", "/api/issues?priority=9")).status).toBe(400);
+  await expect(claude.tool("bulk_update_issues", { ids: ["MCP-2"], patch: { delete: true } })).rejects.toThrow();
+
+  await claude.tool("archive_issue", { id: "MCP-4" });
+  expect(await claude.tool("list_issues", { team: "MCP" })).not.toContain("MCP-4");
+  await claude.tool("archive_issue", { id: "MCP-4", archived: false });
+  expect(await claude.tool("list_issues", { team: "MCP" })).toContain("MCP-4");
+
+  await s.api("DELETE", "/api/issues/MCP-4");
+  await claude.tool("restore", { issue: "MCP-4" });
+  expect(await claude.tool("list_issues", { team: "MCP" })).toContain("MCP-4");
+  await claude.tool("delete_document", { slug: "plan" });
+  await claude.tool("restore", { document: "plan" });
+  await expect(claude.tool("restore", {})).rejects.toThrow();
+
+  await claude.tool("update_document", { slug: "plan", title: "Plan v2" });
+  expect(await claude.tool("document_versions", { slug: "plan" })).toContain("Plan v2");
+  const first = (await s.api("GET", "/api/documents/plan/versions")).body.at(-1).id;
+  expect(await claude.tool("document_versions", { slug: "plan", version: first })).toContain("Do MCP-1 first.");
+});
+
 test("tool errors come back as errors", async () => {
   await expect(claude.tool("get_issue", { id: "MCP-999" })).rejects.toThrow();
 });
@@ -53,17 +83,17 @@ test("agents create and change teams", async () => {
 test("tools/list shows each caller only what it can use", async () => {
   const ana = await s.user("ana");
   const ro = s.with({ token: (await ana.api("POST", "/api/api-keys", { name: "ro", scope: "read" })).body.token });
-  const reads = ["get_attachment", "get_document", "get_issue", "get_project", "list_cycles", "list_documents", "list_issues", "list_labels", "list_members"];
+  const reads = ["document_versions", "get_attachment", "get_document", "get_issue", "get_project", "list_cycles", "list_documents", "list_issues", "list_labels", "list_members"];
   reads.push("list_notifications", "list_projects", "list_teams", "list_templates");
   const writes = ["attach_file", "claim_issue", "comment_document", "comment_issue", "create_document", "create_issue", "create_milestone", "create_project"];
-  writes.push("delete_comment", "delete_document", "mark_notifications_read", "react", "resolve_thread", "subscribe", "update_comment", "update_document", "update_issue", "update_milestone", "update_project");
+  writes.push("archive_issue", "bulk_update_issues", "restore", "delete_comment", "delete_document", "mark_notifications_read", "react", "resolve_thread", "subscribe", "update_comment", "update_document", "update_issue", "update_milestone", "update_project");
   const agent = [...reads, ...writes, "create_team", "update_team"].sort();
   const member = agent;
   expect(await ro.tools()).toEqual(reads);
   expect(await claude.tools()).toEqual(agent);
   expect(await ana.tools()).toEqual(member);
   expect(await s.admin.tools()).toEqual([...member, "update_workspace"].sort());
-  expect([reads.length, agent.length, member.length]).toEqual([13, 34, 34]);
+  expect([reads.length, agent.length, member.length]).toEqual([14, 38, 38]);
 
   // A hidden tool can't be called either, and nothing changes.
   await expect(ro.tool("create_team", { key: "HID", name: "Hidden" })).rejects.toThrow(/not found/);
