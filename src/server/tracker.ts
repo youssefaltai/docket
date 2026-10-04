@@ -2227,20 +2227,50 @@ const TRASH_DAYS = 30;
 /** Deletes for good whatever has been in the trash for 30 days (cascading to comments, versions, refs). */
 function purgeTrash() {
   const cutoff = new Date(Date.now() - TRASH_DAYS * 24 * 60 * 60 * 1000).toISOString();
-  // Live sub-issues lose their parent when it's purged: bump and publish them, as any parent change does.
+  dropIssues(db.query<{ id: number }, [string]>("SELECT id FROM issues WHERE deleted_at IS NOT NULL AND deleted_at < ?").all(cutoff).map((r) => r.id));
+  db.query("DELETE FROM documents WHERE deleted_at IS NOT NULL AND deleted_at < ?").run(cutoff);
+}
+
+/** Deletes issues for good. Their live sub-issues lose the parent: bump and publish them, as any parent change does. */
+function dropIssues(ids: number[]) {
+  if (!ids.length) return;
+  const marks = ids.map(() => "?").join(",");
   const orphans = db.transaction(() => {
     const orphans = db
-      .query<{ id: number; workspace: string }, [string]>(
-        `SELECT c.id, t.workspace FROM issues c JOIN teams t ON t.id = c.team_id
-         WHERE c.deleted_at IS NULL AND c.parent_id IN (SELECT id FROM issues WHERE deleted_at IS NOT NULL AND deleted_at < ?)`,
+      .query<{ id: number; workspace: string }, number[]>(
+        `SELECT c.id, t.workspace FROM issues c JOIN teams t ON t.id = c.team_id WHERE c.deleted_at IS NULL AND c.parent_id IN (${marks})`,
       )
-      .all(cutoff);
-    db.query("DELETE FROM issues WHERE deleted_at IS NOT NULL AND deleted_at < ?").run(cutoff);
-    db.query("DELETE FROM documents WHERE deleted_at IS NOT NULL AND deleted_at < ?").run(cutoff);
+      .all(...ids);
+    db.query(`DELETE FROM issues WHERE id IN (${marks})`).run(...ids);
     const refs = bumpIssues(orphans.map((o) => o.id), now());
     return orphans.map((o, i) => ({ workspace: o.workspace, ref: refs[i]! }));
   })();
   for (const { workspace, ref } of orphans) changed("issue", workspace, ref);
+}
+
+/** A person's own hand: a browser session (an API key, so an agent, never), not a guest, on something already in the trash (409). */
+function requireManualPurge(a: Actor, deletedAt: string | null, what: string) {
+  if (a.kind !== "person" || a.sessionId === null) throw new AppError("Delete forever from the web app: API keys and agents can't", 403);
+  notGuest(a, "delete forever");
+  if (!deletedAt) throw new AppError(`${what} isn't in the trash; delete it first`, 409);
+}
+
+/** Deletes a trashed issue for good, with its comments, history and links; it can't be restored. */
+export function purgeIssue(a: Actor, identifier: string): { ok: true } {
+  const issue = issueRef(a, identifier);
+  requireManualPurge(a, issue.deleted_at, issue.ref);
+  dropIssues([issue.id]); // its relations and doc refs were already hidden by the trash
+  changed("issue", issue.workspace, issue.ref);
+  return { ok: true };
+}
+
+/** Deletes a trashed doc for good, with its versions and comments; it can't be restored. */
+export function purgeDocument(a: Actor, slug: string): { ok: true } {
+  const row = documentRow(a, slug);
+  requireManualPurge(a, row.deleted_at, `Document ${row.slug}`);
+  db.query("DELETE FROM documents WHERE id = ?").run(row.id);
+  changed("document", row.workspace, row.slug);
+  return { ok: true };
 }
 
 /** A team's trash, newest first. */

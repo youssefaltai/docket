@@ -82,7 +82,7 @@ import {
   TrashBanner,
   useTitle,
 } from "./ui";
-import { deleteToTrash } from "./trashActions";
+import { deleteToTrash, purgeForever } from "./trashActions";
 
 export function IssuePage({ id }: { id: string }) {
   const app = useApp();
@@ -280,7 +280,11 @@ export function IssuePage({ id }: { id: string }) {
         <div className="issue-main">
           <div className="issue-inner">
             {issue.deletedAt ? (
-              <TrashBanner deletedAt={issue.deletedAt} onRestore={() => withFresh(() => api.restoreIssue(issue.id))} />
+              <TrashBanner
+                deletedAt={issue.deletedAt}
+                onRestore={() => withFresh(() => api.restoreIssue(issue.id))}
+                onPurge={() => purgeForever(() => api.purgeIssue(issue.id), issue.id, () => navigate(`/t/${issue.team}/trash`))}
+              />
             ) : (
               issue.archivedAt && (
                 <ArchivedBanner archivedAt={issue.archivedAt} onUnarchive={() => withFresh(() => api.unarchiveIssue(issue.id))} />

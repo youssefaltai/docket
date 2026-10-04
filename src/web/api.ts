@@ -184,6 +184,8 @@ export const api = {
   claimIssue: (id: string) => inOrder(id, () => request<Issue>("POST", `/api/issues/${enc(id)}/claim`, {})),
   /** Moves it to the trash; `restoreIssue` brings it back (for 30 days). */
   deleteIssue: (id: string) => request<Issue>("DELETE", `/api/issues/${enc(id)}`),
+  /** Deletes a trashed issue for good (a browser session only). */
+  purgeIssue: (id: string) => request<{ ok: true }>("POST", `/api/issues/${enc(id)}/purge`),
   restoreIssue: (id: string) => request<Issue>("POST", `/api/issues/${enc(id)}/restore`),
   /** Hides it from default lists (still searchable and openable); `unarchiveIssue` brings it back. */
   archiveIssue: (id: string) => request<Issue>("POST", `/api/issues/${enc(id)}/archive`),
@@ -234,6 +236,7 @@ export const api = {
   updateDocument: (slug: string, patch: DocumentPatch) =>
     request<Document>("PATCH", `/api/documents/${enc(slug)}`, patch),
   deleteDocument: (slug: string) => request<Document>("DELETE", `/api/documents/${enc(slug)}`),
+  purgeDocument: (slug: string) => request<{ ok: true }>("POST", `/api/documents/${enc(slug)}/purge`),
   restoreDocument: (slug: string) => request<Document>("POST", `/api/documents/${enc(slug)}/restore`),
   trash: (team: string) => request<Trash>("GET", `/api/teams/${enc(team)}/trash`),
   cycles: (team: string) => request<Cycle[]>("GET", `/api/teams/${enc(team)}/cycles`),

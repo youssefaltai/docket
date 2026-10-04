@@ -230,6 +230,9 @@ export const apiRoutes = {
     PATCH: handle<"/api/issues/:id">(async (req, a) => tracker.updateIssue(a, req.params.id, await patch(req, "an issue", ISSUE_FIELDS))),
     DELETE: handle<"/api/issues/:id">((req, a) => tracker.deleteIssue(a, req.params.id)),
   },
+  "/api/issues/:id/purge": {
+    POST: handle<"/api/issues/:id/purge">((req, a) => tracker.purgeIssue(a, req.params.id)),
+  },
   "/api/issues/:id/restore": {
     POST: handle<"/api/issues/:id/restore">((req, a) => tracker.restoreIssue(a, req.params.id)),
   },
@@ -364,6 +367,9 @@ export const apiRoutes = {
       tracker.updateDocument(a, req.params.slug, await patch(req, "a document", DOCUMENT_FIELDS, { slug: "A document's slug never changes" })),
     ),
     DELETE: handle<"/api/documents/:slug">((req, a) => tracker.deleteDocument(a, req.params.slug)),
+  },
+  "/api/documents/:slug/purge": {
+    POST: handle<"/api/documents/:slug/purge">((req, a) => tracker.purgeDocument(a, req.params.slug)),
   },
   "/api/documents/:slug/restore": {
     POST: handle<"/api/documents/:slug/restore">((req, a) => tracker.restoreDocument(a, req.params.slug)),

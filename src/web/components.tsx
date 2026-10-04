@@ -446,7 +446,7 @@ export function ListHeader({
 }
 
 /** Atop a trashed issue or doc opened by URL: it can be read and restored, nothing else. */
-export function TrashBanner({ deletedAt, onRestore }: { deletedAt: string; onRestore: () => Promise<unknown> }) {
+export function TrashBanner({ deletedAt, onRestore, onPurge }: { deletedAt: string; onRestore: () => Promise<unknown>; onPurge: () => void }) {
   const { busy, run } = useRun();
   return (
     <div className="doc-banner doc-banner-warn" role="status">
@@ -455,6 +455,9 @@ export function TrashBanner({ deletedAt, onRestore }: { deletedAt: string; onRes
         In the trash since <time title={fullDate(deletedAt)}>{ago(deletedAt)}</time>. Restore it to make changes.
       </span>
       <span className="grow" />
+      <button className="btn btn-sm" disabled={busy} onClick={onPurge}>
+        Delete forever
+      </button>
       <button className="btn btn-primary btn-sm" disabled={busy} onClick={() => run(onRestore)}>
         Restore
       </button>
