@@ -46,7 +46,6 @@ test("both settings are off by default and switch per team, people only", async 
 
   const bad = await s.api("PATCH", "/api/teams/OFF", { autoCloseParent: "yes" });
   expect([bad.status, bad.body.error]).toEqual([400, "autoCloseParent must be true or false"]);
-  expect((await s.as("claude").api("PATCH", "/api/teams/OFF", { autoCloseParent: true })).status).toBe(403);
 
   // MCP update_team sets them too; a new team can start with them on.
   await s.tool("update_team", { key: "OFF", autoCloseChildren: true });

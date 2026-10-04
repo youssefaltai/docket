@@ -57,7 +57,6 @@ test("turning cycles on makes the current cycle and the upcoming ones; bad setti
   for (const upcomingCycles of [0, 16, 2.5]) await refused(s.api("PATCH", "/api/teams/CYC", { upcomingCycles }), 400);
   await refused(s.api("PATCH", "/api/teams/CYC", { cycleWeeks: 2, cycleStartsOn: "2000-01-01" }), 400, "cycleStartsOn must be today or later");
   await refused(s.api("PATCH", "/api/teams/CYC", { cycleStartsOn: today().slice(0, 10) }), 400, "cycleStartsOn only applies when turning cycles on");
-  await refused(bot.api("PATCH", "/api/teams/CYC", { cycleWeeks: 2 }), 403);
   await refused(ana.api("PATCH", "/api/teams/SID", { cycleWeeks: 2 }), 404);
   await refused(s.api("GET", "/api/teams/SID/cycles"), 404);
   expect(await cycles("CYC")).toEqual([]); // nothing refused changed anything
@@ -273,7 +272,7 @@ test("MCP: list_cycles, list_teams and get_issue show cycles; list_issues and up
   expect(await bot.instructions()).toContain("A team may use cycles, repeating 1–8 week planning periods (list_cycles)");
 });
 
-test("MCP update_team turns cycles on and off with the same validation as REST; agents can't", async () => {
+test("MCP update_team turns cycles on and off with the same validation as REST", async () => {
   expect(await team("MCY")).toMatchObject({ cycleWeeks: null, currentCycle: null });
   const start = today();
   expect(await s.tool("update_team", { key: "MCY", cycleWeeks: 2, upcomingCycles: 3, cycleStartsOn: start.slice(0, 10) })).toContain("Updated team MCY");
@@ -291,8 +290,6 @@ test("MCP update_team turns cycles on and off with the same validation as REST; 
   expect(bad.isError).toBeTrue();
   bad = await s.admin.toolResult("update_team", { key: "MCY", cycleStartsOn: start.slice(0, 10) });
   expect(bad.isError).toBeTrue();
-  bad = await bot.toolResult("update_team", { key: "MCY", cycleWeeks: 3 });
-  expect(bad.isError).toBeTrue(); // agents can't change team settings
 
   // Off ends the current cycle now and drops the upcoming ones.
   expect(await s.tool("update_team", { key: "MCY", cycleWeeks: null })).toContain("Updated team MCY");

@@ -44,13 +44,10 @@ test("tool errors come back as errors", async () => {
   await expect(claude.tool("get_issue", { id: "MCP-999" })).rejects.toThrow();
 });
 
-test("agents can't create or change teams", async () => {
-  await expect(claude.tool("create_team", { key: "BOT", name: "Bot" })).rejects.toThrow();
-  expect((await claude.api("POST", "/api/teams", { key: "BOT", workspace: s.workspace, name: "Bot" })).status).toBe(403);
-  expect((await claude.api("PATCH", "/api/teams/MCP", { name: "x" })).status).toBe(403);
-  const teams = (await s.api("GET", "/api/teams")).body;
-  expect(teams.map((t: any) => t.key)).not.toContain("BOT");
-  expect(teams.find((t: any) => t.key === "MCP").name).toBe("Agents");
+test("agents create and change teams", async () => {
+  expect(await claude.tool("create_team", { key: "BOT", name: "Bot" })).toContain("Created team BOT");
+  expect((await claude.api("PATCH", "/api/teams/BOT", { name: "Bots" })).status).toBe(200);
+  expect((await s.api("GET", "/api/teams")).body.find((t: any) => t.key === "BOT").name).toBe("Bots");
 });
 
 test("tools/list shows each caller only what it can use", async () => {
@@ -60,16 +57,16 @@ test("tools/list shows each caller only what it can use", async () => {
   reads.push("list_notifications", "list_projects", "list_teams", "list_templates");
   const writes = ["attach_file", "claim_issue", "comment_document", "comment_issue", "create_document", "create_issue", "create_milestone", "create_project"];
   writes.push("delete_comment", "delete_document", "mark_notifications_read", "react", "resolve_thread", "subscribe", "update_comment", "update_document", "update_issue", "update_milestone", "update_project");
-  const agent = [...reads, ...writes].sort();
-  const member = [...agent, "create_team", "update_team"].sort();
+  const agent = [...reads, ...writes, "create_team", "update_team"].sort();
+  const member = agent;
   expect(await ro.tools()).toEqual(reads);
   expect(await claude.tools()).toEqual(agent);
   expect(await ana.tools()).toEqual(member);
   expect(await s.admin.tools()).toEqual([...member, "update_workspace"].sort());
-  expect([reads.length, agent.length, member.length]).toEqual([13, 32, 34]);
+  expect([reads.length, agent.length, member.length]).toEqual([13, 34, 34]);
 
   // A hidden tool can't be called either, and nothing changes.
-  await expect(claude.tool("create_team", { key: "HID", name: "Hidden" })).rejects.toThrow(/not found/);
+  await expect(ro.tool("create_team", { key: "HID", name: "Hidden" })).rejects.toThrow(/not found/);
   await expect(ro.tool("create_issue", { team: "MCP", title: "Read-only" })).rejects.toThrow(/not found/);
   await expect(ana.tool("update_workspace", { name: "Ana's" })).rejects.toThrow(/not found/);
   expect((await s.api("GET", "/api/teams")).body.map((t: any) => t.key)).not.toContain("HID");

@@ -508,8 +508,6 @@ export function listTeams(a: Actor): Team[] {
     .map(toTeam);
 }
 
-const NO_AGENT_TEAMS = "Agents can't create or change teams; ask a person";
-
 /**
  * Guests work in their teams like members but set nothing up (Linear's guests): no teams, team settings, workflows,
  * templates, workspace labels or membership changes (403). Called after the thing is found, so what they don't see is 404.
@@ -519,7 +517,6 @@ function notGuest(a: Actor, what: string) {
 }
 
 export function createTeam(a: Actor, input: TeamInput): Team {
-  requirePerson(a, NO_AGENT_TEAMS);
   notGuest(a, "create teams");
   const key = typeof input.key === "string" ? input.key.trim().toUpperCase() : "";
   if (!/^[A-Z]{2,5}$/.test(key)) throw new AppError("Team key must be 2–5 letters, e.g. BRD");
@@ -576,7 +573,6 @@ function checkAutoArchiveDays(value: unknown): number | null {
  * its cycles (see scheduleCycles). Teams never change workspace: their issues, people and links belong to it.
  */
 export function updateTeam(a: Actor, key: string, patch: TeamPatch): Team {
-  requirePerson(a, NO_AGENT_TEAMS);
   const row = teamRow(a, key);
   notGuest(a, "change a team's settings");
   syncCycles(row.id); // settings act on the cycles as they are now
