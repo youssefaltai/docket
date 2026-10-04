@@ -474,6 +474,7 @@ function createServer(a: Actor, origin: string): McpServer {
         team: teamKey.optional(),
         status: z.array(z.string()).optional().describe('Only these status keys, e.g. ["in_progress"] (list_teams shows each team\'s). Leave status and category out for active issues; "open" is not a status.'),
         category: z.array(z.enum(STATUS_CATEGORIES)).optional().describe("Only statuses in these categories, e.g. [\"triage\"] or [\"completed\", \"canceled\"]. Default (with no status either): backlog, unstarted, started"),
+        priority: z.array(priority).optional().describe("Only these priorities, e.g. [1, 2] for urgent and high (0 none, 1 urgent, 2 high, 3 medium, 4 low)"),
         label: z.string().optional(),
         assignee: assignee.optional(),
         delegate: delegate.optional(),
@@ -764,6 +765,81 @@ function createServer(a: Actor, origin: string): McpServer {
           return result(`${done} document ${document.slug}`, docMeta(document));
         },
       );
+    },
+  );
+
+  register(
+    "bulk_update_issues",
+    {
+      description: "Apply one change to up to 100 issues, each exactly as its own update_issue would (history, notifications). patch takes status, priority, estimate, assignee, delegate, project, labels (replaces), addLabels, removeLabels. Not atomic: the reply says per issue whether it changed or why not. Prefer it over many update_issue calls for triage.",
+      inputSchema: {
+        ids: z.array(identifier).min(1).max(100),
+        patch: z.object({
+          status: status.optional(),
+          priority: priority.optional(),
+          estimate: estimate.nullable().optional(),
+          assignee: assignee.nullable().optional(),
+          delegate: delegate.nullable().optional(),
+          project: projectSlug.nullable().optional(),
+          labels: labels.optional(),
+          addLabels: labels.optional(),
+          removeLabels: labels.optional(),
+        }).strict(),
+      },
+    },
+    ({ ids, patch }) => {
+      const results = tracker.bulkUpdateIssues(a, ids, patch);
+      const lines = results.map((r) => (r.issue ? `Updated ${r.issue.id}` : `${r.id} failed: ${r.error}`));
+      return result(lines.join("\n"), { results });
+    },
+  );
+
+  register(
+    "archive_issue",
+    {
+      description: "Archive an issue (hides it from default lists; list_issues archived: true shows it), or bring it back with archived: false. Use for finished work that's just clutter; it deletes nothing.",
+      inputSchema: { id: identifier, archived: z.boolean().optional().describe("Default true; false unarchives") },
+    },
+    ({ id, archived = true }) => {
+      const issue = archived ? tracker.archiveIssue(a, id) : tracker.unarchiveIssue(a, id);
+      return result(`${archived ? "Archived" : "Unarchived"} ${issue.id}`, { issue });
+    },
+  );
+
+  register(
+    "restore",
+    {
+      description: "Bring an issue or document back from the trash (to undo a delete or cancel-by-mistake; the trash keeps them 30 days). Pass exactly one of issue or document.",
+      inputSchema: { issue: identifier.optional(), document: slug.optional() },
+    },
+    (target) =>
+      commentOn(
+        target,
+        (id) => {
+          const issue = tracker.restoreIssue(a, id);
+          return result(`Restored ${issue.id}`, { issue });
+        },
+        (slug) => {
+          const document = tracker.restoreDocument(a, slug);
+          return result(`Restored document ${document.slug}`, docMeta(document));
+        },
+      ),
+  );
+
+  register(
+    "document_versions",
+    {
+      description: "A document's edit history. Without `version`: its versions, newest first (id · time · author · title). With one: that version's title and full markdown, to see what changed or to copy old content back with update_document.",
+      inputSchema: { slug, version: z.number().int().optional().describe("A version id from the list") },
+      annotations: { readOnlyHint: true },
+    },
+    ({ slug, version }) => {
+      if (version !== undefined) {
+        const v = tracker.getDocumentVersion(a, slug, version);
+        return result(`# ${v.title}\n\n${v.content}`, { version: v });
+      }
+      const versions = tracker.listDocumentVersions(a, slug);
+      return result(versions.map((v) => `${v.id} · ${ago(v.createdAt)} · ${at(v.author)} · ${v.title}`).join("\n") || "No versions.", { versions });
     },
   );
 

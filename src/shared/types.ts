@@ -543,6 +543,7 @@ export interface IssueFilter {
   team?: string;
   status?: string[]; // status keys; each must be one of some team's in scope
   category?: StatusCategory[];
+  priority?: Priority[]; // 0 none, 1 urgent … 4 low
   label?: string; // a label's name or path, or a group's name (any of its labels)
   assignee?: string; // username or "me"
   delegate?: string; // username or "me"

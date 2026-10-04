@@ -65,6 +65,7 @@ const issueFilter = (req: Request): IssueFilter => ({
   team: param(req, "team"),
   status: param(req, "status")?.split(","),
   category: param(req, "category")?.split(",") as IssueFilter["category"],
+  priority: param(req, "priority")?.split(",").map(Number) as IssueFilter["priority"],
   label: param(req, "label"),
   assignee: param(req, "assignee"),
   delegate: param(req, "delegate"),

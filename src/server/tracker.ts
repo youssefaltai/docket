@@ -1472,6 +1472,10 @@ function queryIssues(a: Actor, filter: IssueFilter, after?: Cursor, limit?: numb
     where.push(`ws.category IN (${inList(filter.category)})`);
     params.push(...filter.category.map((c) => checkOneOf(c, STATUS_CATEGORIES, "category")));
   }
+  if (filter.priority?.length) {
+    where.push(`i.priority IN (${inList(filter.priority)})`);
+    params.push(...filter.priority.map(checkPriority));
+  }
   if (filter.label) {
     // A label's name or path, or a group's name (any of its labels).
     where.push(
