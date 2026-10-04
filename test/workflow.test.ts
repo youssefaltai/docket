@@ -88,7 +88,6 @@ test("people add, rename, recolor and reorder statuses; keys never change; bad i
   expect((await bot.api("POST", "/api/teams/WF/statuses", { name: "Bot", category: "started" })).status).toBe(403);
   expect((await bot.api("PATCH", "/api/teams/WF/statuses/in_qa", { name: "Bot" })).status).toBe(403);
   expect((await bot.api("DELETE", "/api/teams/WF/statuses/in_qa")).status).toBe(403);
-  expect((await bot.api("PATCH", "/api/teams/WF", { defaultStatus: "todo" })).status).toBe(403);
   expect((await ana.api("POST", "/api/teams/SDE/statuses", { name: "Mine", category: "started" })).status).toBe(404);
   expect((await ana.api("PATCH", "/api/teams/SDE/statuses/todo", { name: "Mine" })).status).toBe(404);
   expect((await ana.api("DELETE", "/api/teams/SDE/statuses/todo")).status).toBe(404);

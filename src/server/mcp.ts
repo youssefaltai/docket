@@ -333,7 +333,6 @@ function createServer(a: Actor, origin: string): McpServer {
     server.registerTool(name, config, cb);
   };
   // Who sees a tool, besides the scope check in register.
-  const people = (a: Actor) => a.kind === "person";
   // A key acts in one workspace (MCP takes only keys), so that's where every tool works.
   const admins = (a: Actor) => a.workspaces.get(a.workspace ?? "") === "admin";
 
@@ -390,7 +389,7 @@ function createServer(a: Actor, origin: string): McpServer {
   register(
     "create_team",
     {
-      description: "Create a team in a workspace (people only). The key is 2–5 letters (uppercased), permanent, unique within this workspace, and prefixes every issue identifier: key BRD gives BRD-1, BRD-2… Check list_teams first; only create a team when asked to.",
+      description: "Create a team in a workspace. The key is 2–5 letters (uppercased), permanent, unique within this workspace, and prefixes every issue identifier: key BRD gives BRD-1, BRD-2… Check list_teams first; only create a team when asked to.",
       inputSchema: {
         key: z.string().describe('2–5 letters, e.g. "BRD"'),
         name: z.string(),
@@ -401,13 +400,12 @@ function createServer(a: Actor, origin: string): McpServer {
       const team = tracker.createTeam(a, input);
       return result(`Created team ${team.key} · ${team.name} in workspace ${team.workspace}`, { team });
     },
-    people,
   );
 
   register(
     "update_team",
     {
-      description: "Update a team's name, description, auto-close settings, auto-archive, estimate scale or cycles (people only); only the fields you pass change. Its key and workspace never change. Only do this when asked to.",
+      description: "Update a team's name, description, auto-close settings, auto-archive, estimate scale or cycles; only the fields you pass change. Its key and workspace never change. Only do this when asked to.",
       inputSchema: {
         key: teamKey,
         name: z.string().optional(),
@@ -425,7 +423,6 @@ function createServer(a: Actor, origin: string): McpServer {
       const team = tracker.updateTeam(a, key, patch);
       return result(`Updated team ${team.key} · ${team.name} in workspace ${team.workspace}`, { team });
     },
-    people,
   );
 
   register(
