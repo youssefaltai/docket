@@ -19,6 +19,7 @@ import {
   useFetch,
   useTitle,
 } from "./ui";
+import { purgeForever } from "./trashActions";
 
 export function TrashView({ teamKey }: { teamKey: string }) {
   const app = useApp();
@@ -55,6 +56,7 @@ export function TrashView({ teamKey }: { teamKey: string }) {
               href={`/issue/${i.id}`}
               deletedAt={i.deletedAt!}
               onRestore={() => restore(i.id, () => api.restoreIssue(i.id), `/issue/${i.id}`)}
+              onPurge={() => purgeForever(() => api.purgeIssue(i.id), i.id, reload)}
             />
           )}
         </Group>
@@ -67,6 +69,7 @@ export function TrashView({ teamKey }: { teamKey: string }) {
               href={`/doc/${d.slug}`}
               deletedAt={d.deletedAt!}
               onRestore={() => restore(`“${d.title}”`, () => api.restoreDocument(d.slug), `/doc/${d.slug}`)}
+              onPurge={() => purgeForever(() => api.purgeDocument(d.slug), `“${d.title}”`, reload)}
             />
           )}
         </Group>
@@ -96,7 +99,7 @@ function Group<T>({ title, items, children }: { title: string; items: T[]; child
   );
 }
 
-function TrashRow(props: { icon: ReactNode; id?: string; title: string; href: string; deletedAt: string; onRestore: () => void }) {
+function TrashRow(props: { icon: ReactNode; id?: string; title: string; href: string; deletedAt: string; onRestore: () => void; onPurge: () => void }) {
   return (
     <div className="row">
       {props.icon}
@@ -108,6 +111,9 @@ function TrashRow(props: { icon: ReactNode; id?: string; title: string; href: st
       <time className="row-meta" dateTime={props.deletedAt} title={fullDate(props.deletedAt)}>
         Deleted {ago(props.deletedAt)}
       </time>
+      <button className="btn btn-sm row-action" onClick={props.onPurge}>
+        Delete forever
+      </button>
       <button className="btn btn-sm row-action" onClick={props.onRestore}>
         Restore
       </button>

@@ -43,9 +43,10 @@ import {
   useFetch,
   useKeydown,
   TrashBanner,
+  navigate,
   useTitle,
 } from "./ui";
-import { deleteToTrash } from "./trashActions";
+import { deleteToTrash, purgeForever } from "./trashActions";
 
 // ---------- Docs list ----------
 
@@ -365,6 +366,7 @@ export function DocPage({ slug }: { slug: string }) {
                 <TrashBanner
                   deletedAt={doc.deletedAt}
                   onRestore={() => api.restoreDocument(doc.slug).then((fresh) => setDoc(fresh))}
+                  onPurge={() => purgeForever(() => api.purgeDocument(doc.slug), `“${doc.title}”`, () => navigate(`/t/${doc.team}/trash`))}
                 />
               )}
               {/* A trashed doc is read-only until restored: the fieldset disables every control in it. */}
