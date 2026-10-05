@@ -588,11 +588,9 @@ function WorkspaceSettings({ workspace }: { workspace: Workspace }) {
     <>
       {!managesWorkspace() && <p className="settings-note">Only admins manage the workspace.</p>}
       {can("workspace.rename") && <WorkspaceName key={workspace.name} workspace={workspace} />}
-      <Members workspace={workspace.key} members={people} roles={roles.data} reload={reload} />
+      <Members workspace={workspace.key} members={[...people, ...agents]} teams={teams ?? []} roles={roles.data} reload={reload} />
       {can("roles.manage") && roles.data && <Roles roles={roles.data} reload={reload} />}
       <Labels team={null} />
-      {can("members.invite") && roles.data && <Invite workspace={workspace.key} teams={teams ?? []} roles={roles.data} />}
-      {(can("agents.manage") || can("members.assign_role")) && <Agents workspace={workspace.key} agents={agents} roles={roles.data} reload={reload} />}
       {can("webhooks.manage") && <Webhooks workspace={workspace.key} />}
       {can("github.manage") && <GitHub workspace={workspace.key} reload={loadDirectory} />}
       {can("workspace.delete") && (
@@ -648,7 +646,9 @@ function MemberRole({ m, roles, reload }: { m: WorkspaceMember; roles: Workspace
   );
 }
 
-function Members({ workspace, members, roles, reload }: { workspace: string; members: WorkspaceMember[]; roles: WorkspaceRole[] | null; reload: () => void }) {
+function Members({ workspace, members, teams, roles, reload }: { workspace: string; members: WorkspaceMember[]; teams: Team[]; roles: WorkspaceRole[] | null; reload: () => void }) {
+  const [adding, setAdding] = useState<"invite" | "agent" | null>(null);
+  const { secret, show } = useSecret();
   const picker = can("members.assign_role") && roles;
   const update = (m: WorkspaceMember, patch: { suspended: boolean }) => auth.updateMember(workspace, m.user.username, patch).then(reload, errorToast);
   const suspend = async (m: WorkspaceMember) => {
@@ -656,29 +656,87 @@ function Members({ workspace, members, roles, reload }: { workspace: string; mem
       "They lose access to this workspace and its API keys stop working; if it's their only workspace, they're signed out everywhere. What they wrote stays theirs.";
     if (await ask(`Suspend ${m.user.name}? ${note}`, "Suspend")) update(m, { suspended: true });
   };
+  const showToken = (name: string, token: string) => {
+    const command = mcpCommand(token, workspace);
+    show({
+      lead: <>Connect <strong dir="auto">{name}</strong> with this command.</>,
+      value: command,
+      note: COMMAND_NOTE,
+      copies: [["command", command], ["token", token]],
+    });
+    reload();
+  };
+  const agentActions = (m: WorkspaceMember): [string, () => void][] => {
+    const { name, username } = m.user;
+    const newToken = async () => {
+      // A removed agent comes back with a new token, so there's no old one to warn about.
+      if (m.suspendedAt || (await ask(`Issue a new token for ${name}? The old token stops working.`, "New token")))
+        auth.rotateAgentToken(workspace, username).then(({ token }) => showToken(name, token), errorToast);
+    };
+    const remove = async () => {
+      if (await ask(`Remove ${name}? Its token stops working; what it wrote stays.`, "Remove")) auth.removeAgent(workspace, username).then(reload, errorToast);
+    };
+    return m.suspendedAt ? [["New token", newToken]] : [["New token", newToken], ["Remove", remove]];
+  };
+  const people = members.filter((m) => m.user.kind === "person");
+  const canInvite = can("members.invite") && !!roles;
+  const canAddAgent = can("agents.manage") && !!roles;
   return (
-    <Section title="Members" count={members.length}>
+    <Section
+      title="Members"
+      count={people.length}
+      action={
+        !adding && (canInvite || canAddAgent) && (
+          <>
+            {canInvite && <AddButton onClick={() => setAdding("invite")}>Invite person</AddButton>}
+            {canAddAgent && <AddButton onClick={() => setAdding("agent")}>Add agent</AddButton>}
+          </>
+        )
+      }
+    >
+      {secret}
+      {adding === "invite" && roles && <Invite workspace={workspace} teams={teams} roles={roles} show={show} onCancel={() => setAdding(null)} />}
+      {adding === "agent" && roles && (
+        <NewAgent
+          workspace={workspace}
+          roles={roles}
+          onCancel={() => setAdding(null)}
+          onCreated={(name, token) => {
+            setAdding(null);
+            showToken(name, token);
+          }}
+        />
+      )}
       <div className="settings-list">
-        {members.map((m) => (
-          <MemberRow
-            key={m.user.username}
-            m={m}
-            meta={meta(
-              m.email,
-              !picker && m.roleName,
-              !m.permissions.includes("workspace.browse") && (m.teams.join(", ") || "No teams"),
-              m.suspendedAt && "Suspended",
-            )}
-          >
-            {picker && <MemberRole m={m} roles={picker} reload={reload} />}
-            {can("members.suspend") && (
-              <RowMenu
-                label={`Manage ${m.user.name}`}
-                actions={[m.suspendedAt ? ["Reinstate", () => update(m, { suspended: false })] : ["Suspend", () => suspend(m)]]}
-              />
-            )}
-          </MemberRow>
-        ))}
+        {members.map((m) =>
+          m.integration ? (
+            <MemberRow key={m.user.username} m={m} meta={meta("GitHub integration", m.suspendedAt && "Disconnected")} />
+          ) : m.user.kind === "agent" ? (
+            <MemberRow key={m.user.username} m={m} meta={meta("Agent", !picker && m.roleName, m.suspendedAt ? "Removed" : `Added ${ago(m.joinedAt)}`)}>
+              {picker && !m.suspendedAt && <MemberRole m={m} roles={picker} reload={reload} />}
+              {can("agents.manage") && <RowMenu label={`Manage ${m.user.name}`} actions={agentActions(m)} />}
+            </MemberRow>
+          ) : (
+            <MemberRow
+              key={m.user.username}
+              m={m}
+              meta={meta(
+                m.email,
+                !picker && m.roleName,
+                !m.permissions.includes("workspace.browse") && (m.teams.join(", ") || "No teams"),
+                m.suspendedAt && "Suspended",
+              )}
+            >
+              {picker && <MemberRole m={m} roles={picker} reload={reload} />}
+              {can("members.suspend") && (
+                <RowMenu
+                  label={`Manage ${m.user.name}`}
+                  actions={[m.suspendedAt ? ["Reinstate", () => update(m, { suspended: false })] : ["Suspend", () => suspend(m)]]}
+                />
+              )}
+            </MemberRow>
+          ),
+        )}
       </div>
     </Section>
   );
@@ -899,10 +957,9 @@ function DeleteRole({ role, roles, onCancel, onDeleted }: { role: WorkspaceRole;
  * An invite is a one-time link you hand over yourself: whoever opens it joins (there's no email to check) with the role
  * picked. One whose role doesn't browse the workspace (a guest's) names the teams they'll see (at least one): Linear's guests.
  */
-function Invite({ workspace, teams, roles }: { workspace: string; teams: Team[]; roles: WorkspaceRole[] }) {
+function Invite({ workspace, teams, roles, show, onCancel }: { workspace: string; teams: Team[]; roles: WorkspaceRole[]; show: ReturnType<typeof useSecret>["show"]; onCancel: () => void }) {
   const [role, setRole] = useState(roles.find((r) => r.key === "member" && grantable(r))?.key ?? roles.find(grantable)?.key ?? "");
   const [picked, setPicked] = useState<string[]>([]);
-  const { secret, show } = useSecret();
   const { busy, run } = useRun();
   const chosen = roles.find((r) => r.key === role);
   const guest = !!chosen && !chosen.permissions.includes("workspace.browse");
@@ -911,15 +968,17 @@ function Invite({ workspace, teams, roles }: { workspace: string; teams: Team[];
     run(async () => {
       const link = await auth.invite(workspace, role, guest ? picked : undefined);
       const who = guest ? <>{chosen.name} in {picked.join(", ")}</> : <>a new {chosen?.name}</>;
+      onCancel();
       show(linkSecret(link, <>Invite link for {who}.</>, "Send it to one person. Whoever opens it joins; it works once and expires in 15 minutes."));
     });
   };
   return (
-    <Section title="Invite">
-      {secret}
-      <form className="settings-inline" onSubmit={submit}>
+    <form className="settings-form settings-card" onSubmit={submit}>
+      <Field label="Role">
         <RoleSelect label="Role" roles={roles} value={role} onChange={setRole} />
-        {guest && (
+      </Field>
+      {guest && (
+        <Field label="Teams">
           <Picker
             label="Teams"
             multi
@@ -930,76 +989,10 @@ function Invite({ workspace, teams, roles }: { workspace: string; teams: Team[];
           >
             {picked.length ? picked.join(", ") : "Pick teams"}
           </Picker>
-        )}
-        <button className="btn btn-primary" disabled={busy || !chosen || (guest && !picked.length)}>
-          Create invite link
-        </button>
-      </form>
-    </Section>
-  );
-}
-
-function Agents({ workspace, agents, roles, reload }: { workspace: string; agents: WorkspaceMember[]; roles: WorkspaceRole[] | null; reload: () => void }) {
-  const [adding, setAdding] = useState(false);
-  const { secret, show } = useSecret();
-  const manage = can("agents.manage");
-  const picker = can("members.assign_role") && roles;
-  const showToken = (name: string, token: string) => {
-    const command = mcpCommand(token, workspace);
-    show({
-      lead: <>Connect <strong dir="auto">{name}</strong> with this command.</>,
-      value: command,
-      note: COMMAND_NOTE,
-      copies: [["command", command], ["token", token]],
-    });
-    reload();
-  };
-  const actions = (m: WorkspaceMember): [string, () => void][] => {
-    const { name, username } = m.user;
-    const newToken = async () => {
-      // A removed agent comes back with a new token, so there's no old one to warn about.
-      if (m.suspendedAt || (await ask(`Issue a new token for ${name}? The old token stops working.`, "New token")))
-        auth.rotateAgentToken(workspace, username).then(({ token }) => showToken(name, token), errorToast);
-    };
-    const remove = async () => {
-      if (await ask(`Remove ${name}? Its token stops working; what it wrote stays.`, "Remove")) auth.removeAgent(workspace, username).then(reload, errorToast);
-    };
-    return m.suspendedAt ? [["New token", newToken]] : [["New token", newToken], ["Remove", remove]];
-  };
-  return (
-    <Section
-      title="Agents"
-      count={agents.length || undefined}
-      action={manage && !adding && roles && <AddButton onClick={() => setAdding(true)}>Add agent</AddButton>}
-    >
-      <p className="settings-hint">Agents connect over MCP with their own token, and everything they write carries their name.</p>
-      {secret}
-      {adding && roles && (
-        <NewAgent
-          workspace={workspace}
-          roles={roles}
-          onCancel={() => setAdding(false)}
-          onCreated={(name, token) => {
-            setAdding(false);
-            showToken(name, token);
-          }}
-        />
+        </Field>
       )}
-      {agents.length > 0 && (
-        <div className="settings-list">
-          {agents.map((m) =>
-            m.integration ? (
-              <MemberRow key={m.user.username} m={m} meta={meta("GitHub integration", m.suspendedAt && "Disconnected")} />
-            ) : (
-              <MemberRow key={m.user.username} m={m} meta={meta(!picker && m.roleName, m.suspendedAt ? "Removed" : `Added ${ago(m.joinedAt)}`)}>
-                {picker && !m.suspendedAt && <MemberRole m={m} roles={picker} reload={reload} />}
-                {manage && <RowMenu label={`Manage ${m.user.name}`} actions={actions(m)} />}
-              </MemberRow>
-            ),
-          )}
-        </div>
-      )}
-    </Section>
+      <FormButtons label="Create invite link" disabled={busy || !chosen || (guest && !picked.length)} onCancel={onCancel} />
+    </form>
   );
 }
 
