@@ -104,7 +104,7 @@ describe("connecting", () => {
     expect((await s.api("POST", "/api/workspaces/acme/agents/github/token")).status).toBe(400);
     expect((await s.api("DELETE", "/api/workspaces/acme/agents/github")).status).toBe(400);
     expect((await s.api("PATCH", "/api/workspaces/acme/members/github", { suspended: true })).status).toBe(400);
-    expect(await s.tool("list_members")).toContain("@github · GitHub · agent · integration");
+    expect(await s.tool("list_members")).toContain("@github · GitHub · Agent · integration");
   });
 });
 

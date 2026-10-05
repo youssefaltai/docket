@@ -88,7 +88,7 @@ test("the same agent username in two workspaces: separate agents, each acting on
     const me = (await agent.api("GET", "/api/me")).body;
     expect(me.user).toMatchObject({ username: "claude", name, kind: "agent" });
     expect(me.workspaces).toEqual([expect.objectContaining({ key, you: { username: "claude", name, kind: "agent" } })]);
-    expect(await agent.tool("list_members")).toContain(`@claude · ${name} · agent · you`);
+    expect(await agent.tool("list_members")).toContain(`@claude · ${name} · Agent · you`);
   }
   const acmeIssue = (await s.api("POST", "/api/issues", { team: "USR", title: "Acme work" })).body.id;
   const twinIssue = (await inWs("twin").api("POST", "/api/issues", { team: "TWN", title: "Twin work" })).body.id;
