@@ -62,3 +62,28 @@ export function pageHash(db: Store, table: string, offset: number, limit: number
   const { n } = db.query<{ n: number }, []>(`SELECT COUNT(*) AS n FROM "${table}"`).get()!;
   return { rows: n, sha256: sha256(page.map((row) => JSON.stringify(Object.values(row))).join("\n")) };
 }
+
+/**
+ * Up to 500 rows of a table as they are, about 256 KB at most, after `after`, and where to go on from. Pages by rowid;
+ * a WITHOUT ROWID table (role_permissions) pages by offset in the order of its values.
+ */
+export function rowsPage(db: Store, table: string, after: number): { rows: Record<string, unknown>[]; next: number } {
+  const rows: Record<string, unknown>[] = [];
+  let next = after;
+  let size = 0;
+  let page: Record<string, unknown>[];
+  let byRowid = true;
+  try {
+    page = db.query<Record<string, unknown>, [number]>(`SELECT rowid AS _rowid, * FROM "${table}" WHERE rowid > ? ORDER BY rowid LIMIT 500`).all(after);
+  } catch {
+    byRowid = false;
+    page = db.query<Record<string, unknown>, [number]>(`SELECT * FROM "${table}" ORDER BY ${columns(db, table).join(", ")} LIMIT 500 OFFSET ?`).all(after);
+  }
+  for (const { _rowid, ...row } of page) {
+    size += JSON.stringify(row).length;
+    if (rows.length && size > 256 * 1024) break;
+    rows.push(row);
+    next = byRowid ? (_rowid as number) : next + 1;
+  }
+  return { rows, next };
+}
