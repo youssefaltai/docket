@@ -4,6 +4,7 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type Reac
 import { createPortal } from "react-dom";
 import type { DocumentSummary, IssueSummary } from "../shared/types";
 import { api } from "./api";
+import { can, managesWorkspace } from "./auth";
 import {
   BoardIcon,
   ComposeIcon,
@@ -158,11 +159,12 @@ export function CommandMenu() {
       action("go-teams", "Go to Teams", <TeamsIcon />, go("/teams")),
       action("go-settings", "Go to Settings", <SettingsIcon />, go("/settings/account")),
     ];
-    // Guests see only their teams: no new teams, no workspace views.
-    const actions = app.workspace?.role === "guest" ? all.filter((a) => !["new-team", "new-view", "go-views"].includes(a.key)) : all;
+    // Without browsing the workspace (guests), no workspace views; without teams.create, no new teams.
+    const hidden = [...(can("workspace.browse") ? [] : ["new-view", "go-views"]), ...(can("teams.create") ? [] : ["new-team"])];
+    const actions = all.filter((a) => !hidden.includes(a.key));
     for (const t of app.teams ?? [])
       if (t.cycleWeeks) actions.push(action(`go-cycles-${t.key}`, `Go to Cycles: ${t.name}`, <CycleIcon />, go(`/t/${t.key}/cycles`)));
-    if (app.workspace?.role === "admin")
+    if (managesWorkspace())
       actions.push(action("go-workspace-settings", "Go to Workspace settings", <SettingsIcon />, go("/settings/workspace")));
     for (const w of app.workspaces ?? [])
       if (w.key !== app.workspace?.key)

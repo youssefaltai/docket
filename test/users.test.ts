@@ -24,7 +24,7 @@ test("/api/me says who you are and where you belong", async () => {
   const me = (await s.api("GET", "/api/me")).body;
   expect(me.user).toMatchObject({ username: "admin", name: "Admin", kind: "person", email: "admin@example.com" });
   expect(me.workspaces).toEqual([
-    { key: ws, name: "Acme", role: "admin", roleKey: "admin", roleName: "Admin", permissions: [...PERMISSIONS], you: { username: "admin", name: "Admin", kind: "person" } },
+    { key: ws, name: "Acme", role: "admin", roleKey: "admin", roleName: "Admin", permissions: [...PERMISSIONS], teams: {}, you: { username: "admin", name: "Admin", kind: "person" } },
   ]);
   expect((await s.as("bot").api("GET", "/api/me")).body.user).toMatchObject({ username: "bot", name: "Bot", kind: "agent" });
 });

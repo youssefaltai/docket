@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { GROUP_BYS, ORDER_BYS, type CustomView, type CustomViewPatch, type GroupBy, type OrderBy, type ViewDisplay, type ViewFilter } from "../shared/types";
 import { api } from "./api";
-import { getYou } from "./auth";
+import { can, getYou } from "./auth";
 import { useBulk } from "./bulk";
 import { Board, Filters, IssueList, LayoutToggle, LISTED, listPatch, useListShortcuts } from "./issues";
 import { Picker } from "./pickers";
@@ -163,7 +163,7 @@ function DisplayControls({ display, onChange, disabled }: { display: ViewDisplay
 export function CustomViewPage({ id }: { id: number }) {
   const app = useApp();
   const { data: view, setData: setView, missing, failed, reload } = useFetch(() => api.view(id), [id]);
-  const canEdit = !!view && (view.creator.username === getYou().username || app.workspace?.role === "admin");
+  const canEdit = !!view && (view.creator.username === getYou().username || can("views.manage_any"));
   // The search box starts as the view's search; for its editors, what's typed is saved once it settles.
   const [search, setSearch] = useState<string | null>(null);
   useEffect(() => void (view && search === null && setSearch(view.filter.q ?? "")), [view]);
@@ -190,7 +190,7 @@ export function CustomViewPage({ id }: { id: number }) {
   // of letting GET /api/issues 400 the whole view. A guest's own member list is narrowed to shared teams (DKT-27),
   // so it can't tell "renamed or left" from "exists, just not someone I share a team with": skip it for them,
   // same as before (a guest's own filter naming a workspace member outside their teams still runs, unchanged).
-  const isGuest = app.workspace?.role === "guest";
+  const isGuest = !can("workspace.browse");
   const unresolved = useMemo(() => {
     if (!view || isGuest || !app.members.length) return [];
     const known = new Set(app.members.map((m) => m.user.username.toLowerCase()));

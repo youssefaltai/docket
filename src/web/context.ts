@@ -1,6 +1,7 @@
 // The app-wide context: current workspace/teams/labels/members and the actions views trigger on the shell.
 import { createContext, useContext } from "react";
-import type { CustomView, CustomViewInput, Inbox, IssueInput, Label, Team, Workspace, WorkspaceMember } from "../shared/types";
+import type { CustomView, CustomViewInput, Inbox, IssueInput, Label, Permission, Team, Workspace, WorkspaceMember } from "../shared/types";
+import { can } from "./auth";
 
 export interface AppState {
   workspaces: Workspace[] | null;
@@ -44,8 +45,12 @@ export interface AppState {
 export const AppContext = createContext<AppState>(null!);
 export const useApp = () => useContext(AppContext);
 
-/** Whether a member sees a team (the server's rule): they're in it, or, unless a guest, it's public. */
-export const seesTeam = (m: WorkspaceMember, team: Team | undefined) => !team || m.teams.includes(team.key) || (!team.private && m.role !== "guest");
+/** Whether you may do `p` here (in `team`, by your role there): auth's can(), re-read whenever the app's state changes. */
+export const useCan = (p: Permission, team?: string | null) => (useApp(), can(p, team));
+
+/** Whether a member sees a team (the server's rule): they're in it, or it's public and their role browses the workspace. */
+export const seesTeam = (m: WorkspaceMember, team: Team | undefined) =>
+  !team || m.teams.includes(team.key) || (!team.private && m.permissions.includes("workspace.browse"));
 
 /**
  * The team of what's being written (an issue, its comments, a doc): editors upload files to it, so only those who see

@@ -68,6 +68,7 @@ import {
   type TeamPatch,
   type Trash,
   type UserKind,
+  type TeamMember,
   type UserRef,
   type ViewDisplay,
   type ViewFilter,
@@ -642,12 +643,13 @@ function membershipTeam(a: Actor, key: unknown): TeamRow & { visible: boolean } 
 }
 
 /** A team's active members, as UserRefs (people, then agents, by name). */
-export function listTeamMembers(a: Actor, key: string): UserRef[] {
+export function listTeamMembers(a: Actor, key: string): TeamMember[] {
   const team = membershipTeam(a, key);
   return db
-    .query<UserRef, [number]>(
-      `SELECT m.username, m.name, u.kind FROM team_members tm JOIN teams t ON t.id = tm.team_id
+    .query<TeamMember, [number]>(
+      `SELECT m.username, m.name, u.kind, own.key AS role, COALESCE(own.name, r.name) AS roleName FROM team_members tm JOIN teams t ON t.id = tm.team_id
        JOIN workspace_members m ON m.user_id = tm.user_id AND m.workspace = t.workspace AND m.suspended_at IS NULL JOIN users u ON u.id = tm.user_id
+       JOIN roles r ON r.id = m.role_id LEFT JOIN roles own ON own.id = tm.role_id
        WHERE tm.team_id = ? ORDER BY u.kind DESC, m.name COLLATE NOCASE`,
     )
     .all(team.id);

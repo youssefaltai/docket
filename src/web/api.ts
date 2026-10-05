@@ -40,6 +40,7 @@ import type {
   TeamPatch,
   ServerEvent,
   Trash,
+  TeamMember,
   UserRef,
   WorkflowStatusInput,
   WorkflowStatusPatch,
@@ -168,7 +169,7 @@ export const api = {
     request<Team>("PATCH", `/api/teams/${enc(key)}`, patch),
   /** Deletes the team and everything in it for good; `confirm` is its key. */
   deleteTeam: (key: string) => request<{ ok: true }>("DELETE", `/api/teams/${enc(key)}?confirm=${enc(key)}`),
-  teamMembers: (key: string) => request<UserRef[]>("GET", `/api/teams/${enc(key)}/members`),
+  teamMembers: (key: string) => request<TeamMember[]>("GET", `/api/teams/${enc(key)}/members`),
   /** `username` "me" joins it. */
   addTeamMember: (key: string, username: string) => request<Team>("POST", `/api/teams/${enc(key)}/members`, { username }),
   removeTeamMember: (key: string, username: string) => request<Team>("DELETE", `/api/teams/${enc(key)}/members/${enc(username)}`),

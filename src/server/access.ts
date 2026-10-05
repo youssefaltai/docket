@@ -224,6 +224,11 @@ export function me(a: Actor): Me {
       roleKey: w.role_key,
       roleName: w.role_name,
       permissions: held(a, w.key),
+      teams: Object.fromEntries(
+        [...a.teams]
+          .filter(([, t]) => t.workspace === w.key)
+          .map(([teamId]) => [db.query<{ key: string }, [number]>("SELECT key FROM teams WHERE id = ?").get(teamId)!.key, held(a, { workspace: w.key, teamId })]),
+      ),
       you: toRef({ ...w, name: w.member_name }),
     }));
   return { user: { ...toUser(a.id, activeWorkspace(a)), id: a.id }, workspaces, credential: a.sessionId !== null ? "session" : "key" };

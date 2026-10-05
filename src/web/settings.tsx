@@ -1,20 +1,26 @@
-// Settings: your account (profile, devices, API keys) and, for admins, the workspace (members, invites, agents, webhooks, GitHub).
+// Settings: your account (profile, devices, API keys) and the workspace (members, roles, invites, agents, webhooks, GitHub),
+// each part for those whose role lets them manage it.
 import { Fragment, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import {
   CATEGORY_COLORS,
   DUPLICATE_STATUS,
   ESTIMATE_SCALES,
+  BROWSER_ONLY,
   ESTIMATE_VALUES,
+  LEGACY_WRITE_KEY,
+  PERMISSIONS,
   PRIORITY_LABELS,
+  TEAM_PERMISSIONS,
   STATUS_CATEGORIES,
+  type ApiKey,
   type ApiKeyScope,
   type CodeLink,
   type EstimateScale,
   type IssueTemplate,
   type Label,
   type LabelPatch,
+  type Permission,
   type Priority,
-  type Role,
   type Session,
   type StatusCategory,
   type Team,
@@ -25,9 +31,10 @@ import {
   type WorkflowStatusPatch,
   type Workspace,
   type WorkspaceMember,
+  type WorkspaceRole,
 } from "../shared/types";
-import { api } from "./api";
-import { auth, getMe, getYou } from "./auth";
+import { api, getCurrentWorkspace } from "./api";
+import { auth, can, getMe, getYou, managesWorkspace } from "./auth";
 import { disablePush, enablePush, pushState, testPush, type PushState } from "./push";
 import { TeamMembers } from "./teams";
 import { LabelsPicker, Picker, PriorityPicker, RowMenu, StatusPicker, statusOptions } from "./pickers";
@@ -59,7 +66,9 @@ import {
   toast,
   useApp,
   useDebounced,
+  useCan,
   useFetch,
+  useLive,
   useTitle,
   useRun,
   type StatusLook,
@@ -68,8 +77,8 @@ import {
 
 export function SettingsPage({ section: asked }: { section: "account" | "workspace" }) {
   const { workspace } = useApp();
-  const guest = workspace?.role === "guest"; // a guest's settings are their account's alone
-  const section = guest ? "account" : asked;
+  const browse = useCan("workspace.browse"); // else (a guest) their settings are their account's alone
+  const section = browse ? asked : "account";
   useTitle("Settings");
   return (
     <>
@@ -82,7 +91,7 @@ export function SettingsPage({ section: asked }: { section: "account" | "workspa
           label="Settings"
           tabs={[
             ["/settings/account", "Account", section === "account"],
-            ...(guest ? [] : [["/settings/workspace", "Workspace", section === "workspace"] as [string, string, boolean]]),
+            ...(!browse ? [] : [["/settings/workspace", "Workspace", section === "workspace"] as [string, string, boolean]]),
           ]}
         />
       </header>
@@ -409,11 +418,23 @@ function Sessions() {
   );
 }
 
-const SCOPES: [ApiKeyScope, string][] = [
+type KeyAccess = ApiKeyScope | "custom";
+const ACCESS_CHOICES: [KeyAccess, string][] = [
   ["read", "Read"],
-  ["write", "Read & write"],
+  ["write", "Write"],
+  ["custom", "Custom"],
 ];
-const scopeLabel = (scope: ApiKeyScope) => SCOPES.find(([s]) => s === scope)![1];
+/** What a key may do, in short: read only, what write keys do (everything but managing access), or its own list. */
+const keyAccess = (k: ApiKey) =>
+  k.scope === "read"
+    ? "Read"
+    : k.permissions === null
+      ? "Everything your role allows"
+      : k.permissions.length === LEGACY_WRITE_KEY.length && LEGACY_WRITE_KEY.every((p) => k.permissions!.includes(p))
+        ? "Read & write"
+        : `Custom: ${k.permissions.length === 1 ? "1 permission" : `${k.permissions.length} permissions`}`;
+/** What a key can hold: nothing that's for the web app only. */
+const KEYABLE = PERMISSIONS.filter((p) => !BROWSER_ONLY.includes(p));
 
 /** This workspace's API keys: each acts only in the workspace it was made in. */
 function ApiKeys({ workspace }: { workspace: Workspace }) {
@@ -448,7 +469,7 @@ function ApiKeys({ workspace }: { workspace: Workspace }) {
             <Row
               key={k.id}
               title={<span dir="auto">{k.name}</span>}
-              meta={meta(scopeLabel(k.scope), `Created ${ago(k.createdAt)}`, k.lastUsedAt ? `Last used ${ago(k.lastUsedAt)}` : "Never used")}
+              meta={meta(keyAccess(k), `Created ${ago(k.createdAt)}`, k.lastUsedAt ? `Last used ${ago(k.lastUsedAt)}` : "Never used")}
             >
               <button className="btn btn-sm btn-ghost" onClick={() => revoke(k.id, k.name)}>
                 Revoke
@@ -463,11 +484,14 @@ function ApiKeys({ workspace }: { workspace: Workspace }) {
 
 function NewApiKey({ workspace, onCancel, onCreated }: { workspace: string; onCancel: () => void; onCreated: (token: string) => void }) {
   const [name, setName] = useState("");
-  const [scope, setScope] = useState<ApiKeyScope>("read");
+  const [access, setAccess] = useState<KeyAccess>("read");
+  const [permissions, setPermissions] = useState<Permission[]>([]);
   const { busy, run } = useRun();
+  const custom = access === "custom";
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    if (name.trim()) run(async () => onCreated((await auth.createApiKey(name.trim(), scope, workspace)).token));
+    if (name.trim())
+      run(async () => onCreated((await auth.createApiKey(name.trim(), custom ? "write" : access, workspace, custom ? permissions : undefined)).token));
   };
   return (
     <form className="settings-form settings-card" onSubmit={submit}>
@@ -476,8 +500,9 @@ function NewApiKey({ workspace, onCancel, onCreated }: { workspace: string; onCa
       </Field>
       <div className="field">
         <span>Access</span>
-        <Choice label="Access" value={scope} options={SCOPES} onChange={setScope} />
+        <Choice label="Access" value={access} options={ACCESS_CHOICES} onChange={setAccess} />
       </div>
+      {custom && <PermissionChecks value={permissions} onChange={setPermissions} list={KEYABLE} />}
       <FormButtons label="Create key" disabled={!name.trim() || busy} onCancel={onCancel} />
     </form>
   );
@@ -551,54 +576,85 @@ function DeleteZone({ what, name, gone, remove }: { what: "team" | "workspace"; 
 
 function WorkspaceSettings({ workspace }: { workspace: Workspace }) {
   const { members, teams, loadDirectory } = useApp();
-  const admin = workspace.role === "admin";
+  const live = useLive();
+  const roles = useFetch(() => auth.roles(), [workspace.key, live]);
+  const reload = () => {
+    loadDirectory();
+    roles.reload();
+  };
   const people = members.filter((m) => m.user.kind === "person");
   const agents = members.filter((m) => m.user.kind === "agent");
   return (
     <>
-      {!admin && <p className="settings-note">Only admins manage the workspace.</p>}
-      {admin && <WorkspaceName key={workspace.name} workspace={workspace} />}
-      <Members workspace={workspace.key} members={people} reload={loadDirectory} readOnly={!admin} />
+      {!managesWorkspace() && <p className="settings-note">Only admins manage the workspace.</p>}
+      {can("workspace.rename") && <WorkspaceName key={workspace.name} workspace={workspace} />}
+      <Members workspace={workspace.key} members={people} roles={roles.data} reload={reload} />
+      {can("roles.manage") && roles.data && <Roles roles={roles.data} reload={reload} />}
       <Labels team={null} />
-      {admin && (
-        <>
-          <Invite workspace={workspace.key} teams={teams ?? []} />
-          <Agents workspace={workspace.key} agents={agents} reload={loadDirectory} />
-          <Webhooks workspace={workspace.key} />
-          <GitHub workspace={workspace.key} reload={loadDirectory} />
-          <DeleteZone
-            what="workspace"
-            name={workspace.key}
-            gone="everything in it: teams, issues, docs, projects, members’ access, agents and files"
-            remove={() => api.deleteWorkspace(workspace.key).then(() => location.assign("/"), errorToast)}
-          />
-        </>
+      {can("members.invite") && roles.data && <Invite workspace={workspace.key} teams={teams ?? []} roles={roles.data} />}
+      {(can("agents.manage") || can("members.assign_role")) && <Agents workspace={workspace.key} agents={agents} roles={roles.data} reload={reload} />}
+      {can("webhooks.manage") && <Webhooks workspace={workspace.key} />}
+      {can("github.manage") && <GitHub workspace={workspace.key} reload={loadDirectory} />}
+      {can("workspace.delete") && (
+        <DeleteZone
+          what="workspace"
+          name={workspace.key}
+          gone="everything in it: teams, issues, docs, projects, members’ access, agents and files"
+          remove={() => api.deleteWorkspace(workspace.key).then(() => location.assign("/"), errorToast)}
+        />
       )}
     </>
   );
 }
 
-function Members({ workspace, members, reload, readOnly }: { workspace: string; members: WorkspaceMember[]; reload: () => void; readOnly: boolean }) {
-  const update = (m: WorkspaceMember, patch: { role?: Exclude<Role, "agent">; suspended?: boolean }) =>
-    auth.updateMember(workspace, m.user.username, patch).then(reload, errorToast);
-  const actions = (m: WorkspaceMember): [string, () => void][] => {
-    const { name } = m.user;
-    if (m.suspendedAt) return [["Reinstate", () => update(m, { suspended: false })]];
-    const suspend = async () => {
-      const note =
-        "They lose access to this workspace and its API keys stop working; if it's their only workspace, they're signed out everywhere. What they wrote stays theirs.";
-      if (await ask(`Suspend ${name}? ${note}`, "Suspend")) update(m, { suspended: true });
-    };
-    const guest = async () => {
+/** Whether you could give a role: you hold everything it does (in `team`, its team permissions). */
+const grantable = (r: WorkspaceRole) => r.permissions.every((p) => can(p));
+
+/** A role picker: roles you can't give are there but disabled. */
+function RoleSelect({ label, roles, value, onChange, disabled }: { label: string; roles: WorkspaceRole[]; value: string; onChange: (key: string) => void; disabled?: boolean }) {
+  return (
+    <select className="input settings-select" aria-label={label} value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)}>
+      {roles.map((r) => (
+        <option key={r.key} value={r.key} disabled={r.key !== value && !grantable(r)}>
+          {r.name}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+/**
+ * A member's role (members.assign_role), person or agent: not yours, not an integration's, nor one with more than you hold.
+ * Moving someone to a role that doesn't browse the workspace (a guest's) asks first.
+ */
+function MemberRole({ m, roles, reload }: { m: WorkspaceMember; roles: WorkspaceRole[]; reload: () => void }) {
+  const browses = m.permissions.includes("workspace.browse");
+  const pick = async (key: string) => {
+    const role = roles.find((r) => r.key === key)!;
+    if (browses && !role.permissions.includes("workspace.browse")) {
       const note = `They'll see only the teams they're in${m.teams.length ? ` (${m.teams.join(", ")})` : ": none yet"}, and nothing workspace-wide.`;
-      if (await ask(`Make ${name} a guest? ${note}`, "Make guest")) update(m, { role: "guest" });
-    };
-    const roles: [string, () => void][] = [
-      ["Make admin", () => update(m, { role: "admin" })],
-      ["Make member", () => update(m, { role: "member" })],
-      ["Make guest", guest],
-    ];
-    return [...roles.filter(([label]) => label !== `Make ${m.role}`), ["Suspend", suspend]];
+      if (!(await ask(`Make ${m.user.name} ${role.name}? ${note}`, `Make ${role.name}`))) return;
+    }
+    auth.updateMember(getCurrentWorkspace()!, m.user.username, { role: key }).then(reload, errorToast);
+  };
+  return (
+    <RoleSelect
+      label={`${m.user.name}'s role`}
+      roles={roles}
+      value={m.roleKey}
+      disabled={m.integration || m.user.username === getYou().username || !m.permissions.every((p) => can(p))}
+      onChange={pick}
+    />
+  );
+}
+
+function Members({ workspace, members, roles, reload }: { workspace: string; members: WorkspaceMember[]; roles: WorkspaceRole[] | null; reload: () => void }) {
+  const picker = can("members.assign_role") && roles;
+  const update = (m: WorkspaceMember, patch: { suspended: boolean }) => auth.updateMember(workspace, m.user.username, patch).then(reload, errorToast);
+  const suspend = async (m: WorkspaceMember) => {
+    const note =
+      "They lose access to this workspace and its API keys stop working; if it's their only workspace, they're signed out everywhere. What they wrote stays theirs.";
+    if (await ask(`Suspend ${m.user.name}? ${note}`, "Suspend")) update(m, { suspended: true });
   };
   return (
     <Section title="Members" count={members.length}>
@@ -607,9 +663,20 @@ function Members({ workspace, members, reload, readOnly }: { workspace: string; 
           <MemberRow
             key={m.user.username}
             m={m}
-            meta={meta(m.email, ROLE_NAMES[m.role], m.role === "guest" && (m.teams.join(", ") || "No teams"), m.suspendedAt && "Suspended")}
+            meta={meta(
+              m.email,
+              !picker && m.roleName,
+              !m.permissions.includes("workspace.browse") && (m.teams.join(", ") || "No teams"),
+              m.suspendedAt && "Suspended",
+            )}
           >
-            {!readOnly && <RowMenu label={`Manage ${m.user.name}`} actions={actions(m)} />}
+            {picker && <MemberRole m={m} roles={picker} reload={reload} />}
+            {can("members.suspend") && (
+              <RowMenu
+                label={`Manage ${m.user.name}`}
+                actions={[m.suspendedAt ? ["Reinstate", () => update(m, { suspended: false })] : ["Suspend", () => suspend(m)]]}
+              />
+            )}
           </MemberRow>
         ))}
       </div>
@@ -617,23 +684,233 @@ function Members({ workspace, members, reload, readOnly }: { workspace: string; 
   );
 }
 
-const ROLE_NAMES: Record<Role, string> = { admin: "Admin", member: "Member", guest: "Guest", agent: "Agent" };
+// ---------- Roles ----------
+
+const PERMISSION_LABELS: Record<Permission, string> = {
+  "workspace.browse": "See the workspace: its public teams, people and views",
+  "workspace.rename": "Rename the workspace",
+  "workspace.delete": "Delete the workspace",
+  "roles.manage": "Create and edit roles",
+  "members.assign_role": "Change members' roles",
+  "members.suspend": "Suspend members",
+  "members.invite": "Invite people",
+  "agents.manage": "Add agents and issue their tokens",
+  "webhooks.manage": "Manage webhooks",
+  "github.manage": "Connect GitHub",
+  "teams.create": "Create teams",
+  "teams.join": "Join public teams",
+  "teams.manage_any": "Manage any team, private ones too",
+  "team.members": "Add and remove a team's members",
+  "team.privacy": "Make a team private or public",
+  "team.roles": "Give roles in a team",
+  "team.settings": "Change a team's settings",
+  "team.workflow": "Change a team's workflow",
+  "team.templates": "Manage a team's templates",
+  "team.delete": "Delete a team",
+  "labels.create": "Create workspace labels from an issue",
+  "labels.workspace": "Manage workspace labels",
+  "labels.team": "Manage a team's labels",
+  "views.create": "Create views",
+  "views.manage_any": "Edit and delete anyone's views",
+  "issues.write": "Create and edit issues",
+  "comments.write": "Comment",
+  "docs.write": "Write docs",
+  "files.upload": "Upload files",
+  "projects.write": "Create and edit projects",
+  "inbox.manage": "Use their inbox",
+  "trash.purge": "Delete from the trash for good",
+};
+
+export const PERMISSION_GROUPS: [string, Permission[]][] = [
+  ["Workspace", ["workspace.browse", "workspace.rename", "workspace.delete"]],
+  ["Members and access", ["roles.manage", "members.assign_role", "members.suspend", "members.invite", "agents.manage", "webhooks.manage", "github.manage"]],
+  [
+    "Teams",
+    ["teams.create", "teams.join", "teams.manage_any", "team.members", "team.privacy", "team.roles", "team.settings", "team.workflow", "team.templates", "team.delete"],
+  ],
+  ["Labels and views", ["labels.create", "labels.workspace", "labels.team", "views.create", "views.manage_any"]],
+  ["Work", ["issues.write", "comments.write", "docs.write", "files.upload", "projects.write", "inbox.manage", "trash.purge"]],
+];
+
+/** Permissions as checkboxes by group (of `list`), tagged "per team" and "browser only"; those you don't hold are disabled. */
+function PermissionChecks({ value, onChange, list = PERMISSIONS, readOnly }: { value: Permission[]; onChange: (v: Permission[]) => void; list?: readonly Permission[]; readOnly?: boolean }) {
+  const toggle = (p: Permission) => onChange(value.includes(p) ? value.filter((x) => x !== p) : [...value, p]);
+  return PERMISSION_GROUPS.map(([title, ps]) => {
+    const shown = ps.filter((p) => list.includes(p));
+    return (
+      shown.length > 0 && (
+        <div key={title} className="field">
+          <span>{title}</span>
+          <div className="permission-checks">
+            {shown.map((p) => (
+              <label key={p}>
+                <input type="checkbox" checked={value.includes(p)} disabled={readOnly || !can(p)} onChange={() => toggle(p)} />
+                {PERMISSION_LABELS[p]}
+                {TEAM_PERMISSIONS.includes(p) && <span className="webhook-tag">per team</span>}
+                {BROWSER_ONLY.includes(p) && <span className="webhook-tag">browser only</span>}
+              </label>
+            ))}
+          </div>
+        </div>
+      )
+    );
+  });
+}
+
+type RoleDraft = Pick<WorkspaceRole, "name" | "description" | "permissions">;
 
 /**
- * An invite is a one-time link you hand over yourself: whoever opens it joins (there's no email to check). A guest's
- * names the teams they'll see (at least one): Linear's guests see only those.
+ * The workspace's roles (roles.manage): what each lets its members do, with how many hold it. You change a role only if you
+ * hold everything it does and don't hold it yourself; Admin never changes: duplicate it. Deleting one moves its members on.
  */
-function Invite({ workspace, teams }: { workspace: string; teams: Team[] }) {
-  const [role, setRole] = useState<Exclude<Role, "agent">>("member");
+function Roles({ roles, reload }: { roles: WorkspaceRole[]; reload: () => void }) {
+  const [editing, setEditing] = useState<{ role: WorkspaceRole | null; from: RoleDraft; readOnly: boolean } | null>(null);
+  const [deleting, setDeleting] = useState<WorkspaceRole | null>(null);
+  const yours = getMe().workspaces.find((w) => w.key === getCurrentWorkspace())?.roleKey;
+  const editable = (r: WorkspaceRole) => r.builtin !== "admin" && r.key !== yours && grantable(r);
+  const duplicate = (r: RoleDraft) => setEditing({ role: null, from: { ...r, name: `${r.name} copy`, permissions: r.permissions.filter((p) => can(p)) }, readOnly: false });
+  const open = (r: WorkspaceRole) => setEditing({ role: r, from: r, readOnly: !editable(r) });
+  const done = () => {
+    setEditing(null);
+    setDeleting(null);
+    reload();
+  };
+  return (
+    <Section
+      title="Roles"
+      count={roles.length}
+      action={!editing && <AddButton onClick={() => setEditing({ role: null, from: { name: "", description: "", permissions: [] }, readOnly: false })}>New role</AddButton>}
+    >
+      <p className="settings-hint">A role is what its members may do. Give someone a role of their own in a team from the team's settings.</p>
+      {editing && <RoleForm key={`${editing.role?.key}:${editing.from.name}`} {...editing} onCancel={() => setEditing(null)} onSaved={done} onDuplicate={duplicate} />}
+      {deleting && <DeleteRole role={deleting} roles={roles} onCancel={() => setDeleting(null)} onDeleted={done} />}
+      <div className="settings-list">
+        {roles.map((r) => (
+          <Row
+            key={r.key}
+            title={
+              <>
+                <span dir="auto">{r.name}</span> {r.builtin && <span className="webhook-tag">Built-in</span>}
+              </>
+            }
+            meta={meta(r.description, r.members === 1 ? "1 member" : `${r.members} members`, `${r.permissions.length} of ${PERMISSIONS.length} permissions`)}
+          >
+            <RowMenu
+              label={`Manage ${r.name}`}
+              actions={[
+                [editable(r) ? "Edit" : "View", () => open(r)],
+                ["Duplicate", () => duplicate(r)],
+                ...(!r.builtin && editable(r) ? [["Delete", () => setDeleting(r)] as [string, () => void]] : []),
+              ]}
+            />
+          </Row>
+        ))}
+      </div>
+    </Section>
+  );
+}
+
+function RoleForm({
+  role,
+  from,
+  readOnly,
+  onCancel,
+  onSaved,
+  onDuplicate,
+}: {
+  role: WorkspaceRole | null;
+  from: RoleDraft;
+  readOnly: boolean;
+  onCancel: () => void;
+  onSaved: () => void;
+  onDuplicate: (r: RoleDraft) => void;
+}) {
+  const [name, setName] = useState(from.name);
+  const [description, setDescription] = useState(from.description);
+  const [permissions, setPermissions] = useState(from.permissions);
+  const [error, setError] = useState("");
+  const { busy, run } = useRun();
+  const ready = !readOnly && !!name.trim() && !busy;
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    if (!ready) return;
+    const input = { name: name.trim(), description: description.trim(), permissions };
+    run(
+      async () => {
+        await (role ? auth.updateRole(role.key, input) : auth.createRole(input));
+        onSaved();
+      },
+      (e) => setError(errorText(e)),
+    );
+  };
+  return (
+    <form className="settings-form settings-card" onSubmit={submit}>
+      <Field label="Name">
+        <input className="input" autoFocus={!readOnly} dir="auto" placeholder="Contractor" readOnly={readOnly} value={name} onChange={(e) => setName(e.target.value)} />
+      </Field>
+      <Field label="Description">
+        <input className="input" dir="auto" readOnly={readOnly} value={description} onChange={(e) => setDescription(e.target.value)} />
+      </Field>
+      <PermissionChecks value={permissions} onChange={setPermissions} readOnly={readOnly} />
+      <FormError error={error} />
+      {readOnly ? (
+        <div className="settings-buttons">
+          <button type="button" className="btn" onClick={() => onDuplicate(from)}>
+            Duplicate
+          </button>
+          <button type="button" className="btn btn-primary" onClick={onCancel}>
+            Done
+          </button>
+        </div>
+      ) : (
+        <FormButtons label={role ? "Save" : "Create role"} disabled={!ready} onCancel={onCancel} />
+      )}
+    </form>
+  );
+}
+
+/** Deleting a role: whoever holds it, in the workspace or a team, and its unused invites move to another you could give. */
+function DeleteRole({ role, roles, onCancel, onDeleted }: { role: WorkspaceRole; roles: WorkspaceRole[]; onCancel: () => void; onDeleted: () => void }) {
+  const others = roles.filter((r) => r.key !== role.key);
+  const [moveTo, setMoveTo] = useState(others.find((r) => r.key === "member" && grantable(r))?.key ?? others.find(grantable)?.key ?? "");
+  const { busy, run } = useRun();
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    if (moveTo) run(() => auth.deleteRole(role.key, moveTo).then(onDeleted));
+  };
+  return (
+    <form className="settings-form settings-card" onSubmit={submit}>
+      <Field label={`Delete ${role.name}`} hint={`${role.members ? `${role.members === 1 ? "Its 1 member" : `Its ${role.members} members`} and its` : "Its"} unused invites move to this role.`}>
+        <RoleSelect label="Move to" roles={others} value={moveTo} onChange={setMoveTo} />
+      </Field>
+      <div className="settings-buttons">
+        <button type="button" className="btn" onClick={onCancel}>
+          Cancel
+        </button>
+        <button className="btn btn-danger" disabled={!moveTo || busy}>
+          Delete role
+        </button>
+      </div>
+    </form>
+  );
+}
+
+/**
+ * An invite is a one-time link you hand over yourself: whoever opens it joins (there's no email to check) with the role
+ * picked. One whose role doesn't browse the workspace (a guest's) names the teams they'll see (at least one): Linear's guests.
+ */
+function Invite({ workspace, teams, roles }: { workspace: string; teams: Team[]; roles: WorkspaceRole[] }) {
+  const [role, setRole] = useState(roles.find((r) => r.key === "member" && grantable(r))?.key ?? roles.find(grantable)?.key ?? "");
   const [picked, setPicked] = useState<string[]>([]);
   const { secret, show } = useSecret();
   const { busy, run } = useRun();
-  const guest = role === "guest";
+  const chosen = roles.find((r) => r.key === role);
+  const guest = !!chosen && !chosen.permissions.includes("workspace.browse");
   const submit = (e: FormEvent) => {
     e.preventDefault();
     run(async () => {
       const link = await auth.invite(workspace, role, guest ? picked : undefined);
-      const who = guest ? <>a guest in {picked.join(", ")}</> : <>a new {role}</>;
+      const who = guest ? <>{chosen.name} in {picked.join(", ")}</> : <>a new {chosen?.name}</>;
       show(linkSecret(link, <>Invite link for {who}.</>, "Send it to one person. Whoever opens it joins; it works once and expires in 15 minutes."));
     });
   };
@@ -641,16 +918,7 @@ function Invite({ workspace, teams }: { workspace: string; teams: Team[] }) {
     <Section title="Invite">
       {secret}
       <form className="settings-inline" onSubmit={submit}>
-        <Choice
-          label="Role"
-          value={role}
-          options={[
-            ["member", "Member"],
-            ["admin", "Admin"],
-            ["guest", "Guest"],
-          ]}
-          onChange={setRole}
-        />
+        <RoleSelect label="Role" roles={roles} value={role} onChange={setRole} />
         {guest && (
           <Picker
             label="Teams"
@@ -663,7 +931,7 @@ function Invite({ workspace, teams }: { workspace: string; teams: Team[] }) {
             {picked.length ? picked.join(", ") : "Pick teams"}
           </Picker>
         )}
-        <button className="btn btn-primary" disabled={busy || (guest && !picked.length)}>
+        <button className="btn btn-primary" disabled={busy || !chosen || (guest && !picked.length)}>
           Create invite link
         </button>
       </form>
@@ -671,9 +939,11 @@ function Invite({ workspace, teams }: { workspace: string; teams: Team[] }) {
   );
 }
 
-function Agents({ workspace, agents, reload }: { workspace: string; agents: WorkspaceMember[]; reload: () => void }) {
+function Agents({ workspace, agents, roles, reload }: { workspace: string; agents: WorkspaceMember[]; roles: WorkspaceRole[] | null; reload: () => void }) {
   const [adding, setAdding] = useState(false);
   const { secret, show } = useSecret();
+  const manage = can("agents.manage");
+  const picker = can("members.assign_role") && roles;
   const showToken = (name: string, token: string) => {
     const command = mcpCommand(token, workspace);
     show({
@@ -700,13 +970,14 @@ function Agents({ workspace, agents, reload }: { workspace: string; agents: Work
     <Section
       title="Agents"
       count={agents.length || undefined}
-      action={!adding && <AddButton onClick={() => setAdding(true)}>Add agent</AddButton>}
+      action={manage && !adding && roles && <AddButton onClick={() => setAdding(true)}>Add agent</AddButton>}
     >
       <p className="settings-hint">Agents connect over MCP with their own token, and everything they write carries their name.</p>
       {secret}
-      {adding && (
+      {adding && roles && (
         <NewAgent
           workspace={workspace}
+          roles={roles}
           onCancel={() => setAdding(false)}
           onCreated={(name, token) => {
             setAdding(false);
@@ -720,8 +991,9 @@ function Agents({ workspace, agents, reload }: { workspace: string; agents: Work
             m.integration ? (
               <MemberRow key={m.user.username} m={m} meta={meta("GitHub integration", m.suspendedAt && "Disconnected")} />
             ) : (
-              <MemberRow key={m.user.username} m={m} meta={meta(m.suspendedAt ? "Removed" : `Added ${ago(m.joinedAt)}`)}>
-                <RowMenu label={`Manage ${m.user.name}`} actions={actions(m)} />
+              <MemberRow key={m.user.username} m={m} meta={meta(!picker && m.roleName, m.suspendedAt ? "Removed" : `Added ${ago(m.joinedAt)}`)}>
+                {picker && !m.suspendedAt && <MemberRole m={m} roles={picker} reload={reload} />}
+                {manage && <RowMenu label={`Manage ${m.user.name}`} actions={actions(m)} />}
               </MemberRow>
             ),
           )}
@@ -731,16 +1003,27 @@ function Agents({ workspace, agents, reload }: { workspace: string; agents: Work
   );
 }
 
-function NewAgent({ workspace, onCancel, onCreated }: { workspace: string; onCancel: () => void; onCreated: (name: string, token: string) => void }) {
+function NewAgent({
+  workspace,
+  roles,
+  onCancel,
+  onCreated,
+}: {
+  workspace: string;
+  roles: WorkspaceRole[];
+  onCancel: () => void;
+  onCreated: (name: string, token: string) => void;
+}) {
   const [name, setName] = useState("");
   const [username, setUsername] = useState("");
+  const [role, setRole] = useState(roles.find((r) => r.key === "agent" && grantable(r))?.key ?? roles.find(grantable)?.key ?? "");
   const { busy, run } = useRun();
-  const ready = !!name.trim() && !!username.trim() && !busy;
+  const ready = !!name.trim() && !!username.trim() && !!role && !busy;
   const submit = (e: FormEvent) => {
     e.preventDefault();
     if (!ready) return;
     run(async () => {
-      const { agent, token } = await auth.createAgent(workspace, name.trim(), username.trim());
+      const { agent, token } = await auth.createAgent(workspace, name.trim(), username.trim(), role);
       onCreated(agent.name, token);
     });
   };
@@ -758,6 +1041,9 @@ function NewAgent({ workspace, onCancel, onCreated }: { workspace: string; onCan
           value={username}
           onChange={(e) => setUsername(e.target.value.toLowerCase())}
         />
+      </Field>
+      <Field label="Role">
+        <RoleSelect label="Role" roles={roles} value={role} onChange={setRole} />
       </Field>
       <FormButtons label="Add agent" disabled={!ready} onCancel={onCancel} />
     </form>
@@ -1166,11 +1452,13 @@ function Labels({ team }: { team: string | null }) {
   const [adding, setAdding] = useState<"label" | "group" | null>(null);
   const scoped = labels.filter((l) => l.team === team);
   const top = scoped.filter((l) => l.group === null).sort(byName);
+  const manage = useCan(team ? "labels.team" : "labels.workspace", team);
   return (
     <Section
       title="Labels"
       count={scoped.filter((l) => !l.isGroup).length || undefined}
       action={
+        manage &&
         !adding && (
           <span className="settings-inline">
             <AddButton onClick={() => setAdding("group")}>New group</AddButton>
@@ -1332,10 +1620,10 @@ const CATEGORY_NAMES: Record<StatusCategory, string> = {
 
 /** A team's settings (`/t/:key/settings`): its description, and its workflow. */
 export function TeamSettingsPage({ teamKey }: { teamKey: string }) {
-  const { teams, workspace, reloadTeams } = useApp();
+  const { teams, reloadTeams } = useApp();
   const team = teams?.find((t) => t.key === teamKey);
-  // Guests set nothing up: they see who's in the team, and manage its own labels.
-  const guest = workspace?.role === "guest";
+  // Each part for those whose role (in this team, if they have one of their own) lets them; anyone sees who's in it.
+  const settings = useCan("team.settings", teamKey);
   useTitle(`Settings · ${team?.name ?? teamKey}`);
   return (
     <>
@@ -1346,19 +1634,19 @@ export function TeamSettingsPage({ teamKey }: { teamKey: string }) {
         ) : (
           team && (
             <div className="settings">
-              {!guest && <TeamGeneral key={team.key} team={team} />}
+              {settings && <TeamGeneral key={team.key} team={team} />}
               <TeamMembers team={team} />
-              {!guest && (
+              {can("team.workflow", team.key) && <Workflow team={team} />}
+              {settings && (
                 <>
-                  <Workflow team={team} />
                   <Automations team={team} />
                   <Estimates team={team} />
                   <Cycles team={team} />
-                  <Templates key={team.key} team={team} />
                 </>
               )}
+              {can("team.templates", team.key) && <Templates key={team.key} team={team} />}
               <Labels team={team.key} />
-              {workspace?.role === "admin" && (
+              {can("team.delete", team.key) && (
                 <DeleteZone
                   what="team"
                   name={team.key}

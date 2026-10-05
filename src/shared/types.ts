@@ -259,14 +259,30 @@ export interface WorkspaceMember {
   teams: string[]; // the teams they're in, of those you can see (keys)
 }
 
+/** GET /api/teams/:key/members: role is their own role in the team (a key; null: their workspace role's), roleName the one that applies. */
+export interface TeamMember extends UserRef {
+  role: string | null;
+  roleName: string;
+}
+
 /** GET /api/me. */
 export interface Me {
   // id: the account, which never changes, for API clients that key data by person; ids stay internal
   // everywhere else. username and name: yours in the request's workspace (a key's own, or X-Docket-Workspace);
   // for a session naming none, your default profile (the membership you joined most recently).
   user: User & { id: number };
-  // you: how you're known there; for a key, only its own workspace. permissions: what this credential may do there (beyond a team's own roles).
-  workspaces: { key: string; name: string; role: Role; roleKey: string; roleName: string; permissions: Permission[]; you: UserRef }[];
+  // you: how you're known there; for a key, only its own workspace. permissions: what this credential may do there;
+  // teams: what it may do in each team (by key) where you have a role of your own, instead.
+  workspaces: {
+    key: string;
+    name: string;
+    role: Role;
+    roleKey: string;
+    roleName: string;
+    permissions: Permission[];
+    teams: Record<string, Permission[]>;
+    you: UserRef;
+  }[];
   credential: "session" | "key"; // what this request came with
 }
 

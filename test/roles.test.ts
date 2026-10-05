@@ -239,6 +239,14 @@ describe("a role of one's own in a team", () => {
     await ok(teamRole("WEB", "ana", "reader"));
     await fails(ana.api("PATCH", "/api/teams/WEB", { description: "x" }), 403);
     await ok(ana.api("PATCH", "/api/teams/OPS", { description: "x" }));
+    // The web reads it: the team's members with their role there, and her permissions per team in /api/me.
+    const listed = (await ok(ana.api("GET", "/api/teams/WEB/members"))).find((m: any) => m.username === "ana");
+    expect(listed).toMatchObject({ role: "reader", roleName: "Reader" });
+    const mine = (await ok(ana.api("GET", "/api/me"))).workspaces.find((w: any) => w.key === ws);
+    expect(Object.keys(mine.teams)).toEqual(["WEB"]);
+    expect(mine.teams.WEB).toContain("workspace.browse"); // the workspace's permissions stay hers in the team
+    expect(mine.teams.WEB).not.toContain("team.settings");
+    expect(mine.permissions).toContain("team.settings");
     // Lowering never hides: she still sees WEB and its issues.
     expect((await ok(ana.api("GET", "/api/teams"))).map((t: any) => t.key)).toContain("WEB");
     await ok(ana.api("GET", "/api/issues?team=WEB"));
