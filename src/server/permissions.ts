@@ -1,6 +1,6 @@
-// Who may do what. A member's role is a set of permissions (PERMISSIONS in shared/types.ts) in its workspace; a
-// credential may narrow it (its cap): a session has every one, an API key only some, and never one that's BROWSER_ONLY.
-// Every access check goes through here; 403s keep the wording they had before roles.
+// Who may do what. A member's role (roles, role_permissions) is a set of permissions (PERMISSIONS in shared/types.ts) in
+// its workspace; a credential may narrow it (its cap, api_keys.permissions): a session has every one, an API key only
+// some, and never one that's BROWSER_ONLY. Every access check goes through here; 403s keep the wording they had before roles.
 import { BROWSER_ONLY, LEGACY_WRITE_KEY, ROLE_PERMISSIONS, type ApiKeyScope, type Permission, type Role, type UserKind } from "../shared/types.ts";
 import { type Actor, requestWorkspace } from "./access.ts";
 import { AppError, db } from "./db.ts";
@@ -8,17 +8,30 @@ import { AppError, db } from "./db.ts";
 export const ADMINS_ONLY = "Only workspace admins can do that";
 export const BROWSER = "Sign in to the web app to manage access; API keys can't";
 
-/** A role's permissions. */
-export const permissionsOf = (role: Role): ReadonlySet<Permission> => new Set(ROLE_PERMISSIONS[role]);
+/** A new workspace's built-in roles: admin, member, guest and agent (ROLE_PERMISSIONS). */
+export function addBuiltinRoles(workspace: string, time: string) {
+  for (const [key, permissions] of Object.entries(ROLE_PERMISSIONS)) {
+    const { id } = db
+      .query<{ id: number }, [string, string, string, string, string, string]>(
+        "INSERT INTO roles (workspace, key, name, builtin, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
+      )
+      .get(workspace, key, key[0]!.toUpperCase() + key.slice(1), key, time, time)!;
+    for (const p of permissions) db.query("INSERT INTO role_permissions (role_id, permission) VALUES (?, ?)").run(id, p);
+  }
+}
 
-/** A key's cap: a read key's nothing, a person's write key LEGACY_WRITE_KEY, an agent's token (null) its role's. */
+/** SQL: a built-in role's id in workspace `w` (an SQL expression). */
+export const builtinRole = (w: string, role: Role) => `(SELECT id FROM roles WHERE workspace = ${w} AND key = '${role}')`;
+
+/** SQL: whether role `roleId` (an SQL expression) holds `p`. */
+export const roleHas = (roleId: string, p: Permission) => `EXISTS (SELECT 1 FROM role_permissions rp WHERE rp.role_id = ${roleId} AND rp.permission = '${p}')`;
+
+/** A new key's cap: a read key's nothing, a person's write key LEGACY_WRITE_KEY, an agent's token (null) its role's. */
 export const capOf = (kind: UserKind, scope: ApiKeyScope): readonly Permission[] | null => (scope === "read" ? [] : kind === "agent" ? null : LEGACY_WRITE_KEY);
 
 /** Whether member `userId` of `workspace` holds `p` by their role, whatever they sign in with (e.g. whether they browse). */
-export function memberHolds(workspace: string, userId: number, p: Permission): boolean {
-  const row = db.query<{ role: Role }, [string, number]>("SELECT role FROM workspace_members WHERE workspace = ? AND user_id = ?").get(workspace, userId);
-  return !!row && ROLE_PERMISSIONS[row.role].includes(p);
-}
+export const memberHolds = (workspace: string, userId: number, p: Permission): boolean =>
+  db.query(`SELECT 1 FROM workspace_members m WHERE m.workspace = ? AND m.user_id = ? AND ${roleHas("m.role_id", p)}`).get(workspace, userId) !== null;
 
 /** A workspace (its key), or a team in one; default: the request's workspace. */
 export type Where = string | { workspace: string };

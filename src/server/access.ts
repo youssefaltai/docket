@@ -7,7 +7,6 @@ import {
   API_KEY_SCOPES,
   BROWSER_ONLY,
   RESERVED_WORKSPACE_KEYS,
-  ROLE_PERMISSIONS,
   type ApiKey,
   type ApiKeyScope,
   type CodeInfo,
@@ -26,7 +25,7 @@ import {
   type WorkspacePatch,
 } from "../shared/types.ts";
 import { AppError, SYSTEM_USER, capLength, changed, checkOneOf, db, exists, now, pickSlug, requireText } from "./db.ts";
-import { ADMINS_ONLY, BROWSER, can, capOf, permissionsOf, requirePermission } from "./permissions.ts";
+import { ADMINS_ONLY, BROWSER, addBuiltinRoles, builtinRole, can, capOf, memberHolds, requirePermission, roleHas } from "./permissions.ts";
 import { workers } from "./runtime.ts";
 
 /** Who a request acts as. Built fresh per request, so role and suspension changes apply at once. */
@@ -171,17 +170,12 @@ const PERSON_ROLES = ["admin", "member", "guest"] as const;
 function addMember(workspace: string, userId: number, role: Role, profile: { username?: unknown; name?: unknown }, time = now(), teams: number[] = []) {
   const username = checkUsername(profile.username, workspace);
   const name = checkName(profile.name);
-  db.query("INSERT INTO workspace_members (workspace, user_id, username, name, role, created_at) VALUES (?, ?, ?, ?, ?, ?)").run(
-    workspace,
-    userId,
-    username,
-    name,
-    role,
-    time,
-  );
+  db.query(
+    `INSERT INTO workspace_members (workspace, user_id, username, name, role, role_id, created_at) VALUES (?1, ?, ?, ?, ?, ${builtinRole("?1", role)}, ?)`,
+  ).run(workspace, userId, username, name, role, time);
   const join = (where: string, ...params: Binding[]) =>
     db.query(`INSERT OR IGNORE INTO team_members (team_id, user_id, created_at) SELECT id, ?, ? FROM teams WHERE workspace = ? AND ${where}`).run(userId, time, workspace, ...params);
-  if (ROLE_PERMISSIONS[role].includes("workspace.browse")) join("private = 0");
+  if (memberHolds(workspace, userId, "workspace.browse")) join("private = 0");
   for (const id of teams) join("id = ?", id);
 }
 
@@ -225,19 +219,24 @@ export function updateProfile(a: Actor, workspace: unknown, patch: { name?: unkn
 // --- Actors ---
 
 /** An actor with the user's active memberships: all of them for a session, only `workspace`'s for a key. */
-function actorFor(user: AccountRow, credential: { scope: ApiKeyScope; sessionId?: number; keyId?: number }, workspace?: string): Actor {
+function actorFor(
+  user: AccountRow,
+  credential: { scope: ApiKeyScope; sessionId?: number; keyId?: number; cap?: readonly Permission[] | null },
+  workspace?: string,
+): Actor {
   const memberships = db
-    .query<{ workspace: string; role: Role }, [number, string | null]>(
-      "SELECT workspace, role FROM workspace_members WHERE user_id = ?1 AND suspended_at IS NULL AND (?2 IS NULL OR workspace = ?2)",
+    .query<{ workspace: string; permissions: string }, [number, string | null]>(
+      `SELECT m.workspace, (SELECT json_group_array(rp.permission) FROM role_permissions rp WHERE rp.role_id = m.role_id) AS permissions
+       FROM workspace_members m WHERE m.user_id = ?1 AND m.suspended_at IS NULL AND (?2 IS NULL OR m.workspace = ?2)`,
     )
     .all(user.id, workspace ?? null);
   return {
     id: user.id,
     kind: user.kind,
-    workspaces: new Map(memberships.map((m) => [m.workspace, permissionsOf(m.role)])),
+    workspaces: new Map(memberships.map((m) => [m.workspace, new Set(JSON.parse(m.permissions))])),
     workspace: workspace ?? (memberships.length === 1 ? memberships[0]!.workspace : null),
     scope: credential.scope,
-    cap: credential.keyId === undefined ? null : capOf(user.kind, credential.scope),
+    cap: credential.cap ?? null,
     sessionId: credential.sessionId ?? null,
     keyId: credential.keyId ?? null,
   };
@@ -275,10 +274,10 @@ export function endIdleSessions(userId: number) {
  * active member of the key's workspace. A key acts only in its own workspace.
  */
 export function keyActor(token: string): Actor | null {
-  type Row = AccountRow & { key_id: number; scope: ApiKeyScope; last_used_at: string | null; key_workspace: string };
+  type Row = AccountRow & { key_id: number; scope: ApiKeyScope; permissions: string | null; last_used_at: string | null; key_workspace: string };
   const row = db
     .query<Row, [string]>(
-      `SELECT u.*, k.id AS key_id, k.scope, k.last_used_at, k.workspace AS key_workspace
+      `SELECT u.*, k.id AS key_id, k.scope, k.permissions, k.last_used_at, k.workspace AS key_workspace
        FROM api_keys k JOIN users u ON u.id = k.user_id
        JOIN workspace_members m ON m.user_id = k.user_id AND m.workspace = k.workspace AND m.suspended_at IS NULL
        WHERE k.token_hash = ? AND k.revoked_at IS NULL`,
@@ -288,7 +287,7 @@ export function keyActor(token: string): Actor | null {
   if (!row.last_used_at || Date.now() - Date.parse(row.last_used_at) > TOUCH_MS) {
     db.query("UPDATE api_keys SET last_used_at = ? WHERE id = ?").run(now(), row.key_id);
   }
-  return actorFor(row, { scope: row.scope, keyId: row.key_id }, row.key_workspace);
+  return actorFor(row, { scope: row.scope, keyId: row.key_id, cap: row.permissions === null ? null : JSON.parse(row.permissions) }, row.key_workspace);
 }
 
 // --- Access checks (used by every data module) ---
@@ -314,12 +313,12 @@ export function requestWorkspace(a: Actor): string {
 
 /**
  * SQL: whether account `u` (an SQL expression) sees team `t` (an alias of `teams`), Linear's private teams and guests:
- * as an active member of its workspace who is in the team, or, unless a guest, when the team is public. Admins are no
- * exception: they see a private team once they join it.
+ * as an active member of its workspace who is in the team, or, if their role browses the workspace (not a guest's), when
+ * the team is public. Admins are no exception: they see a private team once they join it.
  */
 export const SEES_TEAM = (u: string, t: string) =>
   `EXISTS (SELECT 1 FROM workspace_members sm WHERE sm.user_id = ${u} AND sm.workspace = ${t}.workspace AND sm.suspended_at IS NULL
-     AND ((${t}.private = 0 AND sm.role != 'guest') OR EXISTS (SELECT 1 FROM team_members st WHERE st.team_id = ${t}.id AND st.user_id = ${u})))`;
+     AND ((${t}.private = 0 AND ${roleHas("sm.role_id", "workspace.browse")}) OR EXISTS (SELECT 1 FROM team_members st WHERE st.team_id = ${t}.id AND st.user_id = ${u})))`;
 
 /** The ids of the teams you see in `workspace` (default: the request's). Anything outside them is 404, like another workspace's. */
 export function visibleTeamIds(a: Actor, workspace = requestWorkspace(a)): number[] {
@@ -503,14 +502,15 @@ const toApiKey = (row: ApiKeyRow): ApiKey => ({
 
 const newApiToken = () => `dk_${randomBytes(32).toString("hex")}`;
 
-function insertApiKey(userId: number, workspace: string, name: string, scope: ApiKeyScope): { apiKey: ApiKey; token: string } {
+/** A key for `userId` in `workspace`; `cap`: what it may do of their role's permissions (null: all a key can). */
+function insertApiKey(userId: number, workspace: string, name: string, scope: ApiKeyScope, cap: readonly Permission[] | null): { apiKey: ApiKey; token: string } {
   const token = newApiToken();
   const row = db
-    .query<ApiKeyRow, [number, string, string, ApiKeyScope, string, string]>(
-      `INSERT INTO api_keys (user_id, workspace, name, scope, token_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)
+    .query<ApiKeyRow, [number, string, string, ApiKeyScope, string | null, string, string]>(
+      `INSERT INTO api_keys (user_id, workspace, name, scope, permissions, token_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)
        RETURNING id, name, scope, workspace, created_at, last_used_at`,
     )
-    .get(userId, workspace, name, scope, hash(token), now())!;
+    .get(userId, workspace, name, scope, cap && JSON.stringify(cap), hash(token), now())!;
   return { apiKey: toApiKey(row), token };
 }
 
@@ -530,7 +530,7 @@ export function createApiKey(a: Actor, input: { name?: unknown; scope?: unknown;
   const name = requireText(input.name, "name");
   const scope = input.scope === undefined ? "write" : checkOneOf(input.scope, API_KEY_SCOPES, "scope");
   const workspace = input.workspace === undefined ? requestWorkspace(a) : requireMember(a, input.workspace);
-  return insertApiKey(a.id, workspace, name, scope);
+  return insertApiKey(a.id, workspace, name, scope, capOf(a.kind, scope));
 }
 
 export function revokeApiKey(a: Actor, id: unknown) {
@@ -560,8 +560,8 @@ function issueCode(fields: { purpose: CodeInfo["kind"]; userId?: number; workspa
   const time = Date.now();
   const expiresAt = new Date(time + CODE_TTL_MS).toISOString();
   db.query(
-    `INSERT INTO codes (code_hash, purpose, user_id, workspace, role, teams, created_by, created_at, expires_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO codes (code_hash, purpose, user_id, workspace, role, role_id, teams, created_by, created_at, expires_at)
+     VALUES (?, ?, ?, ?4, ?5, (SELECT id FROM roles WHERE workspace = ?4 AND key = ?5), ?, ?, ?, ?)`,
   ).run(
     hash(normalizeCode(code)),
     fields.purpose,
@@ -737,6 +737,7 @@ function insertWorkspace(input: WorkspaceInput, adminId: number, profile: { user
   const key = pickSlug(input.key, name, taken, { label: "workspace key", fallback: "workspace" });
   const time = now();
   db.query("INSERT INTO workspaces (key, name, created_at, updated_at) VALUES (?, ?, ?, ?)").run(key, name, time, time);
+  addBuiltinRoles(key, time);
   addMember(key, adminId, "admin", profile, time);
   return key;
 }
@@ -881,7 +882,9 @@ export function updateMember(a: Actor, workspace: unknown, username: unknown, pa
   const losesAdmin = row.role === "admin" && !row.suspended_at && (suspending || role !== "admin");
   db.transaction(() => {
     if (losesAdmin && activeAdmins(key) === 1) throw new AppError("Add another admin first", 409);
-    if (role !== row.role) db.query("UPDATE workspace_members SET role = ? WHERE workspace = ? AND user_id = ?").run(role, key, row.id);
+    if (role !== row.role) {
+      db.query(`UPDATE workspace_members SET role = ?1, role_id = ${builtinRole("?2", role)} WHERE workspace = ?2 AND user_id = ?3`).run(role, key, row.id);
+    }
     // Invites an admin made die with their admin rights, so no one can pre-mint a way back in.
     if (losesAdmin) db.query("DELETE FROM codes WHERE created_by = ? AND workspace = ? AND used_at IS NULL").run(row.id, key);
     if (suspending) suspend(key, row);
@@ -903,7 +906,7 @@ export function createAgent(a: Actor, workspace: unknown, input: { name?: unknow
   const { agent, token } = db.transaction(() => {
     const id = insertAccount("agent");
     addMember(key, id, "agent", input);
-    const { token } = insertApiKey(id, key, "agent token", "write");
+    const { token } = insertApiKey(id, key, "agent token", "write", null);
     return { agent: profileOf(id, key), token };
   })();
   changed("member", key, agent.username);
@@ -924,7 +927,7 @@ export function rotateAgentToken(a: Actor, workspace: unknown, username: unknown
   const token = db.transaction(() => {
     db.query("DELETE FROM api_keys WHERE user_id = ? AND workspace = ?").run(row.id, key);
     setSuspended(key, row.id, null);
-    return insertApiKey(row.id, key, "agent token", "write").token;
+    return insertApiKey(row.id, key, "agent token", "write", null).token;
   })();
   revoked({ userId: row.id });
   changed("member", key, row.username);

@@ -5,6 +5,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { LEGACY_WRITE_KEY } from "../src/shared/types.ts";
 import { startServer, type Caller, type Reply, type TestServer } from "./server.ts";
 
 const GOLDEN = join(import.meta.dir, "fixtures", "permissions-golden.json");
@@ -387,3 +388,20 @@ for (const [i, label] of ["admin session", "admin write key", "admin read key", 
     else expect(row).toEqual(golden[label]!);
   }, 120_000);
 }
+
+test("what the matrix made has its role: members, invites and new workspaces; keys their cap", () => {
+  const count = (sql: string) => s.sql(`SELECT COUNT(*) AS n FROM ${sql}`)[0].n;
+  expect(count("workspaces")).toBeGreaterThan(1);
+  expect(s.sql("SELECT DISTINCT (SELECT group_concat(key) FROM (SELECT key FROM roles r WHERE r.workspace = w.key AND r.builtin = r.key ORDER BY id)) AS roles FROM workspaces w")).toEqual([
+    { roles: "admin,member,guest,agent" },
+  ]);
+  expect(count("workspace_members m LEFT JOIN roles r ON r.id = m.role_id WHERE r.key IS NOT m.role OR r.workspace IS NOT m.workspace")).toBe(0);
+  expect(count("codes WHERE purpose = 'invite'")).toBeGreaterThan(0);
+  expect(count("codes c LEFT JOIN roles r ON r.id = c.role_id WHERE c.purpose = 'invite' AND (r.key IS NOT c.role OR r.workspace IS NOT c.workspace)")).toBe(0);
+  expect(s.sql("SELECT DISTINCT u.kind, k.scope, k.permissions FROM api_keys k JOIN users u ON u.id = k.user_id ORDER BY u.kind, k.scope")).toEqual([
+    { kind: "agent", scope: "write", permissions: null },
+    { kind: "person", scope: "read", permissions: "[]" },
+    { kind: "person", scope: "write", permissions: JSON.stringify(LEGACY_WRITE_KEY) },
+  ]);
+  expect(s.sql("PRAGMA foreign_key_check")).toEqual([]);
+});
