@@ -18,6 +18,10 @@ import {
   PROJECT_STATUSES,
   STATUS_CATEGORIES,
   type Activity,
+  type Permission,
+  type WorkspaceRole,
+  PERMISSIONS,
+  TEAM_PERMISSIONS,
   type Comment,
   type Cycle,
   type Document,
@@ -40,6 +44,8 @@ import { actorOf } from "./auth.ts";
 import { AppError } from "./db.ts";
 import { originOf } from "./http.ts";
 import * as inbox from "./inbox.ts";
+import * as rolesApi from "./roles.ts";
+import { holdsAnywhere, readOnly } from "./permissions.ts";
 import * as tracker from "./tracker.ts";
 
 /** Where this connection is and who it acts as. `username`: yours in `workspace`. */
@@ -53,7 +59,7 @@ Docket is an issue tracker shared by people and agents, modeled on Linear.
 - Each team has its own statuses, named by key (list_teams shows them), in Linear's fixed categories: triage (new, not yet accepted), backlog, unstarted, started, completed, canceled. By default a team has backlog, todo, in_progress, in_review, done, canceled and duplicate. Priority: 0 none, 1 urgent, 2 high, 3 medium, 4 low.
 - People and agents are named by username (@alice), unique within this workspace. An issue's assignee is a person who owns it; its delegate is an agent working on it for them. "me" means you.
 ${
-  a.scope === "read"
+  readOnly(a)
     ? "- This key is read-only: you can list and read everything here, but not change anything."
     : "- Working on an issue: get_issue, then claim_issue (an agent becomes its delegate, a person its assignee, and it moves to the team's first started status, in_progress by default; if someone else holds it, pick another), post progress notes with comment_issue, then set in_review when it's ready for review or done when finished (or the team's own statuses in those categories). There is no delete: set status canceled instead."
 }
@@ -319,47 +325,45 @@ function createServer(a: Actor, origin: string): McpServer {
     { instructions: instructions(a, here) },
   );
   /**
-   * Registers a tool only if this caller can use it, so tools/list shows just those: a read key gets
-   * the read-only tools, and `who` narrows the rest. Calling a hidden one is a "not found" tool error.
+   * Registers a tool only if this caller can use it, so tools/list shows just those: a read key gets the read-only tools,
+   * and `requires` narrows the rest to those who hold each permission here or in some team (holdsAnywhere); the tool
+   * still checks it, in its team, when called. Calling a hidden one is a "not found" tool error.
    */
   const register = <I extends ZodRawShapeCompat | undefined = undefined>(
     name: string,
     config: { description: string; inputSchema?: I; annotations?: ToolAnnotations },
     cb: ToolCallback<I>,
-    who?: (a: Actor) => boolean,
+    requires: Permission[] = [],
   ) => {
-    if (a.scope === "read" && !config.annotations?.readOnlyHint) return;
-    if (who && !who(a)) return;
+    if (readOnly(a) && !config.annotations?.readOnlyHint) return;
+    if (!requires.every((p) => holdsAnywhere(a, p))) return;
     server.registerTool(name, config, cb);
   };
-  // Who sees a tool, besides the scope check in register.
-  // A key acts in one workspace (MCP takes only keys), so that's where every tool works.
-  const admins = (a: Actor) => a.workspaces.get(a.workspace ?? "") === "admin";
 
   register(
     "update_workspace",
     {
-      description: "Rename your workspace (admins only). Its key never changes. Only do this when asked to.",
+      description: "Rename your workspace. Its key never changes. Only do this when asked to.",
       inputSchema: { name: z.string() },
     },
     ({ name }) => {
       const workspace = access.updateWorkspace(a, access.requestWorkspace(a), { name });
       return result(`Updated workspace ${workspace.key} · ${workspace.name}`, { workspace });
     },
-    admins,
+    ["workspace.rename"],
   );
 
   register(
     "list_members",
     {
-      description: "List a workspace's people and agents, one line each: @username · name · role, then `integration` (GitHub's account), `suspended` and `you` where they apply. Assignees are people; delegates are agents.",
+      description: "List a workspace's people and agents, one line each: @username · name · role (its name), then `integration` (GitHub's account), `suspended` and `you` where they apply. Assignees are people; delegates are agents.",
       annotations: { readOnlyHint: true },
     },
     () => {
       const members = access.listMembers(a, access.requestWorkspace(a));
       const you = access.usernameOf(a);
       const lines = members.map((m) =>
-        [at(m.user), m.user.name, m.role, m.integration && "integration", m.suspendedAt && "suspended", m.user.username === you && "you"].filter(Boolean).join(" · "),
+        [at(m.user), m.user.name, m.roleName, m.integration && "integration", m.suspendedAt && "suspended", m.user.username === you && "you"].filter(Boolean).join(" · "),
       );
       return result(lines.join("\n"), { members, you });
     },
@@ -544,6 +548,7 @@ function createServer(a: Actor, origin: string): McpServer {
       const issue = tracker.createIssue(a, input);
       return result(`Created ${issue.id}\n${line(issue)}`, { issue });
     },
+    ["issues.write"],
   );
 
   register(
@@ -578,6 +583,7 @@ function createServer(a: Actor, origin: string): McpServer {
       const moved = patch.team !== undefined && was !== issue.id;
       return result(`${moved ? `Moved ${was} to ${issue.id}` : `Updated ${issue.id}`}\n${line(issue)}`, { issue });
     },
+    ["issues.write"],
   );
 
   register(
@@ -590,6 +596,7 @@ function createServer(a: Actor, origin: string): McpServer {
       const issue = tracker.claimIssue(a, id);
       return result(`Claimed ${issue.id}\n${line(issue)}`, { issue });
     },
+    ["issues.write"],
   );
 
   register(
@@ -602,6 +609,7 @@ function createServer(a: Actor, origin: string): McpServer {
       const issue = tracker.addComment(a, id, body, parent);
       return result(`${parent === undefined ? "Commented on" : `Replied to #${parent} on`} ${issue.id}`, { issue });
     },
+    ["comments.write"],
   );
 
   register(
@@ -651,6 +659,7 @@ function createServer(a: Actor, origin: string): McpServer {
       const document = tracker.createDocument(a, input);
       return result(`Created document ${document.slug} · ${document.title} (/doc/${document.slug})`, docMeta(document));
     },
+    ["docs.write"],
   );
 
   register(
@@ -680,6 +689,7 @@ function createServer(a: Actor, origin: string): McpServer {
       const document = tracker.updateDocument(a, slug, patch);
       return result(`Updated document ${document.slug} · ${document.title}`, docMeta(document));
     },
+    ["docs.write"],
   );
 
   register(
@@ -692,6 +702,7 @@ function createServer(a: Actor, origin: string): McpServer {
       const document = tracker.addDocumentComment(a, slug, body, parent);
       return result(`${parent === undefined ? "Commented on" : `Replied to #${parent} on`} document ${document.slug}`, docMeta(document));
     },
+    ["comments.write"],
   );
 
   const commentTarget = {
@@ -718,6 +729,7 @@ function createServer(a: Actor, origin: string): McpServer {
           return result(`Edited comment #${comment} on document ${document.slug}`, docMeta(document));
         },
       ),
+    ["comments.write"],
   );
 
   register(
@@ -739,6 +751,7 @@ function createServer(a: Actor, origin: string): McpServer {
           return result(`Deleted comment #${comment} on document ${document.slug}`, docMeta(document));
         },
       ),
+    ["comments.write"],
   );
 
   register(
@@ -766,6 +779,7 @@ function createServer(a: Actor, origin: string): McpServer {
         },
       );
     },
+    ["comments.write"],
   );
 
   register(
@@ -792,6 +806,7 @@ function createServer(a: Actor, origin: string): McpServer {
       const lines = results.map((r) => (r.issue ? `Updated ${r.issue.id}` : `${r.id} failed: ${r.error}`));
       return result(lines.join("\n"), { results });
     },
+    ["issues.write"],
   );
 
   register(
@@ -804,6 +819,7 @@ function createServer(a: Actor, origin: string): McpServer {
       const issue = archived ? tracker.archiveIssue(a, id) : tracker.unarchiveIssue(a, id);
       return result(`${archived ? "Archived" : "Unarchived"} ${issue.id}`, { issue });
     },
+    ["issues.write"],
   );
 
   register(
@@ -854,6 +870,7 @@ function createServer(a: Actor, origin: string): McpServer {
       tracker.deleteDocument(a, slug);
       return result(`Moved document ${slug} to the trash`, { ok: true });
     },
+    ["docs.write"],
   );
 
   register(
@@ -906,6 +923,7 @@ function createServer(a: Actor, origin: string): McpServer {
       const project = tracker.createProject(a, input);
       return result(`Created project ${project.slug}\n${projectLine(project)}`, { project });
     },
+    ["projects.write"],
   );
 
   register(
@@ -927,6 +945,7 @@ function createServer(a: Actor, origin: string): McpServer {
       const project = tracker.updateProject(a, slug, patch);
       return result(`Updated project ${project.slug}\n${projectLine(project)}`, { project });
     },
+    ["projects.write"],
   );
 
   register(
@@ -944,6 +963,7 @@ function createServer(a: Actor, origin: string): McpServer {
       const project = tracker.createMilestone(a, slug, input);
       return result(`Added milestone ${input.name.trim()} to ${project.slug}`, { project });
     },
+    ["projects.write"],
   );
 
   register(
@@ -964,6 +984,7 @@ function createServer(a: Actor, origin: string): McpServer {
       const project = tracker.updateMilestone(a, slug, found.id, patch);
       return result(`Updated milestone ${patch.name?.trim() ?? found.name} in ${project.slug}`, { project });
     },
+    ["projects.write"],
   );
 
   register(
@@ -998,6 +1019,7 @@ function createServer(a: Actor, origin: string): McpServer {
       const found = inbox.markRead(a, { ids, read });
       return result(`Marked ${all ? "all" : ids!.map((id) => `#${id}`).join(", ")} ${read ? "read" : "unread"} · ${found.unread} unread left`, { ...found });
     },
+    ["inbox.manage"],
   );
 
   register(
@@ -1052,6 +1074,7 @@ function createServer(a: Actor, origin: string): McpServer {
         },
       );
     },
+    ["comments.write"],
   );
 
   register(
@@ -1077,6 +1100,7 @@ function createServer(a: Actor, origin: string): McpServer {
       const attachment = await saveAttachment(a, name, bytes, team);
       return result(attachmentMarkdown(attachment), { attachment, markdown: attachmentMarkdown(attachment) });
     },
+    ["files.upload"],
   );
 
   register(
@@ -1107,6 +1131,92 @@ function createServer(a: Actor, origin: string): McpServer {
       return result(meta, structuredContent);
     },
   );
+
+  const roleKey = z.string().describe('A role\'s key, e.g. "member" (list_roles)');
+  const permissions = z.array(z.enum(PERMISSIONS)).describe(`The role's permissions, all of them (it replaces the list). Team ones (${TEAM_PERMISSIONS.join(", ")}) can be held per team; workspace.browse is seeing the workspace's public teams and people (a guest lacks it).`);
+  const ROLES = "A role is a named set of permissions in this workspace; each member (person or agent) has one, and may have one of their own in a team, which replaces it for the team's permissions there only. You can only give permissions you hold yourself, never change your own role, and some person always keeps every permission (Admin's).";
+  const roleLine = (r: WorkspaceRole) => [r.key, r.name, r.builtin && "built-in", `${r.members} members`, r.permissions.join(", ") || "no permissions"].filter(Boolean).join(" · ");
+
+  if (["roles.manage", "members.assign_role", "team.roles"].some((p) => holdsAnywhere(a, p as Permission))) {
+    register(
+      "list_roles",
+      {
+        description: `List this workspace's roles, one line each: key · name · \`built-in\` · how many hold it · its permissions. ${ROLES}`,
+        annotations: { readOnlyHint: true },
+      },
+      () => {
+        const roles = rolesApi.listRoles(a);
+        return result(roles.map(roleLine).join("\n"), { roles });
+      },
+    );
+  }
+
+  register(
+    "create_role",
+    {
+      description: `Create a role from permissions you hold. To start from an existing role (e.g. Admin, which can't be changed), copy its permissions from list_roles. Only do this when asked to. ${ROLES}`,
+      inputSchema: { name: z.string(), permissions, description: z.string().optional(), key: z.string().optional().describe("URL-safe key; default from the name") },
+    },
+    (input) => {
+      const role = rolesApi.createRole(a, input);
+      return result(`Created role ${roleLine(role)}`, { role });
+    },
+    ["roles.manage"],
+  );
+
+  register(
+    "update_role",
+    {
+      description: `Rename, redescribe or change the permissions of a role; only the fields you pass change, and its holders get the new permissions at once. Not Admin, not your own role, and not one holding a permission you lack. Only do this when asked to. ${ROLES}`,
+      inputSchema: { key: roleKey, name: z.string().optional(), description: z.string().optional(), permissions: permissions.optional() },
+    },
+    ({ key, ...patch }) => {
+      const role = rolesApi.updateRole(a, key, patch);
+      return result(`Updated role ${roleLine(role)}`, { role });
+    },
+    ["roles.manage"],
+  );
+
+  register(
+    "delete_role",
+    {
+      description: "Delete a role that isn't built in. While members, team roles or invites hold it, moveTo names the role they move to. Only do this when asked to.",
+      inputSchema: { key: roleKey, moveTo: roleKey.optional() },
+      annotations: { destructiveHint: true },
+    },
+    ({ key, moveTo }) => {
+      rolesApi.deleteRole(a, key, moveTo);
+      return result(`Deleted role ${key}${moveTo ? `; its members are now ${moveTo}` : ""}`, { deleted: key });
+    },
+    ["roles.manage"],
+  );
+
+  register(
+    "set_member_role",
+    {
+      description: `Give a person or agent of this workspace a role (list_roles has their keys; list_members shows who holds what). You need to hold every permission of both their current and their new role. Only do this when asked to. ${ROLES}`,
+      inputSchema: { username: z.string().describe("A member's username (see list_members)"), role: roleKey },
+    },
+    ({ username, role }) => {
+      const member = access.updateMember(a, access.requestWorkspace(a), username, { role });
+      return result(`@${member.user.username} is now ${member.roleName}`, { member });
+    },
+    ["members.assign_role"],
+  );
+
+  if (holdsAnywhere(a, "team.roles") || holdsAnywhere(a, "members.assign_role")) {
+    register(
+      "set_team_role",
+      {
+        description: `Give a member of a team a role of their own in it, replacing their workspace role for the team's permissions (not for what they see), or with role null go back to their workspace role. Takes team.roles in that team or members.assign_role. Only do this when asked to. ${ROLES}`,
+        inputSchema: { team: teamKey, username: z.string().describe("A member of the team (see list_members)"), role: roleKey.nullable() },
+      },
+      ({ team, username, role }) => {
+        const set = rolesApi.setTeamRole(a, team, username, role);
+        return result(`@${set.user.username} in ${set.team}: ${set.role ?? "their workspace role"}`, set);
+      },
+    );
+  }
 
   return server;
 }

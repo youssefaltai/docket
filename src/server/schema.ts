@@ -428,8 +428,73 @@ CREATE TABLE vapid_keys (
   );
 `;
 
+// Migration 30's built-in roles and what a write API key could do, as they were then: later changes to the defaults
+// (shared/types.ts) mustn't change what this migration did.
+const CONTENT_30 = ["issues.write", "comments.write", "docs.write", "files.upload", "projects.write", "inbox.manage"];
+const MEMBER_30 = [
+  "workspace.browse", "teams.create", "teams.join", "team.members", "team.settings", "team.workflow", "team.templates",
+  "labels.create", "labels.workspace", "labels.team", "views.create", ...CONTENT_30, "trash.purge",
+];
+const ROLES_30: [key: string, name: string, permissions: string[]][] = [
+  ["admin", "Admin", [
+    "workspace.browse", "workspace.rename", "workspace.delete", "roles.manage", "members.assign_role", "members.suspend", "members.invite",
+    "agents.manage", "webhooks.manage", "github.manage", "teams.create", "teams.join", "teams.manage_any", "team.members", "team.privacy",
+    "team.roles", "team.delete", "team.settings", "team.workflow", "team.templates", "labels.create", "labels.workspace", "labels.team",
+    "views.create", "views.manage_any", ...CONTENT_30, "trash.purge",
+  ]],
+  ["member", "Member", MEMBER_30],
+  ["guest", "Guest", ["labels.team", ...CONTENT_30]],
+  ["agent", "Agent", ["workspace.browse", "teams.create", "team.settings", "labels.create", "views.create", ...CONTENT_30]],
+];
+const WRITE_KEY_30 = [
+  "workspace.browse", "workspace.rename", "teams.create", "team.settings", "team.workflow", "team.templates", "labels.create",
+  "labels.workspace", "labels.team", "views.create", "views.manage_any", ...CONTENT_30,
+];
+
 // Append-only: each entry upgrades the schema by one user_version past the baseline (the first to 30).
-const MIGRATIONS: Migration[] = [];
+const MIGRATIONS: Migration[] = [
+  // 30: roles, sets of permissions per workspace. Each workspace gets the built-in four; members and invites point at
+  // theirs (role stays, as the built-in key, for one release). A key gets a cap: a read key nothing, a person's write key
+  // what write keys could do; an agent's token (NULL) all its role's. team_members.role_id: a team's own role (none yet).
+  (db) => {
+    db.run(`CREATE TABLE roles (
+      id INTEGER PRIMARY KEY,
+      workspace TEXT NOT NULL REFERENCES workspaces(key) ON DELETE CASCADE,
+      key TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      builtin TEXT CHECK (builtin IN ('admin', 'member', 'guest', 'agent')),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE (workspace, key)
+    )`);
+    db.run(`CREATE TABLE role_permissions (
+      role_id INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+      permission TEXT NOT NULL,
+      PRIMARY KEY (role_id, permission)
+    ) WITHOUT ROWID`);
+    db.run("ALTER TABLE workspace_members ADD COLUMN role_id INTEGER REFERENCES roles(id)");
+    db.run("ALTER TABLE team_members ADD COLUMN role_id INTEGER REFERENCES roles(id)");
+    db.run("ALTER TABLE codes ADD COLUMN role_id INTEGER REFERENCES roles(id)");
+    db.run("ALTER TABLE api_keys ADD COLUMN permissions TEXT"); // JSON array; NULL: the role's
+    const time = new Date().toISOString();
+    const role = db.query<{ id: number }, [string, string, string, string, string, string]>(
+      "INSERT INTO roles (workspace, key, name, builtin, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
+    );
+    const grant = db.query("INSERT INTO role_permissions (role_id, permission) VALUES (?, ?)");
+    for (const { key } of db.query<{ key: string }, []>("SELECT key FROM workspaces").all()) {
+      for (const [builtin, name, permissions] of ROLES_30) {
+        const { id } = role.get(key, builtin, name, builtin, time, time)!;
+        for (const p of permissions) grant.run(id, p);
+      }
+    }
+    const roleOf = (table: string) => `(SELECT r.id FROM roles r WHERE r.workspace = ${table}.workspace AND r.key = ${table}.role)`;
+    db.run(`UPDATE workspace_members SET role_id = ${roleOf("workspace_members")}`);
+    db.run(`UPDATE codes SET role_id = ${roleOf("codes")} WHERE role IS NOT NULL`);
+    db.run("UPDATE api_keys SET permissions = '[]' WHERE scope = 'read'");
+    db.query("UPDATE api_keys SET permissions = ? WHERE scope = 'write' AND user_id IN (SELECT id FROM users WHERE kind = 'person')").run(JSON.stringify(WRITE_KEY_30));
+  },
+];
 
 /**
  * Brings the schema up to date, or throws and changes nothing it hasn't committed. A new database (version 0)

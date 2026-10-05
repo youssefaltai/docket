@@ -87,7 +87,7 @@ describe("who sees which team", () => {
     const listing = await ok(s.api("GET", "/api/workspaces/acme/teams"));
     expect(listing.find((t: any) => t.key === "SEC")).toEqual({ key: "SEC", name: "Security", private: true, member: false, memberCount: 1 });
     expect((await bob.api("GET", "/api/workspaces/acme/teams")).status).toBe(403);
-    expect(await ok(s.api("GET", "/api/teams/SEC/members"))).toEqual([{ username: "ana", name: "ana", kind: "person" }]);
+    expect(await ok(s.api("GET", "/api/teams/SEC/members"))).toEqual([{ username: "ana", name: "ana", kind: "person", role: null, roleName: "Member" }]);
     expect((await bob.api("GET", "/api/teams/SEC/members")).status).toBe(404);
   });
 });
@@ -440,7 +440,7 @@ describe("joining, leaving and making a team private", () => {
     expect((await ok(cal.api("GET", "/api/teams"))).filter((t: any) => t.member).map((t: any) => t.key)).toEqual(["OPS", "WEB"]);
     const team = await ok(cal.api("POST", "/api/teams", { key: "CAL", name: "Cal's" }), 201);
     expect(team).toMatchObject({ private: false, member: true });
-    expect(await ok(cal.api("GET", "/api/teams/CAL/members"))).toEqual([{ username: "cal", name: "cal", kind: "person" }]);
+    expect(await ok(cal.api("GET", "/api/teams/CAL/members"))).toEqual([{ username: "cal", name: "cal", kind: "person", role: null, roleName: "Member" }]);
   });
 });
 

@@ -93,9 +93,121 @@ export interface User extends UserRef {
   createdAt: string;
 }
 
-// Workspace roles. Agents are members with role "agent": they create and configure teams, but manage no members or access.
-// Guests see only the teams they're added to, and nothing workspace-wide (views, settings beyond their account).
+// The built-in roles, every workspace's (ROLE_PERMISSIONS); workspaces add their own (WorkspaceRole). Agents' role,
+// "agent", creates and configures teams but manages no members or access; guests' sees only the teams they're added to.
 export type Role = "admin" | "member" | "guest" | "agent";
+
+/**
+ * What a role can let its members do. workspace.browse is seeing the workspace: its public teams, its people, views.
+ * The rest are actions; team ones (TEAM_PERMISSIONS) are held per team.
+ */
+export const PERMISSIONS = [
+  "workspace.browse",
+  "workspace.rename",
+  "workspace.delete",
+  "roles.manage",
+  "members.assign_role",
+  "members.suspend",
+  "members.invite",
+  "agents.manage",
+  "webhooks.manage",
+  "github.manage",
+  "teams.create",
+  "teams.join", // join a public team yourself
+  "teams.manage_any", // list every team, join a private one, manage the members of one you aren't in, add a guest to one
+  "team.members", // add and remove others in a team you're in
+  "team.privacy",
+  "team.roles",
+  "team.delete",
+  "team.settings",
+  "team.workflow",
+  "team.templates",
+  "labels.create", // a new workspace label, by naming it on an issue or template
+  "labels.workspace",
+  "labels.team",
+  "views.create",
+  "views.manage_any",
+  "issues.write",
+  "comments.write",
+  "docs.write",
+  "files.upload",
+  "projects.write",
+  "inbox.manage",
+  "trash.purge",
+] as const;
+export type Permission = (typeof PERMISSIONS)[number];
+
+export const TEAM_PERMISSIONS: readonly Permission[] = [
+  "team.members",
+  "team.privacy",
+  "team.roles",
+  "team.delete",
+  "team.settings",
+  "team.workflow",
+  "team.templates",
+  "labels.team",
+  "issues.write",
+  "comments.write",
+  "docs.write",
+  "files.upload",
+  "trash.purge",
+];
+
+/**
+ * Never through an API key or agent token, only a browser session: what mints credentials that would outlive the key,
+ * or can't be undone.
+ */
+export const BROWSER_ONLY: readonly Permission[] = [
+  "workspace.delete",
+  "members.invite",
+  "agents.manage",
+  "webhooks.manage",
+  "github.manage",
+  "team.delete",
+  "trash.purge",
+];
+
+/**
+ * Managing who has access. A key may hold these (one given them, or an agent's token whose role does), but write keys
+ * made before roles (LEGACY_WRITE_KEY) don't, and a key that can't is told to sign in to the web app, as before roles.
+ */
+export const ACCESS: readonly Permission[] = [
+  "roles.manage",
+  "members.assign_role",
+  "members.suspend",
+  "teams.join",
+  "teams.manage_any",
+  "team.members",
+  "team.privacy",
+  "team.roles",
+];
+
+const CONTENT: readonly Permission[] = ["issues.write", "comments.write", "docs.write", "files.upload", "projects.write", "inbox.manage"];
+
+/** The built-in roles. */
+export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
+  admin: PERMISSIONS,
+  member: [
+    "workspace.browse",
+    "teams.create",
+    "teams.join",
+    "team.members",
+    "team.settings",
+    "team.workflow",
+    "team.templates",
+    "labels.create",
+    "labels.workspace",
+    "labels.team",
+    "views.create",
+    ...CONTENT,
+    "trash.purge",
+  ],
+  guest: ["labels.team", ...CONTENT],
+  agent: ["workspace.browse", "teams.create", "team.settings", "labels.create", "views.create", ...CONTENT],
+};
+
+/** What a write API key made before permissions may do, of what its owner may: everything a key can but manage access. */
+export const LEGACY_WRITE_KEY: readonly Permission[] = PERMISSIONS.filter((p) => !BROWSER_ONLY.includes(p) && !ACCESS.includes(p));
 
 /** The first segment of app URLs other than a workspace's (/<ws>/…): no workspace can take these keys. */
 export const RESERVED_WORKSPACE_KEYS = ["api", "doc", "docs", "icons", "issue", "login", "mcp", "settings", "setup", "t", "ws"];
@@ -103,7 +215,7 @@ export const RESERVED_WORKSPACE_KEYS = ["api", "doc", "docs", "icons", "issue", 
 export interface Workspace {
   key: string; // URL-safe lowercase slug, e.g. "acme"; not one of RESERVED_WORKSPACE_KEYS
   name: string;
-  role: Role; // yours
+  role: Role; // yours, if built in; "member" for a workspace's own role (Me.workspaces says which, and what it allows)
   createdAt: string;
   updatedAt: string;
 }
@@ -115,14 +227,42 @@ export interface WorkspaceInput {
 
 export type WorkspacePatch = Partial<Omit<WorkspaceInput, "key">>; // the key never changes
 
+/** A role of a workspace: a named set of permissions. Built-in ones (builtin: their key) can't be deleted; Admin can't be changed. */
+export interface WorkspaceRole {
+  key: string; // URL-safe slug, unique in the workspace; never changes
+  name: string;
+  description: string;
+  builtin: Role | null;
+  permissions: Permission[];
+  members: number; // how many members hold it, in the workspace or in a team
+}
+
+export interface RoleInput {
+  key?: string; // default: slugified name
+  name: string;
+  description?: string;
+  permissions: Permission[];
+}
+
+export type RolePatch = Partial<Omit<RoleInput, "key">>;
+
 export interface WorkspaceMember {
   user: UserRef;
   email: string | null;
-  role: Role;
+  role: Role; // built-in; "member" for a custom role (roleKey)
+  roleKey: string;
+  roleName: string;
+  permissions: Permission[]; // their role's
   joinedAt: string;
   suspendedAt: string | null; // suspended members can't reach the workspace; their history stays theirs
   integration: boolean; // an integration's account (GitHub's): never picked, delegated to, given a token or removed as an agent
   teams: string[]; // the teams they're in, of those you can see (keys)
+}
+
+/** GET /api/teams/:key/members: role is their own role in the team (a key; null: their workspace role's), roleName the one that applies. */
+export interface TeamMember extends UserRef {
+  role: string | null;
+  roleName: string;
 }
 
 /** GET /api/me. */
@@ -131,7 +271,18 @@ export interface Me {
   // everywhere else. username and name: yours in the request's workspace (a key's own, or X-Docket-Workspace);
   // for a session naming none, your default profile (the membership you joined most recently).
   user: User & { id: number };
-  workspaces: { key: string; name: string; role: Role; you: UserRef }[]; // you: how you're known there; for a key, only its own workspace
+  // you: how you're known there; for a key, only its own workspace. permissions: what this credential may do there;
+  // teams: what it may do in each team (by key) where you have a role of your own, instead.
+  workspaces: {
+    key: string;
+    name: string;
+    role: Role;
+    roleKey: string;
+    roleName: string;
+    permissions: Permission[];
+    teams: Record<string, Permission[]>;
+    you: UserRef;
+  }[];
   credential: "session" | "key"; // what this request came with
 }
 
@@ -151,6 +302,7 @@ export interface ApiKey {
   id: number;
   name: string;
   scope: ApiKeyScope;
+  permissions: Permission[] | null; // its cap; null: its owner's role's (an agent's token, or "inherit")
   workspace: string; // the workspace key; the key works only there
   createdAt: string;
   lastUsedAt: string | null;
@@ -223,7 +375,7 @@ export interface TeamInput {
   autoCloseChildren?: boolean; // default false
   autoArchiveDays?: number | null; // default null (never)
   estimateScale?: EstimateScale | null; // default null (off)
-  private?: boolean; // default false; the creator is its first member either way (PATCH: admins only)
+  private?: boolean; // default false; the creator is its first member either way (PATCH: team.privacy)
 }
 
 // The key and workspace never change.

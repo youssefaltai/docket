@@ -20,14 +20,14 @@ const integrationOf = (workspace: string) =>
 const payloadUrl = (req: Request, workspace: string) => `${originOf(req)}/api/github/${workspace}`;
 
 export function connection(a: Actor, workspace: unknown, req: Request): GitHubConnection {
-  const key = access.requireAdminSession(a, workspace);
+  const key = access.requireIn(a, workspace, "github.manage");
   const row = integrationOf(key);
   return { connected: !!row?.secret, url: payloadUrl(req, key), account: row ? access.profileOf(row.user_id, key) : null };
 }
 
 /** Connects GitHub (making or reinstating its account), or issues a new secret: the old one stops at once. */
 export function connect(a: Actor, workspace: unknown, req: Request): { url: string; secret: string } {
-  const key = access.requireAdminSession(a, workspace);
+  const key = access.requireIn(a, workspace, "github.manage");
   const secret = `dkgh_${randomBytes(32).toString("hex")}`;
   const userId = db.transaction(() => {
     const userId = access.ensureIntegrationAgent(key, "github", "GitHub", integrationOf(key)?.user_id);
@@ -43,7 +43,7 @@ export function connect(a: Actor, workspace: unknown, req: Request): { url: stri
 
 /** Disconnects: deliveries are refused, and the account is suspended (history keeps "GitHub"). */
 export function disconnect(a: Actor, workspace: unknown) {
-  const key = access.requireAdminSession(a, workspace);
+  const key = access.requireIn(a, workspace, "github.manage");
   const row = integrationOf(key);
   if (!row?.secret) throw new AppError("GitHub isn't connected", 409);
   db.transaction(() => {

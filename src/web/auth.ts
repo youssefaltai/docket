@@ -6,7 +6,9 @@ import type {
   CodeLink,
   GitHubConnection,
   Me,
-  Role,
+  Permission,
+  RoleInput,
+  RolePatch,
   Session,
   SetupInput,
   User,
@@ -16,6 +18,7 @@ import type {
   WebhookInput,
   WebhookPatch,
   WorkspaceMember,
+  WorkspaceRole,
 } from "../shared/types";
 import { enc, getCurrentWorkspace, request, setSignedInAs } from "./api";
 
@@ -39,6 +42,26 @@ export function getYou(): UserRef {
   return m.workspaces.find((w) => w.key === getCurrentWorkspace())?.you ?? m.user;
 }
 
+/** Whether you may do `p` in the current workspace; in `team` (its key), by your role there if you have one of your own. */
+export function can(p: Permission, team?: string | null): boolean {
+  const w = getMe().workspaces.find((w) => w.key === getCurrentWorkspace());
+  return !!w && ((team && w.teams[team]) || w.permissions).includes(p);
+}
+
+/** What workspace settings manage: who may do any of it finds them in the menus. */
+const MANAGE: Permission[] = [
+  "workspace.rename",
+  "workspace.delete",
+  "roles.manage",
+  "members.assign_role",
+  "members.suspend",
+  "members.invite",
+  "agents.manage",
+  "webhooks.manage",
+  "github.manage",
+];
+export const managesWorkspace = () => MANAGE.some((p) => can(p));
+
 const ws = (key: string) => `/api/workspaces/${enc(key)}`;
 
 export const auth = {
@@ -59,15 +82,21 @@ export const auth = {
   revokeOtherSessions: () => request<unknown>("DELETE", "/api/sessions"),
   signInLink: () => request<CodeLink>("POST", "/api/sign-in-links"),
   apiKeys: () => request<ApiKey[]>("GET", "/api/api-keys"),
-  createApiKey: (name: string, scope: ApiKeyScope, workspace: string) =>
-    request<{ apiKey: ApiKey; token: string }>("POST", "/api/api-keys", { name, scope, workspace }),
+  createApiKey: (name: string, scope: ApiKeyScope, workspace: string, permissions?: Permission[]) =>
+    request<{ apiKey: ApiKey; token: string }>("POST", "/api/api-keys", { name, scope, workspace, permissions }),
   revokeApiKey: (id: number) => request<unknown>("DELETE", `/api/api-keys/${id}`),
 
-  updateMember: (workspace: string, username: string, patch: { role?: Exclude<Role, "agent">; suspended?: boolean }) =>
+  roles: () => request<WorkspaceRole[]>("GET", "/api/roles"),
+  createRole: (input: RoleInput) => request<WorkspaceRole>("POST", "/api/roles", input),
+  updateRole: (key: string, patch: RolePatch) => request<WorkspaceRole>("PATCH", `/api/roles/${enc(key)}`, patch),
+  deleteRole: (key: string, moveTo: string) => request<unknown>("DELETE", `/api/roles/${enc(key)}?moveTo=${enc(moveTo)}`),
+  updateMember: (workspace: string, username: string, patch: { role?: string; suspended?: boolean }) =>
     request<WorkspaceMember>("PATCH", `${ws(workspace)}/members/${enc(username)}`, patch),
-  invite: (workspace: string, role: Exclude<Role, "agent">, teams?: string[]) => request<CodeLink>("POST", `${ws(workspace)}/invites`, { role, teams }),
-  createAgent: (workspace: string, name: string, username: string) =>
-    request<{ agent: UserRef; token: string }>("POST", `${ws(workspace)}/agents`, { name, username }),
+  /** Gives a member of a team a role of their own there, or (null) takes it away. */
+  setTeamRole: (team: string, username: string, role: string | null) => request<unknown>("PATCH", `/api/teams/${enc(team)}/members/${enc(username)}`, { role }),
+  invite: (workspace: string, role: string, teams?: string[]) => request<CodeLink>("POST", `${ws(workspace)}/invites`, { role, teams }),
+  createAgent: (workspace: string, name: string, username: string, role: string) =>
+    request<{ agent: UserRef; token: string }>("POST", `${ws(workspace)}/agents`, { name, username, role }),
   rotateAgentToken: (workspace: string, username: string) => request<{ token: string }>("POST", `${ws(workspace)}/agents/${enc(username)}/token`),
   removeAgent: (workspace: string, username: string) => request<unknown>("DELETE", `${ws(workspace)}/agents/${enc(username)}`),
 

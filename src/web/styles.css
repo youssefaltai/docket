@@ -3157,6 +3157,27 @@ textarea.input {
   align-items: center;
   gap: 6px;
 }
+/* Roles and custom API keys: permissions by group, as checkboxes; a role picker in a member's row. */
+.permission-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.permission-checks label {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  line-height: 1.4;
+}
+.permission-checks label:has(input:disabled) {
+  color: var(--muted);
+}
+.settings-select {
+  flex-shrink: 0;
+  max-width: 50%;
+  height: 30px;
+}
 .webhook-log {
   border-top: 1px solid var(--line);
   background: var(--bg-subtle);

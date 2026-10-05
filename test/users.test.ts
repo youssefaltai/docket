@@ -1,5 +1,6 @@
 // Workspaces, members, roles and agents: who can manage whom, suspension, and never locking out the last admin.
 import { afterAll, beforeAll, expect, test } from "bun:test";
+import { PERMISSIONS } from "../src/shared/types.ts";
 import { startServer, type TestServer } from "./server.ts";
 
 let s: TestServer;
@@ -22,7 +23,9 @@ const inWs = (key: string) => s.as("admin", "cookie", key);
 test("/api/me says who you are and where you belong", async () => {
   const me = (await s.api("GET", "/api/me")).body;
   expect(me.user).toMatchObject({ username: "admin", name: "Admin", kind: "person", email: "admin@example.com" });
-  expect(me.workspaces).toEqual([{ key: ws, name: "Acme", role: "admin", you: { username: "admin", name: "Admin", kind: "person" } }]);
+  expect(me.workspaces).toEqual([
+    { key: ws, name: "Acme", role: "admin", roleKey: "admin", roleName: "Admin", permissions: [...PERMISSIONS], teams: {}, you: { username: "admin", name: "Admin", kind: "person" } },
+  ]);
   expect((await s.as("bot").api("GET", "/api/me")).body.user).toMatchObject({ username: "bot", name: "Bot", kind: "agent" });
 });
 
@@ -85,7 +88,7 @@ test("the same agent username in two workspaces: separate agents, each acting on
     const me = (await agent.api("GET", "/api/me")).body;
     expect(me.user).toMatchObject({ username: "claude", name, kind: "agent" });
     expect(me.workspaces).toEqual([expect.objectContaining({ key, you: { username: "claude", name, kind: "agent" } })]);
-    expect(await agent.tool("list_members")).toContain(`@claude · ${name} · agent · you`);
+    expect(await agent.tool("list_members")).toContain(`@claude · ${name} · Agent · you`);
   }
   const acmeIssue = (await s.api("POST", "/api/issues", { team: "USR", title: "Acme work" })).body.id;
   const twinIssue = (await inWs("twin").api("POST", "/api/issues", { team: "TWN", title: "Twin work" })).body.id;
@@ -223,19 +226,19 @@ test("an agent's token rotates and its sockets close; deleting suspends it and k
   expect((await s.cli("sign-in-link", "temp-bot")).exitCode).not.toBe(0);
 });
 
-test("the last active admin can't be suspended or demoted", async () => {
+test("the last active admin can't be suspended, and nobody changes their own role", async () => {
   expect((await patch("admin", { suspended: true })).status).toBe(409);
-  expect((await patch("admin", { role: "member" })).status).toBe(409);
+  expect((await patch("admin", { role: "member" })).body).toEqual({ error: "You can't change your own role" });
   // A suspended admin doesn't count.
   await s.user("eve", { role: "admin" });
   await patch("eve", { suspended: true });
-  expect((await patch("admin", { role: "member" })).status).toBe(409);
-  // With a second active admin it's allowed, and the new last admin is then protected.
+  expect((await patch("admin", { suspended: true })).status).toBe(409);
+  // With a second active admin, one demotes the other, and the new last admin is then protected.
   await patch("eve", { suspended: false });
   await s.signIn("eve");
-  expect((await patch("admin", { role: "member" })).status).toBe(200);
-  expect((await patch("eve", { role: "member" }, s.as("eve"))).status).toBe(409);
+  expect((await patch("admin", { role: "member" }, s.as("eve"))).status).toBe(200);
   expect((await patch("eve", { suspended: true }, s.as("eve"))).status).toBe(409);
+  expect((await patch("eve", { role: "member" }, s.as("eve"))).status).toBe(403);
   expect((await patch("admin", { role: "admin" }, s.as("eve"))).status).toBe(200);
 });
 

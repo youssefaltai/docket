@@ -20,7 +20,7 @@ export interface SocketData {
 
 // What isn't about a team (the workspace, workspace labels): everyone in the workspace.
 const topic = (workspace: string) => `workspace:${workspace}`;
-// Public teams' events: everyone in the workspace but guests, who hear only their teams.
+// Public teams' events: those who browse the workspace (not guests, who hear only their teams).
 const publicTopic = (workspace: string) => `public:${workspace}`;
 // One team's events: a private team's members, and a public team's guests.
 const teamTopic = (teamId: number) => `team:${teamId}`;
@@ -29,10 +29,10 @@ const userTopic = (userId: number, workspace: string) => `user:${userId}:${works
 
 /** A socket's topics as of when it opens; any change to what its user sees closes it (revokeAccess), and it reconnects. */
 const topicsOf = (a: Actor) =>
-  [...a.workspaces].flatMap(([workspace, role]) => [
+  [...a.workspaces].flatMap(([workspace, permissions]) => [
     topic(workspace),
     userTopic(a.id, workspace),
-    ...(role === "guest" ? [] : [publicTopic(workspace)]),
+    ...(permissions.has("workspace.browse") ? [publicTopic(workspace)] : []),
     ...heardTeams(a, workspace).map(teamTopic),
   ]);
 

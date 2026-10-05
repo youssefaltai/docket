@@ -9,6 +9,7 @@ import { type Actor, requestWorkspace, SEES_TEAM, seesTeam } from "./access.ts";
 import { errorResponse } from "./api.ts";
 import { actorOf, mediaType } from "./auth.ts";
 import { AppError, db, now } from "./db.ts";
+import { requirePermission } from "./permissions.ts";
 
 /**
  * Where the bytes are, by attachment id; set by the entrypoint (local.ts on disk, src/worker in R2). `put` streams a
@@ -94,6 +95,8 @@ export async function saveAttachment(a: Actor, name: unknown, body: ReadableStre
     ? db.query<{ id: number }, [string, string]>(`SELECT id FROM teams t WHERE t.workspace = ? AND t.key = ? AND ${SEES_TEAM(String(a.id), "t")}`).get(workspace, team.trim().toUpperCase())?.id
     : null;
   if (teamId === undefined) throw new AppError(`Team ${team} not found`, 404);
+  const where = teamId === null ? workspace : { workspace, teamId };
+  requirePermission(a, "files.upload", `Your role can't upload files ${teamId === null ? "here" : `in ${team!.trim().toUpperCase()}`}`, where);
   const tooBig = () => new AppError(`Files can be at most ${MAX_UPLOAD_BYTES / 1024 / 1024} MB`, 413);
   if ((length ?? 0) > MAX_UPLOAD_BYTES) throw tooBig();
   const id = randomBytes(16).toString("base64url");

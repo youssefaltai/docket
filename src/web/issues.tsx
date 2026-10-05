@@ -15,7 +15,7 @@ import {
   type ProjectSummary,
 } from "../shared/types";
 import { api, store } from "./api";
-import { getYou } from "./auth";
+import { can, getYou } from "./auth";
 import { SelectBox, shiftClick, useBulk, type Selection } from "./bulk";
 import { AssigneePicker, Picker, PriorityPicker, StatusPicker, useMembers, userOption } from "./pickers";
 import {
@@ -250,7 +250,7 @@ export function IssuesView({ teamKey, cycle }: { teamKey: string | null; cycle?:
           </button>
         )}
         <LayoutToggle layout={view} onChange={changeView} />
-        {app.workspace?.role !== "guest" && (
+        {can("views.create") && (
           <button
             className="icon-btn"
             onClick={() => app.newView({ filter, display: { layout: view } })}

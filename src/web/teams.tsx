@@ -1,8 +1,8 @@
 // Team membership (Linear's): the Browse teams page (/<ws>/teams), where you join and leave teams, and a team's Members
 // and access in its settings. A private team is seen only by its members; admins join one with a warning first.
-import type { Team } from "../shared/types";
+import { TEAM_PERMISSIONS, type Permission, type Team, type TeamMember, type WorkspaceRole } from "../shared/types";
 import { api } from "./api";
-import { getYou } from "./auth";
+import { auth, can, getYou } from "./auth";
 import { Picker, RowMenu, userOption } from "./pickers";
 import {
   ask,
@@ -26,8 +26,7 @@ import {
 /** Every team you see, to join or leave; for admins also the private teams they aren't in, to join (with a warning). */
 export function TeamsPage() {
   const { teams, workspace, reloadTeams } = useApp();
-  const admin = workspace?.role === "admin";
-  const guest = workspace?.role === "guest";
+  const admin = can("teams.manage_any");
   useTitle("Teams");
   const { data: listing } = useFetch(admin && workspace ? () => api.teamListings(workspace.key) : null, [workspace?.key, admin]);
   const hidden = (listing ?? []).filter((t) => !teams?.some((v) => v.key === t.key));
@@ -52,7 +51,7 @@ export function TeamsPage() {
       <div className="content">
         {teams.length + hidden.length === 0 ? (
           <EmptyState icon={<TeamsIcon />} title="No teams yet">
-            {guest ? "You'll see the teams you're added to here." : "Create one from the sidebar."}
+            {can("teams.create") ? "Create one from the sidebar." : "You'll see the teams you're added to here."}
           </EmptyState>
         ) : (
           <div className="list">
@@ -70,7 +69,7 @@ export function TeamsPage() {
                     Leave
                   </button>
                 ) : (
-                  !guest && (
+                  can("teams.join") && (
                     <button className="btn btn-sm" onClick={() => join(t.key, t.name, false)}>
                       Join
                     </button>
@@ -100,24 +99,27 @@ export function TeamsPage() {
   );
 }
 
+const browses = (m: { permissions: Permission[] }) => m.permissions.includes("workspace.browse");
+
 /**
- * A team's members (team settings): who's in it, add someone (anyone in the team and admins), take someone off, join or
- * leave; and, for admins, whether it's private. Making it private says who loses access.
+ * A team's members (team settings): who's in it, add someone (its members with team.members, and teams.manage_any), take
+ * someone off, join or leave, give someone a role of their own in the team; and whether it's private (team.privacy).
+ * Making it private says who loses access.
  */
 export function TeamMembers({ team }: { team: Team }) {
-  const { members, workspace, reloadTeams, loadDirectory } = useApp();
-  const admin = workspace?.role === "admin";
+  const { members, reloadTeams, loadDirectory } = useApp();
+  const anyTeam = can("teams.manage_any");
   const { data: inTeam, reload } = useFetch(() => api.teamMembers(team.key), [team.key]);
+  const roles = useFetch(can("team.roles", team.key) || can("members.assign_role") ? auth.roles : null, [team.key]);
   const changed = () => {
     reload();
     reloadTeams();
     loadDirectory();
   };
-  const guest = workspace?.role === "guest";
-  const manage = (team.member || admin) && !guest; // guests don't change who's in a team
-  // Only admins add guests: who a guest sees is theirs to decide.
+  const manage = (team.member && can("team.members", team.key)) || anyTeam;
+  // Only teams.manage_any adds those who don't browse the workspace (guests): who a guest sees is theirs to decide.
   const addable = members
-    .filter((m) => !m.suspendedAt && (admin || m.role !== "guest") && !inTeam?.some((u) => u.username === m.user.username))
+    .filter((m) => !m.suspendedAt && (anyTeam || browses(m)) && !inTeam?.some((u) => u.username === m.user.username))
     .map((m) => m.user);
   const add = (username: string) => api.addTeamMember(team.key, username).then(changed, errorToast);
   const remove = async (username: string) => {
@@ -125,7 +127,7 @@ export function TeamMembers({ team }: { team: Team }) {
     api.removeTeamMember(team.key, username).then(changed, errorToast);
   };
   const setPrivate = async (on: boolean) => {
-    const outside = members.filter((m) => !m.suspendedAt && !m.integration && !m.teams.includes(team.key) && m.role !== "guest");
+    const outside = members.filter((m) => !m.suspendedAt && !m.integration && !m.teams.includes(team.key) && browses(m));
     const names = outside.map((m) => m.user.name).join(", ");
     const note = on
       ? `Only its members will see ${team.name}, its issues and docs.${outside.length ? ` ${names} ${outside.length === 1 ? "loses" : "lose"} access.` : ""}`
@@ -145,7 +147,7 @@ export function TeamMembers({ team }: { team: Team }) {
             Add member
           </Picker>
         ) : (
-          !guest && (
+          can(team.private ? "teams.manage_any" : "teams.join") && (
             <button className="btn btn-sm" onClick={() => add("me")}>
               Join
             </button>
@@ -156,7 +158,7 @@ export function TeamMembers({ team }: { team: Team }) {
       <p className="settings-hint">
         {team.private ? "Private: only its members see this team, its issues and docs." : "Public: everyone in the workspace but guests sees this team. Its members have it in their sidebar."}
       </p>
-      {admin && (
+      {can("team.privacy", team.key) && (
         <label className="workflow-switch">
           <input type="checkbox" checked={team.private} onChange={(e) => setPrivate(e.target.checked)} />
           <span>
@@ -172,7 +174,9 @@ export function TeamMembers({ team }: { team: Team }) {
               <div className="settings-row-title">
                 <span dir="auto">{u.name}</span> <span className="muted">@{u.username}</span>
               </div>
+              {!roles.data && u.role && <div className="settings-row-meta">{u.roleName} in this team</div>}
             </div>
+            {roles.data && <TeamRole team={team.key} member={u} roles={roles.data} onChange={changed} />}
             {(manage || isMe(u)) && (
               <RowMenu label={`Manage ${u.name}`} actions={[[isMe(u) ? "Leave team" : "Remove from team", () => remove(u.username)]]} />
             )}
@@ -180,5 +184,33 @@ export function TeamMembers({ team }: { team: Team }) {
         ))}
       </div>
     </Section>
+  );
+}
+
+/**
+ * A member's role in a team: their workspace role's, or one of their own there for the team's permissions. Only roles
+ * whose team permissions you hold in the team can be given, never to yourself.
+ */
+function TeamRole({ team, member, roles, onChange }: { team: string; member: TeamMember; roles: WorkspaceRole[]; onChange: () => void }) {
+  const { members } = useApp();
+  const inWorkspace = members.find((m) => m.user.username === member.username);
+  const holds = (ps: Permission[]) => ps.every((p) => !TEAM_PERMISSIONS.includes(p) || can(p, team));
+  const current = roles.find((r) => r.key === member.role)?.permissions ?? inWorkspace?.permissions ?? [];
+  const set = (role: string) => auth.setTeamRole(team, member.username, role || null).then(onChange, errorToast);
+  return (
+    <select
+      className="input settings-select"
+      aria-label={`${member.name}'s role in ${team}`}
+      value={member.role ?? ""}
+      disabled={isMe(member) || !holds(current)}
+      onChange={(e) => set(e.target.value)}
+    >
+      <option value="">{inWorkspace ? `${inWorkspace.roleName} (workspace)` : "Workspace role"}</option>
+      {roles.map((r) => (
+        <option key={r.key} value={r.key} disabled={!holds(r.permissions)}>
+          {r.name}
+        </option>
+      ))}
+    </select>
   );
 }

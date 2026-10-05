@@ -3,7 +3,7 @@ import { Fragment, StrictMode, useCallback, useEffect, useRef, useState, useSync
 import { createRoot } from "react-dom/client";
 import type { CustomView, CustomViewInput, Inbox, IssueInput, Label, Team, Workspace, WorkspaceMember } from "../shared/types";
 import { api, connectionStore, setCurrentWorkspace, setOnAccessLost, setOnUnauthorized, store, subscribe } from "./api";
-import { auth, getMe, getYou, loadMe } from "./auth";
+import { auth, getMe, getYou, loadMe, managesWorkspace } from "./auth";
 import { syncPush } from "./push";
 import { CommandMenu, openCommandMenu } from "./commandmenu";
 import { DocPage, DocsView } from "./docs";
@@ -57,6 +57,7 @@ import {
   statusGroups,
   toast,
   useApp,
+  useCan,
   moveFocus,
   useGoChord,
   useKeydown,
@@ -182,7 +183,8 @@ function App() {
   }, [loadIndex, loadInbox]);
 
   useEffect(() => {
-    api.workspaces().then(setWorkspaces, errorToast);
+    // With what you may do in each (getMe), which a role change elsewhere may have changed.
+    Promise.all([api.workspaces(), loadMe()]).then(([list]) => setWorkspaces(list), errorToast);
   }, [listTick, teamsTick]);
 
   useEffect(() => {
@@ -415,7 +417,8 @@ function routeTeam(route: Route, docTeam: string | null): string | null {
 
 function Sidebar({ route, active, onSwitch }: { route: Route; active: string | null; onSwitch: (key: string) => void }) {
   const { workspaces, workspace, teams, views, inbox, newIssue, newTeam, newWorkspace } = useApp();
-  const guest = workspace?.role === "guest"; // only their teams: no views, no new teams
+  const browse = useCan("workspace.browse"); // else only their teams: no views, no new teams
+  const createTeams = useCan("teams.create");
   const favorites = views?.filter((v) => v.favorite) ?? [];
   // Your teams, and the one you're on if you aren't in it (a public team you opened from Browse teams).
   const mine = teams?.filter((t) => t.member || t.key === active);
@@ -479,7 +482,7 @@ function Sidebar({ route, active, onSwitch }: { route: Route; active: string | n
           <ProjectIcon />
           <span className="nav-label">Projects</span>
         </Link>
-        {!guest && (
+        {browse && (
           <Link
             to="/views"
             className={cls("nav-item", (on("views") || (route.view === "customview" && !favorites.some((v) => v.id === route.id))) && "active")}
@@ -503,7 +506,7 @@ function Sidebar({ route, active, onSwitch }: { route: Route; active: string | n
         ))}
         <div className="nav-section">
           <span>Your teams</span>
-          {!guest && (
+          {createTeams && (
             <button className="icon-btn xs" onClick={newTeam} aria-label="New team" title="New team">
               <PlusIcon />
             </button>
@@ -519,7 +522,7 @@ function Sidebar({ route, active, onSwitch }: { route: Route; active: string | n
             {openCount(t) > 0 && <span className="nav-count">{openCount(t)}</span>}
           </Link>
         ))}
-        {teams?.length === 0 && !guest ? (
+        {teams?.length === 0 && createTeams ? (
           <button className="nav-item nav-muted" onClick={newTeam}>
             <PlusIcon />
             <span className="nav-label">Create a team</span>
@@ -542,7 +545,7 @@ function AccountMenu() {
   const user = getYou();
   const options = [
     { value: "/settings/account", label: "Settings" },
-    ...(workspace?.role === "admin" ? [{ value: "/settings/workspace", label: "Workspace settings" }] : []),
+    ...(managesWorkspace() ? [{ value: "/settings/workspace", label: "Workspace settings" }] : []),
     { value: "signout", label: "Sign out" },
   ];
   // Signing out forgets this browser's workspace too, so the next person doesn't start in yours.

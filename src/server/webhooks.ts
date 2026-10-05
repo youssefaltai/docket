@@ -14,7 +14,7 @@ import {
   type WebhookPatch,
   type WebhookResource,
 } from "../shared/types.ts";
-import { type Actor, requireAdminSession } from "./access.ts";
+import { type Actor, requireIn } from "./access.ts";
 import { AppError, changed, checkOneOf, db, knownAs, now, optionalText } from "./db.ts";
 import { later, workers } from "./runtime.ts";
 
@@ -356,13 +356,13 @@ function checkResources(value: unknown): WebhookResource[] {
 const newSecret = () => `dkwh_${randomBytes(32).toString("hex")}`;
 
 export function listWebhooks(a: Actor, workspace: unknown): Webhook[] {
-  const key = requireAdminSession(a, workspace);
+  const key = requireIn(a, workspace, "webhooks.manage");
   return db.query<WebhookRow, [string]>(`${SELECT} WHERE w.workspace = ? ORDER BY w.id`).all(key).map(toWebhook);
 }
 
 /** A new webhook, and its signing secret: shown this once. */
 export async function createWebhook(a: Actor, workspace: unknown, input: WebhookInput): Promise<{ webhook: Webhook; secret: string }> {
-  const key = requireAdminSession(a, workspace);
+  const key = requireIn(a, workspace, "webhooks.manage");
   const label = optionalText(input.label, "label");
   const types = input.resourceTypes === undefined ? [...WEBHOOK_RESOURCES] : checkResources(input.resourceTypes);
   const url = await checkUrl(input.url);
@@ -380,7 +380,7 @@ export async function createWebhook(a: Actor, workspace: unknown, input: Webhook
 
 /** Enabling resets its failures; disabling fails what's queued. */
 export async function updateWebhook(a: Actor, workspace: unknown, id: unknown, patch: WebhookPatch): Promise<Webhook> {
-  const key = requireAdminSession(a, workspace);
+  const key = requireIn(a, workspace, "webhooks.manage");
   const row = webhookRow(key, id);
   if (patch.enabled !== undefined && typeof patch.enabled !== "boolean") throw new AppError("enabled must be true or false");
   const label = patch.label === undefined ? row.label : optionalText(patch.label, "label");
@@ -397,14 +397,14 @@ export async function updateWebhook(a: Actor, workspace: unknown, id: unknown, p
 }
 
 export function deleteWebhook(a: Actor, workspace: unknown, id: unknown) {
-  const key = requireAdminSession(a, workspace);
+  const key = requireIn(a, workspace, "webhooks.manage");
   db.query("DELETE FROM webhooks WHERE id = ?").run(webhookRow(key, id).id);
   changed("workspace", key, key);
 }
 
 /** A new signing secret: the old one stops at once. */
 export function rotateWebhookSecret(a: Actor, workspace: unknown, id: unknown): { secret: string } {
-  const key = requireAdminSession(a, workspace);
+  const key = requireIn(a, workspace, "webhooks.manage");
   const secret = newSecret();
   db.query("UPDATE webhooks SET secret = ?, updated_at = ? WHERE id = ?").run(secret, now(), webhookRow(key, id).id);
   changed("workspace", key, key);
@@ -413,7 +413,7 @@ export function rotateWebhookSecret(a: Actor, workspace: unknown, id: unknown): 
 
 /** The newest 50 deliveries. */
 export function listDeliveries(a: Actor, workspace: unknown, id: unknown): WebhookDelivery[] {
-  const key = requireAdminSession(a, workspace);
+  const key = requireIn(a, workspace, "webhooks.manage");
   return db
     .query<Record<string, any>, [number]>("SELECT * FROM webhook_deliveries WHERE webhook_id = ? ORDER BY id DESC LIMIT 50")
     .all(webhookRow(key, id).id)
