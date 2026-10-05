@@ -1,5 +1,5 @@
 import type { BunRequest } from "bun";
-import type { CustomViewInput, DocumentInput, IssueFilter, IssueInput, IssueTemplateInput, LabelInput, MilestoneInput, ProjectInput, TeamInput, WebhookInput, WorkflowStatusInput, WorkspaceInput } from "../shared/types.ts";
+import type { CustomViewInput, DocumentInput, IssueFilter, IssueInput, IssueTemplateInput, LabelInput, MilestoneInput, ProjectInput, RoleInput, TeamInput, WebhookInput, WorkflowStatusInput, WorkspaceInput } from "../shared/types.ts";
 import * as access from "./access.ts";
 import { actorOf, isJson } from "./auth.ts";
 import { AppError } from "./db.ts";
@@ -8,6 +8,7 @@ import { originOf } from "./http.ts";
 import * as inbox from "./inbox.ts";
 import * as push from "./push.ts";
 import * as removal from "./removal.ts";
+import * as roles from "./roles.ts";
 import * as tracker from "./tracker.ts";
 import * as webhooks from "./webhooks.ts";
 
@@ -135,6 +136,16 @@ export const apiRoutes = {
       access.updateMember(a, req.params.key, req.params.username, await patch(req, "a member", ["role", "suspended"])),
     ),
   },
+  "/api/roles": {
+    GET: handle((_, a) => roles.listRoles(a)),
+    POST: handle(async (req, a) => roles.createRole(a, await body<RoleInput>(req)), 201),
+  },
+  "/api/roles/:key": {
+    PATCH: handle<"/api/roles/:key">(async (req, a) =>
+      roles.updateRole(a, req.params.key, await patch(req, "a role", ["name", "description", "permissions"], { key: "A role's key never changes" })),
+    ),
+    DELETE: handle<"/api/roles/:key">((req, a) => roles.deleteRole(a, req.params.key, param(req, "moveTo"))),
+  },
   "/api/workspaces/:key/teams": {
     GET: handle<"/api/workspaces/:key/teams">((req, a) => access.listTeamListings(a, req.params.key)),
   },
@@ -188,6 +199,7 @@ export const apiRoutes = {
     POST: handle<"/api/teams/:key/members">(async (req, a) => tracker.addTeamMember(a, req.params.key, (await patch(req, "a team member", ["username"])).username)),
   },
   "/api/teams/:key/members/:username": {
+    PATCH: handle<"/api/teams/:key/members/:username">(async (req, a) => roles.setTeamRole(a, req.params.key, req.params.username, (await patch(req, "a team member", ["role"])).role)),
     DELETE: handle<"/api/teams/:key/members/:username">((req, a) => tracker.removeTeamMember(a, req.params.key, req.params.username)),
   },
   "/api/teams/:key/statuses": {

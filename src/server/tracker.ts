@@ -88,7 +88,7 @@ import {
   usernameOf,
   visibleTeamIds,
 } from "./access.ts";
-import { can, memberHolds, requirePermission, requireUpfront } from "./permissions.ts";
+import { can, inTeam as teamWhere, memberHolds, requirePermission, requireUpfront } from "./permissions.ts";
 import {
   AppError,
   BUMPED_AT,
@@ -262,6 +262,11 @@ function setReaction(a: Actor, target: string, owner: { issueId?: number; docume
     owner.documentId ?? null,
     time,
   );
+}
+
+/** 403 unless `a` may do content permission `p` in a team, e.g. "Your role can't comment in BRD". */
+function requireContent(a: Actor, p: Permission, doing: string, workspace: string, team: TeamRef) {
+  requirePermission(a, p, `Your role can't ${doing} in ${team.key}`, { workspace, teamId: team.id });
 }
 
 // --- Comments ---
@@ -566,7 +571,7 @@ function checkAutoArchiveDays(value: unknown): number | null {
  */
 export function updateTeam(a: Actor, key: string, patch: TeamPatch): Team {
   const row = teamRow(a, key);
-  requirePermission(a, "team.settings", "Guests can't change a team's settings", row);
+  requirePermission(a, "team.settings", "Guests can't change a team's settings", teamWhere(row));
   syncCycles(row.id); // settings act on the cycles as they are now
   const name = patch.name === undefined ? row.name : requireText(patch.name, "name");
   const description = patch.description === undefined ? row.description : optionalText(patch.description, "description");
@@ -583,7 +588,7 @@ export function updateTeam(a: Actor, key: string, patch: TeamPatch): Team {
   const isPrivate = patch.private === undefined ? row.private : checkFlag(patch.private, "private");
   if (isPrivate !== row.private) {
     // Who sees the team is access: from a browser session.
-    requirePermission(a, "team.privacy", "Only workspace admins can make a team private or public", row);
+    requirePermission(a, "team.privacy", "Only workspace admins can make a team private or public", teamWhere(row));
     if (isPrivate && !teamMemberIds(row.id).length) throw new AppError("Add a member first", 409);
   }
   const cycles = cycleSettings(row, patch);
@@ -672,7 +677,7 @@ export function addTeamMember(a: Actor, key: string, username: unknown): Team {
   const admin = can(a, "teams.manage_any", team.workspace);
   if (who.id === a.id) requirePermission(a, "teams.join", "Guests can't join teams: an admin adds them", team.workspace);
   else {
-    requirePermission(a, "team.members", "Guests can't add people to teams", team);
+    requirePermission(a, "team.members", "Guests can't add people to teams", teamWhere(team));
     if (!team.visible || (!team.member && !admin)) {
       throw new AppError(team.visible ? "Only the team's members and workspace admins can add people to it" : "Join the team first", 403);
     }
@@ -695,7 +700,7 @@ export function removeTeamMember(a: Actor, key: string, username: unknown): Team
   if (!team.visible) throw new AppError(`Team ${key} not found`, 404);
   const who = workspaceMember(a, team.workspace, username);
   if (who.id !== a.id) {
-    requirePermission(a, "team.members", "Guests can't remove people from teams", team);
+    requirePermission(a, "team.members", "Guests can't remove people from teams", teamWhere(team));
     if (!team.member && !can(a, "teams.manage_any", team.workspace)) {
       throw new AppError("Only the team's members and workspace admins can remove people from it", 403);
     }
@@ -742,7 +747,7 @@ const duplicateStatus = (teamId: number) =>
 function workflowTeam(a: Actor, key: unknown): TeamRow {
   requireUpfront(a, ["team.workflow"], "Only people can change a workflow");
   const team = teamRow(a, key);
-  requirePermission(a, "team.workflow", "Guests can't change a workflow", team);
+  requirePermission(a, "team.workflow", "Guests can't change a workflow", teamWhere(team));
   return team;
 }
 
@@ -898,7 +903,7 @@ function templateRow(a: Actor, id: unknown): TemplateRow {
 function managedTemplate(a: Actor, id: unknown): TemplateRow {
   requireUpfront(a, ["team.templates"], NO_AGENT_TEMPLATES);
   const row = templateRow(a, id);
-  requirePermission(a, "team.templates", NO_GUEST_TEMPLATES, row);
+  requirePermission(a, "team.templates", NO_GUEST_TEMPLATES, { workspace: row.workspace, teamId: row.team_id });
   return row;
 }
 
@@ -924,7 +929,7 @@ export function listTemplates(a: Actor, filter: { team?: string } = {}): IssueTe
 export function createTemplate(a: Actor, input: IssueTemplateInput): IssueTemplate {
   requireUpfront(a, ["team.templates"], NO_AGENT_TEMPLATES);
   const team = teamRow(a, input.team);
-  requirePermission(a, "team.templates", NO_GUEST_TEMPLATES, team);
+  requirePermission(a, "team.templates", NO_GUEST_TEMPLATES, teamWhere(team));
   const name = requireText(input.name, "name");
   const title = optionalText(input.title, "title");
   const description = optionalText(input.description, "description");
@@ -1757,6 +1762,7 @@ function bumpIssues(ids: Iterable<number>, time: string): string[] {
 
 export function createIssue(a: Actor, rawInput: IssueInput): Issue {
   const team = teamRow(a, rawInput.team);
+  requireContent(a, "issues.write", "change issues", team.workspace, team);
   const input = applyTemplate(team, rawInput);
   const cols = {
     description: "",
@@ -1861,8 +1867,10 @@ function carriedStatus(team: TeamRow, status: string, category: StatusCategory):
  */
 export function updateIssue(a: Actor, identifier: string, patch: IssuePatch): Issue {
   const { id, workspace, team: from, ref } = liveIssue(a, identifier);
+  requireContent(a, "issues.write", "change issues", workspace, from);
   const team = patch.team === undefined ? from : moveTarget(a, patch.team);
   const moving = team.id !== from.id;
+  if (moving) requireContent(a, "issues.write", "change issues", workspace, team);
   const cols = issueColumns(a, workspace, team, patch);
   const seen = seenBy(a, workspace);
   if (moving) {
@@ -2097,6 +2105,7 @@ function relatives(id: number): number[] {
  */
 function trashIssue(a: Actor, identifier: string, trash: boolean): Issue {
   const issue = issueRef(a, identifier);
+  requireContent(a, "issues.write", "change issues", issue.workspace, issue.team);
   if (!!issue.deleted_at === trash) throw new AppError(trash ? `${issue.ref} is already in the trash` : `${issue.ref} isn't in the trash`, 409);
   purgeTrash();
   const docs = db
@@ -2126,6 +2135,7 @@ export const restoreIssue = (a: Actor, identifier: string) => trashIssue(a, iden
  */
 function setArchived(a: Actor, identifier: string, archive: boolean): Issue {
   const issue = issueRef(a, identifier);
+  requireContent(a, "issues.write", "change issues", issue.workspace, issue.team);
   if (issue.deleted_at) throw new AppError(`${issue.ref} is in the trash; restore it first`, 409);
   if (!!issue.archived_at === archive) throw new AppError(archive ? `${issue.ref} is already archived` : `${issue.ref} isn't archived`, 409);
   const time = now();
@@ -2245,15 +2255,15 @@ function dropIssues(ids: number[]) {
 }
 
 /** A person's own hand: trash.purge from a browser session (an API key, so an agent, never), on something already in the trash (409). */
-function requireManualPurge(a: Actor, row: { workspace: string; deleted_at: string | null }, what: string) {
-  requirePermission(a, "trash.purge", "Guests can't delete forever", row, "Delete forever from the web app: API keys and agents can't");
+function requireManualPurge(a: Actor, row: { workspace: string; deleted_at: string | null }, teamId: number, what: string) {
+  requirePermission(a, "trash.purge", "Guests can't delete forever", { workspace: row.workspace, teamId }, "Delete forever from the web app: API keys and agents can't");
   if (!row.deleted_at) throw new AppError(`${what} isn't in the trash; delete it first`, 409);
 }
 
 /** Deletes a trashed issue for good, with its comments, history and links; it can't be restored. */
 export function purgeIssue(a: Actor, identifier: string): { ok: true } {
   const issue = issueRef(a, identifier);
-  requireManualPurge(a, issue, issue.ref);
+  requireManualPurge(a, issue, issue.team.id, issue.ref);
   dropIssues([issue.id]); // its relations and doc refs were already hidden by the trash
   changed("issue", issue.workspace, issue.ref);
   return { ok: true };
@@ -2262,7 +2272,7 @@ export function purgeIssue(a: Actor, identifier: string): { ok: true } {
 /** Deletes a trashed doc for good, with its versions and comments; it can't be restored. */
 export function purgeDocument(a: Actor, slug: string): { ok: true } {
   const row = documentRow(a, slug);
-  requireManualPurge(a, row, `Document ${row.slug}`);
+  requireManualPurge(a, row, row.team_id, `Document ${row.slug}`);
   db.query("DELETE FROM documents WHERE id = ?").run(row.id);
   changed("document", row.workspace, row.slug);
   return { ok: true };
@@ -2292,6 +2302,7 @@ export function listTrash(a: Actor, team: string): Trash {
  */
 export function claimIssue(a: Actor, identifier: string): Issue {
   const { id, workspace, team } = liveIssue(a, identifier);
+  requireContent(a, "issues.write", "change issues", workspace, team);
   const slot = a.kind === "person" ? "assignee_id" : "delegate_id";
   const time = now();
   const claimed = db.transaction(() => {
@@ -2320,7 +2331,8 @@ export function claimIssue(a: Actor, identifier: string): Issue {
 
 /** Runs a change to an issue's comments, bumping the issue in the same transaction. */
 function changeIssueComments(a: Actor, identifier: string, change: (id: number, time: string, workspace: string) => void): Issue {
-  const { id, workspace } = liveIssue(a, identifier);
+  const { id, workspace, team } = liveIssue(a, identifier);
+  requireContent(a, "comments.write", "comment", workspace, team);
   const time = now();
   db.transaction(() => {
     change(id, time, workspace);
@@ -2348,7 +2360,8 @@ export const resolveIssueThread = (a: Actor, identifier: string, commentId: unkn
  * one). Doesn't bump updated_at or notify anyone.
  */
 export function reactToIssue(a: Actor, identifier: string, emoji: unknown, on: boolean, commentId?: unknown): Issue {
-  const { id, workspace } = liveIssue(a, identifier);
+  const { id, workspace, team } = liveIssue(a, identifier);
+  requireContent(a, "comments.write", "comment", workspace, team);
   const target = commentId === undefined ? `issue:${id}` : `${COMMENTS.issue.source}:${commentRow("issue", id, workspace, commentId).id}`;
   setReaction(a, target, { issueId: id }, emoji, on, now());
   const issue = getIssue(a, identifier);
@@ -2528,7 +2541,7 @@ const LABEL_PERMISSIONS: Permission[] = ["labels.workspace", "labels.team"];
 /** Managing labels in a scope: the workspace's (null) or a team's (its id). */
 function requireLabels(a: Actor, workspace: string, teamId: number | null) {
   if (teamId === null) requirePermission(a, "labels.workspace", "Guests can't manage workspace labels", workspace);
-  else requirePermission(a, "labels.team", NO_AGENT_LABELS, workspace);
+  else requirePermission(a, "labels.team", NO_AGENT_LABELS, { workspace, teamId });
 }
 
 /** A new name: no "/" (Group/Label is a group's; names from before labels were entities keep theirs). */
@@ -2977,6 +2990,7 @@ export function getDocument(a: Actor, slug: string): Document {
 
 export function createDocument(a: Actor, input: DocumentInput): Document {
   const team = teamRow(a, input.team);
+  requireContent(a, "docs.write", "change documents", team.workspace, team);
   const title = requireText(input.title, "title");
   const content = input.content === undefined ? "" : checkContent(input.content);
   const position = input.position === undefined ? undefined : checkPosition(input.position);
@@ -3005,6 +3019,7 @@ export function createDocument(a: Actor, input: DocumentInput): Document {
 
 export function updateDocument(a: Actor, slug: string, patch: DocumentPatch): Document {
   const row = liveDocument(a, slug);
+  requireContent(a, "docs.write", "change documents", row.workspace, { id: row.team_id, key: row.team_key });
   if (patch.baseUpdatedAt !== undefined && patch.baseUpdatedAt !== row.updated_at) throw new AppError("Document changed since you started editing", 409);
   if (patch.content !== undefined && patch.edits !== undefined) throw new AppError("Pass either content (full replacement) or edits, not both");
   const cols: Record<string, Binding> = {};
@@ -3013,6 +3028,7 @@ export function updateDocument(a: Actor, slug: string, patch: DocumentPatch): Do
   if (patch.edits !== undefined) cols.content = capLength(applyEdits(row.content, patch.edits), "content");
   if (patch.team !== undefined) {
     const team = teamRow(a, patch.team); // in the doc's workspace: docs never move between workspaces
+    if (team.id !== row.team_id) requireContent(a, "docs.write", "change documents", row.workspace, team);
     cols.team_id = team.id;
     if (team.id !== row.team_id && patch.position === undefined) cols.position = nextPosition(team.id);
   }
@@ -3055,6 +3071,7 @@ export function updateDocument(a: Actor, slug: string, patch: DocumentPatch): Do
 /** Moves a doc to the trash or back; its versions, comments and refs stay until it's purged. */
 function trashDocument(a: Actor, slug: string, trash: boolean): Document {
   const row = documentRow(a, slug);
+  requireContent(a, "docs.write", "change documents", row.workspace, { id: row.team_id, key: row.team_key });
   if (!!row.deleted_at === trash) throw new AppError(trash ? `Document ${row.slug} is already in the trash` : `Document ${row.slug} isn't in the trash`, 409);
   purgeTrash();
   const time = now();
@@ -3072,6 +3089,7 @@ export const restoreDocument = (a: Actor, slug: string) => trashDocument(a, slug
 /** Runs a change to a doc's comments in one transaction. It leaves the doc's updated_at alone, so an open editor sees no conflict. */
 function changeDocumentComments(a: Actor, slug: string, change: (id: number, time: string, workspace: string) => void): Document {
   const row = liveDocument(a, slug);
+  requireContent(a, "comments.write", "comment", row.workspace, { id: row.team_id, key: row.team_key });
   const time = now();
   db.transaction(() => change(row.id, time, row.workspace))();
   changed("document", row.workspace, row.slug);
@@ -3257,14 +3275,17 @@ export function getProject(a: Actor, slug: string): Project {
   return { ...toProjectSummary(row), description: row.description, creator: ref(row, "creator")!, milestones, docs };
 }
 
+const NO_PROJECTS = "Your role can't change projects";
+
 const setProjectTeams = (projectId: number, teamIds: number[]) => {
   db.query("DELETE FROM project_teams WHERE project_id = ?").run(projectId);
   for (const id of teamIds) db.query("INSERT INTO project_teams (project_id, team_id) VALUES (?, ?)").run(projectId, id);
 };
 
-/** Creates a project (any member, people and agents alike) over teams of the request's workspace, its workspace. */
+/** Creates a project (projects.write) over teams of the request's workspace, its workspace. */
 export function createProject(a: Actor, input: ProjectInput): Project {
   const workspace = requestWorkspace(a);
+  requirePermission(a, "projects.write", NO_PROJECTS, workspace);
   const teams = projectTeams(a, input.teams);
   const name = requireText(input.name, "name");
   const description = optionalText(input.description, "description");
@@ -3294,6 +3315,7 @@ export function createProject(a: Actor, input: ProjectInput): Project {
  */
 export function updateProject(a: Actor, slug: string, patch: ProjectPatch): Project {
   const row = projectRow(a, slug);
+  requirePermission(a, "projects.write", NO_PROJECTS, row.workspace);
   const cols: Record<string, Binding> = {};
   if (patch.name !== undefined) cols.name = requireText(patch.name, "name");
   if (patch.description !== undefined) cols.description = optionalText(patch.description, "description");
@@ -3344,6 +3366,7 @@ function milestoneRow(project: ProjectRow, id: unknown): MilestoneRow {
 /** Adds a milestone (a stage) to a project, last unless `position` says otherwise. */
 export function createMilestone(a: Actor, slug: string, input: MilestoneInput): Project {
   const project = projectRow(a, slug);
+  requirePermission(a, "projects.write", NO_PROJECTS, project.workspace);
   const name = milestoneName(project.id, input.name);
   const description = optionalText(input.description, "description");
   const targetDate = input.targetDate === undefined ? null : checkTargetDate(input.targetDate);
@@ -3357,6 +3380,7 @@ export function createMilestone(a: Actor, slug: string, input: MilestoneInput): 
 /** Renames, redescribes, redates or moves a milestone. A new name shows on its issues: they're bumped, as for a label's. */
 export function updateMilestone(a: Actor, slug: string, id: unknown, patch: MilestonePatch): Project {
   const project = projectRow(a, slug);
+  requirePermission(a, "projects.write", NO_PROJECTS, project.workspace);
   const m = milestoneRow(project, id);
   const name = patch.name === undefined ? m.name : milestoneName(project.id, patch.name, m.id);
   const description = patch.description === undefined ? m.description : optionalText(patch.description, "description");
@@ -3376,6 +3400,7 @@ export function updateMilestone(a: Actor, slug: string, id: unknown, patch: Mile
 /** Deletes a milestone: it comes off its issues (trashed ones too), each logged as its own milestone change. */
 export function deleteMilestone(a: Actor, slug: string, id: unknown): Project {
   const project = projectRow(a, slug);
+  requirePermission(a, "projects.write", NO_PROJECTS, project.workspace);
   const m = milestoneRow(project, id);
   const time = now();
   const read = db.query<IssueRow, [number]>(`${ISSUE_SELECT} WHERE i.id = ?`);

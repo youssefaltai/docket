@@ -155,22 +155,31 @@ export const TEAM_PERMISSIONS: readonly Permission[] = [
 
 /**
  * Never through an API key or agent token, only a browser session: what mints credentials that would outlive the key,
- * can't be undone, or manages who has access.
+ * or can't be undone.
  */
 export const BROWSER_ONLY: readonly Permission[] = [
   "workspace.delete",
-  "members.assign_role",
-  "members.suspend",
   "members.invite",
   "agents.manage",
   "webhooks.manage",
   "github.manage",
+  "team.delete",
+  "trash.purge",
+];
+
+/**
+ * Managing who has access. A key may hold these (one given them, or an agent's token whose role does), but write keys
+ * made before roles (LEGACY_WRITE_KEY) don't, and a key that can't is told to sign in to the web app, as before roles.
+ */
+export const ACCESS: readonly Permission[] = [
+  "roles.manage",
+  "members.assign_role",
+  "members.suspend",
   "teams.join",
   "teams.manage_any",
   "team.members",
   "team.privacy",
-  "team.delete",
-  "trash.purge",
+  "team.roles",
 ];
 
 const CONTENT: readonly Permission[] = ["issues.write", "comments.write", "docs.write", "files.upload", "projects.write", "inbox.manage"];
@@ -197,10 +206,8 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
   agent: ["workspace.browse", "teams.create", "team.settings", "labels.create", "views.create", ...CONTENT],
 };
 
-/** What a write API key made before permissions may do, of what its owner may: everything a key can but manage roles. */
-export const LEGACY_WRITE_KEY: readonly Permission[] = PERMISSIONS.filter(
-  (p) => !BROWSER_ONLY.includes(p) && p !== "roles.manage" && p !== "team.roles",
-);
+/** What a write API key made before permissions may do, of what its owner may: everything a key can but manage access. */
+export const LEGACY_WRITE_KEY: readonly Permission[] = PERMISSIONS.filter((p) => !BROWSER_ONLY.includes(p) && !ACCESS.includes(p));
 
 /** The first segment of app URLs other than a workspace's (/<ws>/…): no workspace can take these keys. */
 export const RESERVED_WORKSPACE_KEYS = ["api", "doc", "docs", "icons", "issue", "login", "mcp", "settings", "setup", "t", "ws"];
@@ -220,10 +227,32 @@ export interface WorkspaceInput {
 
 export type WorkspacePatch = Partial<Omit<WorkspaceInput, "key">>; // the key never changes
 
+/** A role of a workspace: a named set of permissions. Built-in ones (builtin: their key) can't be deleted; Admin can't be changed. */
+export interface WorkspaceRole {
+  key: string; // URL-safe slug, unique in the workspace; never changes
+  name: string;
+  description: string;
+  builtin: Role | null;
+  permissions: Permission[];
+  members: number; // how many members hold it, in the workspace or in a team
+}
+
+export interface RoleInput {
+  key?: string; // default: slugified name
+  name: string;
+  description?: string;
+  permissions: Permission[];
+}
+
+export type RolePatch = Partial<Omit<RoleInput, "key">>;
+
 export interface WorkspaceMember {
   user: UserRef;
   email: string | null;
-  role: Role;
+  role: Role; // built-in; "member" for a custom role (roleKey)
+  roleKey: string;
+  roleName: string;
+  permissions: Permission[]; // their role's
   joinedAt: string;
   suspendedAt: string | null; // suspended members can't reach the workspace; their history stays theirs
   integration: boolean; // an integration's account (GitHub's): never picked, delegated to, given a token or removed as an agent
@@ -236,7 +265,8 @@ export interface Me {
   // everywhere else. username and name: yours in the request's workspace (a key's own, or X-Docket-Workspace);
   // for a session naming none, your default profile (the membership you joined most recently).
   user: User & { id: number };
-  workspaces: { key: string; name: string; role: Role; you: UserRef }[]; // you: how you're known there; for a key, only its own workspace
+  // you: how you're known there; for a key, only its own workspace. permissions: what this credential may do there (beyond a team's own roles).
+  workspaces: { key: string; name: string; role: Role; roleKey: string; roleName: string; permissions: Permission[]; you: UserRef }[];
   credential: "session" | "key"; // what this request came with
 }
 
@@ -256,6 +286,7 @@ export interface ApiKey {
   id: number;
   name: string;
   scope: ApiKeyScope;
+  permissions: Permission[] | null; // its cap; null: its owner's role's (an agent's token, or "inherit")
   workspace: string; // the workspace key; the key works only there
   createdAt: string;
   lastUsedAt: string | null;

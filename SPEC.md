@@ -116,7 +116,7 @@ Team membership and privacy are managed from a browser session only (an API key 
 
 | Method | Path | Body | Returns |
 |---|---|---|---|
-| GET / PATCH | /api/me | `{ email? }` | `Me` `{ user, workspaces: [{ key, name, role, you }], credential }`: `credential` is `session` or `key`; `user` is you in the request's workspace (see Rules for every request), else your default profile; `you` is how you're known in each workspace. Only here does `user` carry its numeric `id`, the account's, which never changes. `name` or `username` here is 400, naming the profile route |
+| GET / PATCH | /api/me | `{ email? }` | `Me` `{ user, workspaces: [{ key, name, role, roleKey, roleName, permissions, you }], credential }`: `permissions` is what this credential may do there (a team's own role aside); `credential` is `session` or `key`; `user` is you in the request's workspace (see Rules for every request), else your default profile; `you` is how you're known in each workspace. Only here does `user` carry its numeric `id`, the account's, which never changes. `name` or `username` here is 400, naming the profile route |
 | PATCH | /api/workspaces/:key/profile | `{ name?, username? }` | `WorkspaceMember`: yours in that workspace (a session only; 404 if you aren't an active member; 409 on a clash there) |
 | GET | /api/sessions | | `Session[]` (`current` marks this one) |
 | DELETE | /api/sessions, /api/sessions/:id | | all but this one, or one |
@@ -128,11 +128,13 @@ Team membership and privacy are managed from a browser session only (an API key 
 | PATCH | /api/workspaces/:key | `{ name }` | (admin) |
 | DELETE | /api/workspaces/:key | `?confirm=<key>` | `{ ok }` (admin, browser session; see Deleting) |
 | GET | /api/workspaces/:key/members | | `WorkspaceMember[]` (people, then agents; each with `teams`, the keys of their teams you see; a guest gets only those who share a team with them) |
-| PATCH | /api/workspaces/:key/members/:username | `{ role?, suspended? }` | (admin) `role`: `admin`, `member` or `guest` |
-| POST | /api/workspaces/:key/invites | `{ role?, teams? }` | (admin) 201 `CodeLink`; `teams`: team keys joined on redeeming (a guest's: at least one) |
+| PATCH | /api/workspaces/:key/members/:username | `{ role?, suspended? }` | `role` (`members.assign_role`): any role's key, for a person or an agent (not GitHub's account); `suspended` (`members.suspend`). Either takes holding every permission of their role, and `role` of the new one (403 `You can't give permissions you don't have: …`); never your own role (403 `You can't change your own role`); 409 `Add another admin first` if no active person would hold every permission. Invites made by those who can no longer give them die; their sockets reconnect |
+| GET / POST | /api/roles | `RoleInput` `{ name, permissions, description?, key? }` | `WorkspaceRole[]` `{ key, name, description, builtin, permissions, members }` of the request's workspace (built-in ones first); 201 (`roles.manage`, only permissions you hold) |
+| PATCH / DELETE | /api/roles/:key | `{ name?, description?, permissions? }`; DELETE `?moveTo=<key>` | (`roles.manage`) not Admin (400: duplicate it), not your own role, none holding a permission you lack (403); built-in ones aren't deleted (400); while members, team roles or live invites hold it, `moveTo` names where they go (409 without it); 409 `Add another admin first` as above |
+| POST | /api/workspaces/:key/invites | `{ role?, teams? }` | (`members.invite`) 201 `CodeLink`; `role`: a role's key you could give (default `member`); `teams`: team keys joined on redeeming (a role that doesn't browse the workspace, a guest's: at least one). Redeeming re-checks that its maker can still give the role (403 otherwise) |
 | GET | /api/workspaces/:key/teams | | (admin, session) `TeamListing[]` `{ key, name, private, member, memberCount }`: every team, private ones you aren't in too, and nothing inside them, so you can find one to join |
-| POST | /api/workspaces/:key/agents | `{ name, username }` | (admin) 201 `{ agent, token }` |
-| POST | /api/workspaces/:key/agents/:username/token | | (admin) `{ token }`: the old one dies; reinstates a removed agent |
+| POST | /api/workspaces/:key/agents | `{ name, username, role? }` | (`agents.manage`) 201 `{ agent, token }`; `role`: a role's key you could give (default `agent`) |
+| POST | /api/workspaces/:key/agents/:username/token | | (`agents.manage`, holding its role's permissions) `{ token }`: the old one dies; reinstates a removed agent |
 | DELETE | /api/workspaces/:key/agents/:username | | (admin) removes it |
 | … | /api/workspaces/:key/webhooks… | | (admin) see Webhooks |
 | … | /api/workspaces/:key/github | | (admin) see GitHub |
@@ -200,6 +202,7 @@ Plus the Access routes above. Everything here acts in the request's workspace (s
 | PATCH | /api/teams/:key | `{ name?, description?, defaultStatus?, autoCloseParent?, autoCloseChildren?, autoArchiveDays?, estimateScale?, cycleWeeks?, upcomingCycles?, cycleStartsOn?, private? }` (`private`: admins, in a browser session, else 403; teams never change workspace: 400; `defaultStatus` a backlog or unstarted key, else 400; the auto-close switches booleans, else 400; `autoArchiveDays` a positive whole number of days, or `null` for never, else 400; `estimateScale` a scale or `null` (off), else 400; people only). `POST /api/teams` takes them too, but for `defaultStatus`. The cycle fields: `cycleWeeks` 1–8 or `null` (off), `upcomingCycles` 1–15, `cycleStartsOn` a date, today or later, only when turning cycles on (see Cycles); `Team` carries `cycleWeeks`, `upcomingCycles` and `currentCycle` (its number, or null) | `Team` |
 | GET | /api/teams/:key/members | | `UserRef[]`: its active members, people then agents (a browser session only; an admin may list a private team they aren't in) |
 | POST | /api/teams/:key/members | `{ username }` (`"me"` joins) | `Team` (a browser session only: 403 for keys; who: see Teams and guests) |
+| PATCH | /api/teams/:key/members/:username | `{ role }`: a role's key, or `null` | `{ user, team, role }`: their own role in the team, replacing their workspace role for its team permissions only (never for what they see), or with `null` their workspace role again. `team.roles` in the team or `members.assign_role`, holding the team permissions of both their roles there; never your own; 404 if they aren't in it (leaving the team drops it) |
 | DELETE | /api/teams/:key/members/:username | | `Team` (a browser session only; yourself: you leave; 404 if they aren't in it; 409 for a private team's last member) |
 | POST | /api/teams/:key/statuses | `WorkflowStatusInput` `{ name, category, color?, key?, position? }` (a triage one needs no name) | 201 `Team` |
 | PATCH | /api/teams/:key/statuses/:status | `{ name?, color?, position? }` (`key` or `category`: 400) | `Team` |

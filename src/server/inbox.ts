@@ -6,6 +6,7 @@ import { marked, type Token } from "marked";
 import type { Inbox, Notification, NotificationKind, UserKind } from "../shared/types.ts";
 import { type Actor, requestWorkspace, SEES_TEAM, usernameOf } from "./access.ts";
 import { AppError, changed, db, knownAs, now } from "./db.ts";
+import { requirePermission } from "./permissions.ts";
 import { queuePush } from "./push.ts";
 import { enqueue } from "./webhooks.ts";
 
@@ -208,11 +209,14 @@ function scope(a: Actor, workspace: string, ids: unknown): { where: string; para
   return { where: `${where} AND id IN (SELECT value FROM json_each(?))`, params: [a.id, workspace, list] };
 }
 
+const NO_INBOX = "Your role can't manage your inbox";
+
 /** Marks `ids`, or all of yours here, read (or unread). */
 export function markRead(a: Actor, input: { ids?: unknown; read?: unknown }): Inbox {
   const workspace = requestWorkspace(a);
   if (typeof input.read !== "boolean") throw new AppError("read must be true or false");
   const { where, params } = scope(a, workspace, input.ids);
+  requirePermission(a, "inbox.manage", NO_INBOX, workspace);
   db.query(`UPDATE notifications SET read_at = ${input.read ? "COALESCE(read_at, ?)" : "NULL"} WHERE ${where}`).run(
     ...(input.read ? [now()] : []),
     ...params,
@@ -226,6 +230,7 @@ export function deleteNotifications(a: Actor, input: { ids?: unknown; read?: boo
   const workspace = requestWorkspace(a);
   if ((input.ids === undefined) === (input.read !== true)) throw new AppError("Pass either ids or read=true");
   const { where, params } = scope(a, workspace, input.ids);
+  requirePermission(a, "inbox.manage", NO_INBOX, workspace);
   db.query(`DELETE FROM notifications WHERE ${where}${input.read ? " AND read_at IS NOT NULL" : ""}`).run(...params);
   changed("inbox", workspace, usernameOf(a)!, a.id);
   return listInbox(a);
