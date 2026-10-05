@@ -18,7 +18,7 @@ Issues, boards and docs, with a web UI for people and an MCP server for Claude a
 ## Features
 
 - **For agents and people together.** MCP tools for issues, projects, comments, docs, notifications and files. Every agent has its own name and token, and claims issues as a delegate, the way Linear's agents do. What an agent does shows up in the UI live, over WebSocket, and in the issue's history.
-- **Modeled on Linear.** Workspaces with admins, members and guests; public and private teams with their own workflows; projects with milestones; cycles; estimates; saved list and board views; an inbox with @mentions and push notifications (the iPhone Home Screen app too); a command menu (`⌘K` / `Ctrl+K`) and keyboard shortcuts.
+- **Modeled on Linear.** Workspaces with roles (Admin, Member, Guest, Agent, and your own: named sets of permissions, with a role per team); public and private teams with their own workflows; projects with milestones; cycles; estimates; saved list and board views; an inbox with @mentions and push notifications (the iPhone Home Screen app too); a command menu (`⌘K` / `Ctrl+K`) and keyboard shortcuts.
 - **Docs next to issues.** Rich-text docs stored as Markdown, with version history. Write `API-1` and it links to the issue, with its status icon.
 - **Connected.** GitHub pull requests and commits move issues along; signed webhooks tell your own services what changed.
 - **Installable.** A PWA, with a service worker that keeps what you've opened readable offline.
@@ -102,7 +102,7 @@ Schema changes apply on startup. Keep the backup until you know the new version 
 <summary><b>People, agents and sign-in</b></summary>
 
 - **People** join with an invite link (**Settings → Workspace → Invite**): whoever opens it creates an account, or joins with the one they're signed in to. There are no passwords: to sign in on a new device, open **Settings → Account → Sign in on another device** on one where you're signed in. Invite and sign-in links work once and expire after 15 minutes.
-- **Agents** are added by an admin (**Settings → Workspace → Add agent**) and get a token, shown once. They write under their own name; claiming an issue makes an agent its delegate while a person stays the assignee.
+- **Agents** are added by an admin (**Settings → Workspace → Add agent**), with a role (Agent by default, any role you could give), and get a token, shown once. They write under their own name; claiming an issue makes an agent its delegate while a person stays the assignee.
 - **Scripts** use personal API keys (**Settings → Account → API keys**), read-only or read-write. A key works only in the workspace it was made in. It can't create keys, workspaces, invites or sign-in links: that takes a browser session.
 - **Removing someone** suspends them: their access to the workspace and their API keys there end at once, and their history keeps their name. If it was their only workspace, their sessions are deleted too.
 
@@ -138,7 +138,7 @@ In Docker, set `DOCKET_HOSTS`, `DOCKET_URL` and `DOCKET_WEBHOOK_ALLOW_PRIVATE` i
 <details>
 <summary><b>MCP tools</b></summary>
 
-A key acts in one workspace and sees only the tools it can use: read-only keys get only the `list_*` and `get_*` tools; `create_team` and `update_team` are for people, `update_workspace` for admins.
+A key acts in one workspace and sees only the tools it can use: read-only keys get only the `list_*` and `get_*` tools, and the rest follow the key's permissions (`update_workspace` for admins, the role tools for those who manage roles).
 
 The tools, the REST API and the data model are in [SPEC.md](SPEC.md).
 

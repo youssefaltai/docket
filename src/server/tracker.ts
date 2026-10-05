@@ -588,7 +588,7 @@ export function updateTeam(a: Actor, key: string, patch: TeamPatch): Team {
   const estimateScale = patch.estimateScale === undefined ? row.estimate_scale : checkScale(patch.estimateScale);
   const isPrivate = patch.private === undefined ? row.private : checkFlag(patch.private, "private");
   if (isPrivate !== row.private) {
-    // Who sees the team is access: from a browser session.
+    // Who sees the team is access (ACCESS): a key needs team.privacy given to it.
     requirePermission(a, "team.privacy", "Only workspace admins can make a team private or public", teamWhere(row));
     if (isPrivate && !teamMemberIds(row.id).length) throw new AppError("Add a member first", 409);
   }

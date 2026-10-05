@@ -34,7 +34,7 @@ function dropTeam(id: number, workspace: string, orphaned: string[]): string[] {
 
 const dropFiles = (ids: string[]) => Promise.allSettled(ids.map((id) => files.delete(id)));
 
-/** Deletes a team with its issues, docs, cycles, workflow, templates and labels. Workspace admins only. */
+/** Deletes a team with its issues, docs, cycles, workflow, templates and labels (team.delete). */
 export async function deleteTeam(a: Actor, key: string, confirm: unknown) {
   const workspace = requireIn(a, requestWorkspace(a), "team.delete");
   const team = db.query<{ id: number; key: string }, [string, string]>("SELECT id, key FROM teams WHERE workspace = ? AND key = ?").get(workspace, String(key).trim().toUpperCase());

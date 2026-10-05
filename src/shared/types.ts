@@ -93,8 +93,8 @@ export interface User extends UserRef {
   createdAt: string;
 }
 
-// Workspace roles. Agents are members with role "agent": they create and configure teams, but manage no members or access.
-// Guests see only the teams they're added to, and nothing workspace-wide (views, settings beyond their account).
+// The built-in roles, every workspace's (ROLE_PERMISSIONS); workspaces add their own (WorkspaceRole). Agents' role,
+// "agent", creates and configures teams but manages no members or access; guests' sees only the teams they're added to.
 export type Role = "admin" | "member" | "guest" | "agent";
 
 /**
@@ -215,7 +215,7 @@ export const RESERVED_WORKSPACE_KEYS = ["api", "doc", "docs", "icons", "issue", 
 export interface Workspace {
   key: string; // URL-safe lowercase slug, e.g. "acme"; not one of RESERVED_WORKSPACE_KEYS
   name: string;
-  role: Role; // yours
+  role: Role; // yours, if built in; "member" for a workspace's own role (Me.workspaces says which, and what it allows)
   createdAt: string;
   updatedAt: string;
 }
@@ -375,7 +375,7 @@ export interface TeamInput {
   autoCloseChildren?: boolean; // default false
   autoArchiveDays?: number | null; // default null (never)
   estimateScale?: EstimateScale | null; // default null (off)
-  private?: boolean; // default false; the creator is its first member either way (PATCH: admins only)
+  private?: boolean; // default false; the creator is its first member either way (PATCH: team.privacy)
 }
 
 // The key and workspace never change.

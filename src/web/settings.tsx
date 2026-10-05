@@ -607,7 +607,7 @@ function WorkspaceSettings({ workspace }: { workspace: Workspace }) {
   );
 }
 
-/** Whether you could give a role: you hold everything it does (in `team`, its team permissions). */
+/** Whether you could give a role: you hold everything it does. */
 const grantable = (r: WorkspaceRole) => r.permissions.every((p) => can(p));
 
 /** A role picker: roles you can't give are there but disabled. */

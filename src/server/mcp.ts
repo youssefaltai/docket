@@ -343,7 +343,7 @@ function createServer(a: Actor, origin: string): McpServer {
   register(
     "update_workspace",
     {
-      description: "Rename your workspace (admins only). Its key never changes. Only do this when asked to.",
+      description: "Rename your workspace. Its key never changes. Only do this when asked to.",
       inputSchema: { name: z.string() },
     },
     ({ name }) => {
