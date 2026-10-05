@@ -13,7 +13,7 @@ import { startPush } from "../server/push.ts";
 import { useScheduler } from "../server/runtime.ts";
 import { durableStore } from "../server/store.ts";
 import { catchUp } from "../server/tracker.ts";
-import { load, pageHash, schemaHash, tables } from "../server/transfer.ts";
+import { load, pageHash, rowsPage, schemaHash, tables } from "../server/transfer.ts";
 import { nextDelivery, pass, purgeDeliveries, startWebhooks } from "../server/webhooks.ts";
 
 interface Env {
@@ -205,7 +205,7 @@ export class Docket extends DurableObject<Env> {
   /**
    * The off-site backup (scripts/backup.ts), read-only, only while the BACKUP_TOKEN secret is set and only with it:
    *   GET /api/backup/tables              Docket's tables and the schema version
-   *   GET /api/backup/rows/:table?after   rows as they are, after rowid `after`, about 256 KB at a time, and the rowid to go on from
+   *   GET /api/backup/rows/:table?after   rows as they are, after rowid `after` (a WITHOUT ROWID table: after that many rows), about 256 KB at a time, and where to go on from
    *   GET /api/backup/files?after         attachment ids after `after`, 100 at a time, with their size and MD5 in R2
    *   GET /api/backup/files/:id           an attachment's bytes
    */
@@ -220,16 +220,7 @@ export class Docket extends DurableObject<Env> {
       return Response.json({ tables: tables(db), version });
     }
     if (what === "rows" && a && tables(db).includes(a)) {
-      const rows: Record<string, unknown>[] = [];
-      let next = Number(after) || 0;
-      let size = 0;
-      for (const { _rowid, ...row } of db.query<Record<string, unknown>, [number]>(`SELECT rowid AS _rowid, * FROM "${a}" WHERE rowid > ? ORDER BY rowid LIMIT 500`).all(next)) {
-        size += JSON.stringify(row).length;
-        if (rows.length && size > 256 * 1024) break;
-        rows.push(row);
-        next = _rowid as number;
-      }
-      return Response.json({ rows, next });
+      return Response.json(rowsPage(db, a, Number(after) || 0));
     }
     if (what === "files" && !a) {
       const ids = db.query<{ id: string }, [string]>("SELECT id FROM attachments WHERE id > ? ORDER BY id LIMIT 100").all(after);
