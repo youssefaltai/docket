@@ -1,7 +1,7 @@
 // Deleting a team or a whole workspace for good: an admin's own hand (a browser session, never an API key or agent), after
 // typing its key. Everything inside goes with it. Foreign keys are checked at the commit, so a table missed here rolls the
 // whole delete back instead of leaving rows pointing at nothing.
-import { requireAdminSession, requestWorkspace, revokeAccess } from "./access.ts";
+import { requireIn, requestWorkspace, revokeAccess } from "./access.ts";
 import type { Actor } from "./access.ts";
 import { files } from "./attachments.ts";
 import { AppError, BUMPED_AT, changed, db, now } from "./db.ts";
@@ -36,7 +36,7 @@ const dropFiles = (ids: string[]) => Promise.allSettled(ids.map((id) => files.de
 
 /** Deletes a team with its issues, docs, cycles, workflow, templates and labels. Workspace admins only. */
 export async function deleteTeam(a: Actor, key: string, confirm: unknown) {
-  const workspace = requireAdminSession(a, requestWorkspace(a));
+  const workspace = requireIn(a, requestWorkspace(a), "team.delete");
   const team = db.query<{ id: number; key: string }, [string, string]>("SELECT id, key FROM teams WHERE workspace = ? AND key = ?").get(workspace, String(key).trim().toUpperCase());
   if (!team) throw new AppError(`Team ${key} not found`, 404);
   confirmed(confirm, team.key, "team");
@@ -53,7 +53,7 @@ export async function deleteTeam(a: Actor, key: string, confirm: unknown) {
 
 /** Deletes a workspace with everything in it: teams, projects, labels, members' memberships, agents, keys, webhooks, views, files. */
 export async function deleteWorkspace(a: Actor, key: string, confirm: unknown) {
-  const workspace = requireAdminSession(a, key);
+  const workspace = requireIn(a, key, "workspace.delete");
   confirmed(confirm, workspace, "workspace");
   const members = db.query<{ user_id: number }, [string]>("SELECT user_id FROM workspace_members WHERE workspace = ?").all(workspace).map((m) => m.user_id);
   const attachments = db.transaction(() => {

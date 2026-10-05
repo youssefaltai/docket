@@ -5,11 +5,14 @@ import type { Binding } from "./store.ts";
 import { createHash, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import {
   API_KEY_SCOPES,
+  BROWSER_ONLY,
   RESERVED_WORKSPACE_KEYS,
+  ROLE_PERMISSIONS,
   type ApiKey,
   type ApiKeyScope,
   type CodeInfo,
   type Me,
+  type Permission,
   type Role,
   type Session,
   type SetupInput,
@@ -23,6 +26,7 @@ import {
   type WorkspacePatch,
 } from "../shared/types.ts";
 import { AppError, SYSTEM_USER, capLength, changed, checkOneOf, db, exists, now, pickSlug, requireText } from "./db.ts";
+import { ADMINS_ONLY, BROWSER, can, capOf, permissionsOf, requirePermission } from "./permissions.ts";
 import { workers } from "./runtime.ts";
 
 /** Who a request acts as. Built fresh per request, so role and suspension changes apply at once. */
@@ -30,9 +34,10 @@ export interface Actor {
   id: number;
   renewCookie?: boolean; // a session in use: re-send its cookie so the browser's copy slides with the idle window
   kind: UserKind;
-  workspaces: Map<string, Role>; // active memberships (a key's: just its own workspace)
+  workspaces: Map<string, ReadonlySet<Permission>>; // active memberships, with their role's permissions (a key's: just its own workspace)
   workspace: string | null; // the request's: a key's own, else X-Docket-Workspace or a session's only one (see requestWorkspace)
   scope: ApiKeyScope; // an API key's scope; sessions can write
+  cap: readonly Permission[] | null; // what the credential allows of the role's permissions (see permissions.ts); null: all
   sessionId: number | null;
   keyId: number | null;
 }
@@ -176,7 +181,7 @@ function addMember(workspace: string, userId: number, role: Role, profile: { use
   );
   const join = (where: string, ...params: Binding[]) =>
     db.query(`INSERT OR IGNORE INTO team_members (team_id, user_id, created_at) SELECT id, ?, ? FROM teams WHERE workspace = ? AND ${where}`).run(userId, time, workspace, ...params);
-  if (role !== "guest") join("private = 0");
+  if (ROLE_PERMISSIONS[role].includes("workspace.browse")) join("private = 0");
   for (const id of teams) join("id = ?", id);
 }
 
@@ -229,9 +234,10 @@ function actorFor(user: AccountRow, credential: { scope: ApiKeyScope; sessionId?
   return {
     id: user.id,
     kind: user.kind,
-    workspaces: new Map(memberships.map((m) => [m.workspace, m.role])),
+    workspaces: new Map(memberships.map((m) => [m.workspace, permissionsOf(m.role)])),
     workspace: workspace ?? (memberships.length === 1 ? memberships[0]!.workspace : null),
     scope: credential.scope,
+    cap: credential.keyId === undefined ? null : capOf(user.kind, credential.scope),
     sessionId: credential.sessionId ?? null,
     keyId: credential.keyId ?? null,
   };
@@ -327,44 +333,33 @@ export function visibleTeamIds(a: Actor, workspace = requestWorkspace(a)): numbe
 /** Whether account `userId` sees team `teamId`. */
 export const seesTeam = (userId: number, teamId: number) => db.query(`SELECT 1 FROM teams t WHERE t.id = ?1 AND ${SEES_TEAM("?2", "t")}`).get(teamId, userId) !== null;
 
-/** A guest sees only the teams they're in: nothing workspace-wide (views, other people, settings beyond their account). */
-export const isGuest = (a: Actor, workspace = requestWorkspace(a)) => a.workspaces.get(workspace) === "guest";
-
 /**
- * The teams whose events a socket hears on each team's own topic: a guest's teams; for anyone else, the private teams
- * they see (every non-guest hears public teams' events on the workspace's).
+ * The teams whose events a socket hears on each team's own topic: for those who don't browse the workspace (guests), their
+ * teams; for anyone else, the private teams they see (those who browse hear public teams' events on the workspace's).
  */
 export function heardTeams(a: Actor, workspace: string): number[] {
   const seen = visibleTeamIds(a, workspace);
-  if (isGuest(a, workspace)) return seen;
+  if (!can(a, "workspace.browse", workspace)) return seen;
   return db
     .query<{ id: number }, []>(`SELECT id FROM teams WHERE private = 1 AND id IN (${seen.join(", ") || "NULL"})`)
     .all()
     .map((t) => t.id);
 }
 
-function requireAdmin(a: Actor, workspace: unknown): string {
-  const key = requireMember(a, workspace);
-  if (a.workspaces.get(key) !== "admin") throw new AppError("Only workspace admins can do that", 403);
-  return key;
-}
-
-export function requirePerson(a: Actor, message = "Only people can do that") {
-  if (a.kind !== "person") throw new AppError(message, 403);
-}
-
 /**
- * Managing access (keys, sessions, codes, invites, members, agents, webhooks, your profile) takes a signed-in
- * session: an API key that could mint credentials would outlive its own revocation.
+ * Your own account (keys, sessions, sign-in links, your profile, push) takes a signed-in session: an API key that could
+ * mint credentials would outlive its own revocation. So does what's BROWSER_ONLY.
  */
 export function requireSession(a: Actor) {
-  if (a.sessionId === null) throw new AppError("Sign in to the web app to manage access; API keys can't", 403);
+  if (a.sessionId === null) throw new AppError(BROWSER, 403);
 }
 
-/** Managing a workspace's members, invites, agents and webhooks: an admin, signed in. */
-export function requireAdminSession(a: Actor, workspace: unknown): string {
-  requireSession(a);
-  return requireAdmin(a, workspace);
+/** `workspace` (a key) if you may do `p` there: 403 first for a key and what's browser-only, then 404 if you aren't in it. */
+export function requireIn(a: Actor, workspace: unknown, p: Permission, message = ADMINS_ONLY): string {
+  if (a.sessionId === null && BROWSER_ONLY.includes(p)) throw new AppError(BROWSER, 403);
+  const key = requireMember(a, workspace);
+  requirePermission(a, p, message, key);
+  return key;
 }
 
 /**
@@ -682,7 +677,7 @@ export function recoverySignInLink(username: string, workspace?: string) {
  * joins only `teams`, so a guest invite needs at least one.
  */
 export function invite(a: Actor, workspace: unknown, input: { role?: unknown; teams?: unknown }) {
-  const key = requireAdminSession(a, workspace);
+  const key = requireIn(a, workspace, "members.invite");
   const role = checkOneOf(input.role ?? "member", PERSON_ROLES, "role");
   if (input.teams !== undefined && (!Array.isArray(input.teams) || !input.teams.every((t) => typeof t === "string"))) {
     throw new AppError('teams must be an array of team keys, e.g. ["BRD"]');
@@ -756,7 +751,7 @@ export function createWorkspace(a: Actor, input: WorkspaceInput): Workspace {
 }
 
 export function updateWorkspace(a: Actor, workspace: unknown, patch: WorkspacePatch): Workspace {
-  const key = requireAdmin(a, workspace);
+  const key = requireIn(a, workspace, "workspace.rename");
   if (patch.name !== undefined) {
     db.query("UPDATE workspaces SET name = ?, updated_at = ? WHERE key = ?").run(requireText(patch.name, "name"), now(), key);
   }
@@ -827,7 +822,7 @@ export function listMembers(a: Actor, workspace: unknown): WorkspaceMember[] {
     AND ${SEES_TEAM("m.user_id", "t")})`;
   const teams = memberTeams(a, key);
   return db
-    .query<MemberRow, [string]>(`${MEMBER_SELECT} WHERE m.workspace = ?${isGuest(a, key) ? ` AND ${shares}` : ""} ORDER BY u.kind DESC, m.name COLLATE NOCASE`)
+    .query<MemberRow, [string]>(`${MEMBER_SELECT} WHERE m.workspace = ?${can(a, "workspace.browse", key) ? "" : ` AND ${shares}`} ORDER BY u.kind DESC, m.name COLLATE NOCASE`)
     .all(key)
     .map((row) => toMember(row, teams));
 }
@@ -837,7 +832,7 @@ export function listMembers(a: Actor, workspace: unknown): WorkspaceMember[] {
  * key, name, whether it's private, whether you're in it, and how many active members it has. Nothing inside it.
  */
 export function listTeamListings(a: Actor, workspace: unknown): TeamListing[] {
-  const key = requireAdminSession(a, workspace);
+  const key = requireIn(a, workspace, "teams.manage_any");
   type Row = { key: string; name: string; private: number; member: number; members: number };
   return db
     .query<Row, [string, number]>(
@@ -874,7 +869,8 @@ function suspend(key: string, row: MemberRow) {
 }
 
 export function updateMember(a: Actor, workspace: unknown, username: unknown, patch: { role?: unknown; suspended?: unknown }): WorkspaceMember {
-  const key = requireAdminSession(a, workspace);
+  const key = requireIn(a, workspace, patch.role !== undefined || patch.suspended === undefined ? "members.assign_role" : "members.suspend");
+  if (patch.role !== undefined && patch.suspended !== undefined) requirePermission(a, "members.suspend", ADMINS_ONLY, key);
   const row = memberRow(key, username);
   if (row.integration) throw new AppError(INTEGRATION_MANAGED);
   const role = patch.role === undefined ? row.role : checkOneOf(patch.role, PERSON_ROLES, "role");
@@ -903,7 +899,7 @@ export function updateMember(a: Actor, workspace: unknown, username: unknown, pa
  * once. Its username need only be free here: two workspaces can each have their own @claude.
  */
 export function createAgent(a: Actor, workspace: unknown, input: { name?: unknown; username?: unknown }) {
-  const key = requireAdminSession(a, workspace);
+  const key = requireIn(a, workspace, "agents.manage");
   const { agent, token } = db.transaction(() => {
     const id = insertAccount("agent");
     addMember(key, id, "agent", input);
@@ -915,7 +911,7 @@ export function createAgent(a: Actor, workspace: unknown, input: { name?: unknow
 }
 
 function agentRow(a: Actor, workspace: unknown, username: unknown): { key: string; row: MemberRow } {
-  const key = requireAdminSession(a, workspace);
+  const key = requireIn(a, workspace, "agents.manage");
   const row = memberRow(key, username);
   if (row.kind !== "agent") throw new AppError(`${row.username} isn't an agent`, 404);
   if (row.integration) throw new AppError(INTEGRATION_MANAGED);

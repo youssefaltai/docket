@@ -97,6 +97,111 @@ export interface User extends UserRef {
 // Guests see only the teams they're added to, and nothing workspace-wide (views, settings beyond their account).
 export type Role = "admin" | "member" | "guest" | "agent";
 
+/**
+ * What a role can let its members do. workspace.browse is seeing the workspace: its public teams, its people, views.
+ * The rest are actions; team ones (TEAM_PERMISSIONS) are held per team.
+ */
+export const PERMISSIONS = [
+  "workspace.browse",
+  "workspace.rename",
+  "workspace.delete",
+  "roles.manage",
+  "members.assign_role",
+  "members.suspend",
+  "members.invite",
+  "agents.manage",
+  "webhooks.manage",
+  "github.manage",
+  "teams.create",
+  "teams.join", // join a public team yourself
+  "teams.manage_any", // list every team, join a private one, manage the members of one you aren't in, add a guest to one
+  "team.members", // add and remove others in a team you're in
+  "team.privacy",
+  "team.roles",
+  "team.delete",
+  "team.settings",
+  "team.workflow",
+  "team.templates",
+  "labels.create", // a new workspace label, by naming it on an issue or template
+  "labels.workspace",
+  "labels.team",
+  "views.create",
+  "views.manage_any",
+  "issues.write",
+  "comments.write",
+  "docs.write",
+  "files.upload",
+  "projects.write",
+  "inbox.manage",
+  "trash.purge",
+] as const;
+export type Permission = (typeof PERMISSIONS)[number];
+
+export const TEAM_PERMISSIONS: readonly Permission[] = [
+  "team.members",
+  "team.privacy",
+  "team.roles",
+  "team.delete",
+  "team.settings",
+  "team.workflow",
+  "team.templates",
+  "labels.team",
+  "issues.write",
+  "comments.write",
+  "docs.write",
+  "files.upload",
+  "trash.purge",
+];
+
+/**
+ * Never through an API key or agent token, only a browser session: what mints credentials that would outlive the key,
+ * can't be undone, or manages who has access.
+ */
+export const BROWSER_ONLY: readonly Permission[] = [
+  "workspace.delete",
+  "members.assign_role",
+  "members.suspend",
+  "members.invite",
+  "agents.manage",
+  "webhooks.manage",
+  "github.manage",
+  "teams.join",
+  "teams.manage_any",
+  "team.members",
+  "team.privacy",
+  "team.delete",
+  "trash.purge",
+];
+
+const CONTENT: readonly Permission[] = ["issues.write", "comments.write", "docs.write", "files.upload", "projects.write", "inbox.manage"];
+
+/** The built-in roles. */
+export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
+  admin: PERMISSIONS,
+  member: [
+    "workspace.browse",
+    "teams.create",
+    "teams.join",
+    "team.members",
+    "team.settings",
+    "team.workflow",
+    "team.templates",
+    "labels.create",
+    "labels.workspace",
+    "labels.team",
+    "views.create",
+    ...CONTENT,
+    "trash.purge",
+  ],
+  guest: ["labels.team", ...CONTENT],
+  agent: ["workspace.browse", "teams.create", "team.settings", "labels.create", "views.create", ...CONTENT],
+};
+
+/** What a write API key made before permissions may do, of what its owner may: everything a key can but manage roles. */
+export const LEGACY_WRITE_KEY: readonly Permission[] = PERMISSIONS.filter(
+  (p) => !BROWSER_ONLY.includes(p) && p !== "roles.manage" && p !== "team.roles",
+);
+
 /** The first segment of app URLs other than a workspace's (/<ws>/…): no workspace can take these keys. */
 export const RESERVED_WORKSPACE_KEYS = ["api", "doc", "docs", "icons", "issue", "login", "mcp", "settings", "setup", "t", "ws"];
 

@@ -40,6 +40,7 @@ import { actorOf } from "./auth.ts";
 import { AppError } from "./db.ts";
 import { originOf } from "./http.ts";
 import * as inbox from "./inbox.ts";
+import { can, readOnly } from "./permissions.ts";
 import * as tracker from "./tracker.ts";
 
 /** Where this connection is and who it acts as. `username`: yours in `workspace`. */
@@ -53,7 +54,7 @@ Docket is an issue tracker shared by people and agents, modeled on Linear.
 - Each team has its own statuses, named by key (list_teams shows them), in Linear's fixed categories: triage (new, not yet accepted), backlog, unstarted, started, completed, canceled. By default a team has backlog, todo, in_progress, in_review, done, canceled and duplicate. Priority: 0 none, 1 urgent, 2 high, 3 medium, 4 low.
 - People and agents are named by username (@alice), unique within this workspace. An issue's assignee is a person who owns it; its delegate is an agent working on it for them. "me" means you.
 ${
-  a.scope === "read"
+  readOnly(a)
     ? "- This key is read-only: you can list and read everything here, but not change anything."
     : "- Working on an issue: get_issue, then claim_issue (an agent becomes its delegate, a person its assignee, and it moves to the team's first started status, in_progress by default; if someone else holds it, pick another), post progress notes with comment_issue, then set in_review when it's ready for review or done when finished (or the team's own statuses in those categories). There is no delete: set status canceled instead."
 }
@@ -328,13 +329,10 @@ function createServer(a: Actor, origin: string): McpServer {
     cb: ToolCallback<I>,
     who?: (a: Actor) => boolean,
   ) => {
-    if (a.scope === "read" && !config.annotations?.readOnlyHint) return;
+    if (readOnly(a) && !config.annotations?.readOnlyHint) return;
     if (who && !who(a)) return;
     server.registerTool(name, config, cb);
   };
-  // Who sees a tool, besides the scope check in register.
-  // A key acts in one workspace (MCP takes only keys), so that's where every tool works.
-  const admins = (a: Actor) => a.workspaces.get(a.workspace ?? "") === "admin";
 
   register(
     "update_workspace",
@@ -346,7 +344,7 @@ function createServer(a: Actor, origin: string): McpServer {
       const workspace = access.updateWorkspace(a, access.requestWorkspace(a), { name });
       return result(`Updated workspace ${workspace.key} · ${workspace.name}`, { workspace });
     },
-    admins,
+    (a) => can(a, "workspace.rename"),
   );
 
   register(
